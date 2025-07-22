@@ -166,7 +166,7 @@ class TestPydanticModels(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GetDataParams(df_id="test", index="invalid", columns="all")
         
-        # Invalid tuple length should raise ValidationError  
+        # Invalid tuple length should raise ValidationError
         with self.assertRaises(ValidationError):
             GetDataParams(df_id="test", index=(0, 1, 2), columns="all")
         
