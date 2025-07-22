@@ -109,7 +109,7 @@ class DataFrameRegistry:
                         self.cache.popitem(last=False)
                     return loaded_df
                 except FileNotFoundError:
-                    return None 
+                    return None
                 except Exception as e:
                     print(f"Error loading DataFrame from {df_data['raw_path']}: {e}")
                     return None
