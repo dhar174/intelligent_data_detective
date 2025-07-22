@@ -71,7 +71,7 @@ class DataFrameRegistry:
     def __init__(self, capacity=20):
         self.registry: Dict[str, dict] = {}
         self.df_id_to_raw_path: Dict[str, str] = {}
-        self.cache = OrderedDict() 
+        self.cache = OrderedDict()
         self.capacity = capacity
 
     def register_dataframe(self, df=None, df_id=None, raw_path=""):
