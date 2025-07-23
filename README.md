@@ -272,7 +272,7 @@ flowchart LR
 # Configure your analysis
 inputs = {
     "user_prompt": "Identify key patterns and anomalies in this sales data",
-    "df_ids": ["your_dataframe_id_here"],
+    "df_ids": ["sales_data_2023"],  # Replace "sales_data_2023" with the actual dataframe ID obtained from the notebook setup cells
     "messages": []
 }
 
