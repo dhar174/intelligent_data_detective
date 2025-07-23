@@ -267,7 +267,7 @@ flowchart LR
 # Open IntelligentDataDetective_beta_v3.ipynb and run the cells
 
 # Example of how to use the compiled graph from the notebook:
-# After running the notebook setup cells, you can use:
+# After running the notebook setup cells (e.g., cells 1–5, which import libraries, initialize variables, and load data), you can use:
 
 # Configure your analysis
 inputs = {
