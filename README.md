@@ -263,28 +263,30 @@ flowchart LR
 #### Example Workflow
 
 ```python
-from intelligent_data_detective import DataDetectiveGraph
+# Note: This project is currently notebook-based. Use the Jupyter notebook for analysis.
+# Open IntelligentDataDetective_beta_v3.ipynb and run the cells
 
-# Initialize the system
-detective = DataDetectiveGraph()
+# Example of how to use the compiled graph from the notebook:
+# After running the notebook setup cells, you can use:
 
-# Load your data
-df_id = detective.load_data("path/to/your/dataset.csv")
-
-# Configure analysis
-analysis_config = {
+# Configure your analysis
+inputs = {
     "user_prompt": "Identify key patterns and anomalies in this sales data",
-    "df_ids": [df_id],
-    "report_format": "html"
+    "df_ids": ["your_dataframe_id_here"],
+    "messages": []
 }
 
-# Run comprehensive analysis
-results = detective.analyze(analysis_config)
+config = {
+    "configurable": {
+        "thread_id": "data-analysis-session",
+        "user_id": "analyst-1"
+    },
+    "recursion_limit": 50
+}
 
-# Access results
-print(f"Cleaning Actions: {results.cleaning_metadata.steps_taken}")
-print(f"Key Insights: {results.analysis_insights.summary}")
-print(f"Report Location: {results.report_results.report_path}")
+# Run the analysis using the compiled graph
+for chunk in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
+    print(chunk)
 ```
 
 ## 📖 Detailed Usage Examples
@@ -300,11 +302,18 @@ Analyze this customer review dataset to identify:
 4. Seasonal trends in feedback
 """
 
-detective.analyze({
+# Configure analysis for notebook execution
+inputs = {
     "user_prompt": analysis_prompt,
     "df_ids": [review_data_id],
-    "focus_areas": ["sentiment", "themes", "correlations"]
-})
+    "messages": []
+}
+
+config = {"configurable": {"thread_id": "review-analysis", "user_id": "analyst"}}
+
+# Run analysis using the notebook's compiled graph
+for result in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
+    print(result)
 ```
 
 ### 📈 **Sales Performance Analysis**
@@ -318,11 +327,18 @@ Examine sales performance data for:
 4. Customer segmentation insights
 """
 
-detective.analyze({
+# Configure analysis for notebook execution
+inputs = {
     "user_prompt": sales_analysis,
     "df_ids": [sales_data_id],
-    "include_forecasting": True
-})
+    "messages": []
+}
+
+config = {"configurable": {"thread_id": "sales-analysis", "user_id": "analyst"}}
+
+# Run analysis using the notebook's compiled graph
+for result in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
+    print(result)
 ```
 
 ### 🏥 **Healthcare Data Analysis**
@@ -336,12 +352,18 @@ Analyze patient readmission data while maintaining privacy:
 4. Demographic trend analysis
 """
 
-detective.analyze({
+# Configure analysis for notebook execution
+inputs = {
     "user_prompt": healthcare_prompt,
     "df_ids": [patient_data_id],
-    "privacy_mode": True,
-    "anonymize_fields": ["patient_id", "ssn"]
-})
+    "messages": []
+}
+
+config = {"configurable": {"thread_id": "healthcare-analysis", "user_id": "analyst"}}
+
+# Run analysis using the notebook's compiled graph
+for result in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
+    print(result)
 ```
 
 ## 🤝 Contributing
