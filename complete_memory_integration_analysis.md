@@ -1051,9 +1051,7 @@ def keep_first(a: Optional[Any], b: Optional[Any]) -> Optional[Any]:
     """Preserve first non-null value"""
     return a if a is not None else b
 
-def dict_merge_shallow(old: Optional[Dict], new: Optional[Dict]) -> Dict:
-    """Shallow merge two dictionaries"""
-    if both old and new are None: return {}
+    if old is None and new is None: return {}
     if old is None: return new or {}
     if new is None: return old
     return {**old, **new}
