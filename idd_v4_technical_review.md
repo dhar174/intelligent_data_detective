@@ -380,14 +380,41 @@ def search_web_for_context(query: str) -> str:
 - **Data Transformation**: Advanced pandas operations
 - **Export Functions**: Multi-format data export capabilities
 
-**Tool Distribution:**
+**Comprehensive Tool List Analysis:**
+
+Cell 13 contains **78 function definitions** implementing a comprehensive data analysis toolkit. The tools are distributed across specialized lists that are built incrementally throughout the cell:
+
+**Tool List Initialization and Distribution:**
 ```python
-# Tool assignment to agents (Lines 4609-4613)
-visualization_tools.extend([list_visualizations, get_visualization])
-analyst_tools.extend([list_visualizations, get_visualization])  
-report_generator_tools.extend([list_visualizations, get_visualization])
-file_writer_tools.extend([list_visualizations, get_visualization])
+# Initial list definitions (Lines 299-790)
+data_cleaning_tools = []          # 13 mentions throughout cell
+analyst_tools = []                # 13 mentions throughout cell  
+file_writer_tools = []            # 3 mentions throughout cell
+visualization_tools = []          # 7 mentions throughout cell
+report_generator_tools = []       # 5 mentions throughout cell
 ```
+
+**Incremental Tool Assignment Pattern:**
+Tools are added throughout Cell 13 using `.append()` and `.extend()` operations at multiple points:
+
+- **Lines 780-787**: Initial tool assignments to multiple lists
+- **Lines 1942-1943**: Visualization tools additions
+- **Lines 2277, 2969-2970**: More visualization tools
+- **Lines 3168-3170**: Cross-list tool sharing (analyst, file_writer, data_cleaning)
+- **Lines 3312, 3552**: Data cleaning tools
+- **Lines 3597, 4103, 4159**: Report generator tools
+- **Lines 3641, 3697, 3743, 3794, 3832, 3899, 3977, 4274**: Analyst tools
+- **Lines 3795, 3900, 3978, 4040**: More data cleaning tools
+- **Lines 4610-4613**: Final cross-list assignments
+
+**Key Tool Functions Include:**
+- Data validation: `validate_dataframe_exists`, `get_dataframe_schema`, `check_missing_values`
+- Data manipulation: `drop_column`, `delete_rows`, `fill_missing_median`, `query_dataframe`
+- Analysis: `get_descriptive_statistics`, `calculate_correlation`, `perform_hypothesis_test`
+- File operations: `read_file`, `write_file`, `edit_file`
+- DataFrame registry: `get_df_from_registry`, `save_df_to_registry`
+- Python execution: `python_repl_tool`
+- Visualization utilities: Column resolution, encoding, normalization functions
 
 **Architecture Excellence:**
 - **Modular Design**: Tools organized by functional domain
@@ -655,14 +682,106 @@ data_analysis_team_builder.add_node("report_orchestrator", report_orchestrator_n
 data_analysis_team_builder.add_node("viz_worker", viz_worker_node)
 data_analysis_team_builder.add_node("report_section_worker", report_section_worker_node)
 
-# Conditional edges for dynamic routing
+### 8.3 Comprehensive Conditional Edge Analysis
+
+**Multiple Router Functions Implementation:**
+
+The IDD workflow employs **5 distinct router functions** for sophisticated conditional routing (Cell 19):
+
+#### 1. Main Supervisor Router (`route_from_supervisor`)
+```python
+def route_from_supervisor(state: State) -> AgentId:
+    nxt = state.get("next") or "END"
+    # Guard against typos with allowed destinations
+    allowed: set[str] = {
+        "initial_analysis","data_cleaner","analyst",
+        "viz_worker","viz_join","viz_evaluator","visualization",
+        "report_orchestrator","report_section_worker","report_join",
+        "report_packager","file_writer","FINISH","EMERGENCY_MSG"
+    }
+```
+
+#### 2. Visualization Evaluation Router (`route_viz`)
+```python
+def route_viz(state: State) -> Literal["Accepted", "Revise"]:
+    return "Accepted" if state.get("viz_grade") == "acceptable" else "Revise"
+```
+
+#### 3. Parallel Visualization Dispatcher (`assign_viz_workers`)
+```python
+def assign_viz_workers(state: State):
+    tasks = state.get("viz_tasks", []) or []
+    viz_specs = state.get("viz_specs", []) or []
+    if not tasks:
+        return Send("report_orchestrator", {...})
+    # Fan-out pattern: one Send per task
+    return [Send("viz_worker", {"individual_viz_task": t, "viz_spec": viz_specs[i]}) 
+            for i, t in enumerate(tasks) if i < len(viz_specs)]
+```
+
+#### 4. Report Section Dispatcher (`dispatch_sections`)
+```python
+def dispatch_sections(state: State):
+    """Emit Send events to run one section_worker per section in the outline."""
+    outline = state.get("report_outline",None)
+    if not isinstance(outline, ReportOutline) or not outline or not outline.sections:
+        return []
+    sends = []
+    for s in outline.sections:
+        payload = {"section": s.model_dump(mode="json", exclude_none=True)}
+        # Creates parallel section workers
+```
+
+#### 5. File Writer Decision Router (`route_to_writer`)
+```python
+def route_to_writer(state) -> Literal["file_writer", "supervisor","END"]:
+    report_done   = bool(state.get("report_generator_complete"))
+    report_ready  = state.get("report_results") is not None
+    already_wrote = bool(state.get("file_writer_complete"))
+    
+    if (report_done and report_ready and not already_wrote):
+        return "file_writer"
+    elif (report_done and not report_ready):
+        return "supervisor"
+    # Additional routing logic for workflow completion
+```
+
+**Conditional Edge Mappings:**
+```python
+# Primary supervisor routing
 data_analysis_team_builder.add_conditional_edges(
-    "supervisor",
-    should_continue,
+    "supervisor", route_from_supervisor,
     {
         "initial_analysis": "initial_analysis",
         "data_cleaner": "data_cleaner", 
         "analyst": "analyst",
+        "viz_worker": "viz_worker",
+        "viz_join": "viz_join",
+        # ... 10+ destination nodes
+    }
+)
+
+# Visualization quality control
+data_analysis_team_builder.add_conditional_edges(
+    "viz_evaluator", route_viz,
+    {"Accepted": "report_orchestrator", "Revise": "analyst"}
+)
+
+# Parallel processing dispatchers
+data_analysis_team_builder.add_conditional_edges(
+    "visualization", assign_viz_workers, ["viz_worker"]
+)
+data_analysis_team_builder.add_conditional_edges(
+    "report_orchestrator", dispatch_sections, ["report_section_worker"]
+)
+
+# Multi-node file writing decision
+for src in ["file_writer","supervisor","report_packager"]:
+    data_analysis_team_builder.add_conditional_edges(
+        src, route_to_writer,
+        {"file_writer": "file_writer", "supervisor": "supervisor", "END": END}
+    )
+```
         "visualization": "visualization",
         "report_orchestrator": "report_orchestrator",
         "FINISH": END,
@@ -1162,17 +1281,48 @@ class State(TypedDict):
 ```
 
 **Recommended Enhancement:**
-```python
-from langgraph.graph import MessagesState
-from typing import Annotated
-from langchain_core.utils.typing import Reducer
+### 8.4 Advanced State Management with Existing Reducers
 
-class EnhancedState(MessagesState):
-    """Extended state with specialized reducers for better concurrency"""
+**Current State Class Implementation (Cell 10):**
+
+The IDD implementation already employs sophisticated reducers for state management:
+
+```python
+class State(AgentState, TypedDict, total=False):
+    # Message aggregation with built-in reducer
+    final_turn_msgs_list: Optional[Annotated[list[Union[AIMessage,ToolMessage]], add_messages]]
     
-    dataframes: Annotated[Dict[str, Any], Reducer(dict_merge)]
-    artifacts: Annotated[List[str], Reducer(list_append)]
-    progress_metrics: Annotated[Dict[str, float], Reducer(dict_update)]
+    # Supervisor communication with additive reducer
+    supervisor_to_agent_msgs: Optional[Annotated[list[SendAgentMessageNoRouting], operator.add]]
+    
+    # Plan management with custom reducer
+    current_plan: Annotated[Optional[Plan], _reduce_plan_keep_sorted]
+    
+    # Parallel visualization results aggregation
+    viz_results: Annotated[List[dict], operator.add]
+    
+    # Report section accumulation
+    sections: Annotated[List[Section], operator.add]
+```
+
+**Reducer Implementations:**
+
+1. **Message State Reducer**: Uses LangChain's `add_messages` for conversation history
+2. **Additive Reducers**: `operator.add` for list concatenation in parallel workflows
+3. **Custom Plan Reducer**: `_reduce_plan_keep_sorted` for plan state management
+4. **Fan-in Aggregation**: Automatic aggregation of parallel worker results
+
+**State Fields for Parallel Execution:**
+- `viz_tasks: List[str]` - Planned visualization tasks
+- `individual_viz_task: Optional[str]` - Per-branch payload (not reduced)
+- `viz_results: Annotated[List[dict], operator.add]` - Aggregated results
+- `viz_specs: list[VizSpec]` - Router preparation data
+- `viz_spec: VizSpec` - Per-branch payload
+
+**Memory Integration Fields:**
+- DataFrame references: `current_dataframe_id`, `available_df_ids`
+- Routing state: `next`, `last_agent_id`, `emergency_reroute`
+- Progress tracking: `user_prompt`, `current_plan`
     
     def dict_merge(left: dict, right: dict) -> dict:
         """Thread-safe dictionary merging"""
@@ -1276,12 +1426,97 @@ def create_resilient_node(agent, max_retries: int = 3):
 
 #### 12.5.4 Advanced Memory Integration
 
-**Current Implementation:**
+### 12.6 Comprehensive Memory System Analysis
+
+**Current Memory Architecture Integration:**
+
+The IDD system employs a dual-layer memory architecture combining LangMem tools with LangGraph's InMemoryStore:
+
+#### 12.6.1 LangMem Tool Functions (Cell 14)
+
+**Memory Text Search:**
 ```python
-mem_tools = [create_manage_memory_tool(), create_search_memory_tool()]
+def _mem_text(query: str, limit: int = 5) -> str:
+    try:
+        items = in_memory_store.search(("memories",), query=query, limit=limit)
+        if not items:
+            return "None."
+        # Returns formatted memory search results
 ```
 
-**Recommended Enhancement:**
+**Memory Update Function:**
+```python
+def update_memory(state: Union[MessagesState, State], config: RunnableConfig, *, memstore: InMemoryStore):
+    user_id = str(config.get("configurable", {}).get("user_id", "user"))
+    namespace = (user_id, "memories")
+    memory_id = str(uuid.uuid4())
+    memstore.put(namespace, memory_id, {"memory": state["messages"][-1].text()})
+```
+
+#### 12.6.2 LangGraph Memory Store Integration
+
+**Embedding Setup (Cell 14):**
+```python
+from langchain.embeddings import init_embeddings
+
+# OpenAI embeddings initialization
+embeddings = init_embeddings("openai:text-embedding-3-small", api_key=oai_key)
+
+def _embed_docs(texts: List[str]) -> List[List[float]]:
+    """LangGraph store expects a callable that returns list[list[float]]"""
+    return embeddings.embed_documents(texts)
+
+# InMemoryStore with embedding integration
+in_memory_store = InMemoryStore(
+    index={
+        # Embedding configuration for semantic search
+    }
+)
+```
+
+#### 12.6.3 Universal Memory Retrieval Pattern
+
+**Every Node Function Implementation:**
+Each node function in Cell 18 contains a standardized `retrieve_mem` pattern:
+
+```python
+def retrieve_mem(state):
+    store = get_store()
+    return store.search(("memories",), query=state.get("next_agent_prompt") or user_prompt, limit=5)
+```
+
+**Node-Specific Memory Integration:**
+- **Initial Analysis Node**: Searches based on user prompt for context
+- **Data Cleaner Node**: Retrieves cleaning-relevant memories
+- **Analyst Node**: Accesses analysis history and patterns
+- **Visualization Worker**: Searches for visualization preferences
+- **Report Orchestrator**: Retrieves report structure memories
+- **File Writer Node**: Accesses output format preferences
+
+#### 12.6.4 Memory Search and Update Workflow
+
+**Search Integration:**
+1. Each node calls `retrieve_mem(state)` on entry
+2. Uses `get_store()` to access the shared memory store
+3. Searches the `("memories",)` namespace with contextual queries
+4. Returns up to 5 relevant memory items
+5. Memory results integrated into agent prompts
+
+**Update Mechanism:**
+1. `update_memory()` called with state and configuration
+2. Extracts user ID from config for namespace isolation
+3. Generates unique memory ID for each entry
+4. Stores message content with semantic embeddings
+5. Enables future retrieval via similarity search
+
+**Current Implementation Status:**
+- **LangMem**: ✅ Fully integrated with memory tools and InMemoryStore
+- **Tavily**: ✅ Web search API integration with error handling
+- **ChromaDB**: ❌ Installed as dependency but not integrated into workflow
+
+#### 12.6.5 Enhanced Memory Architecture Recommendations
+
+**Context-Aware Memory Store:**
 ```python
 from langgraph.store import BaseStore
 from langgraph.checkpoint import BaseCheckpointSaver
