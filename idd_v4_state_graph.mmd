@@ -1,0 +1,58 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	supervisor(supervisor)
+	initial_analysis(initial_analysis)
+	data_cleaner(data_cleaner)
+	analyst(analyst)
+	viz_worker(viz_worker)
+	viz_join(viz_join)
+	viz_evaluator(viz_evaluator)
+	report_orchestrator(report_orchestrator)
+	report_section_worker(report_section_worker)
+	report_join(report_join)
+	report_packager(report_packager)
+	file_writer(file_writer)
+	visualization(visualization)
+	EMERGENCY_MSG(EMERGENCY_MSG)
+	FINISH(FINISH)
+	__end__([<p>__end__</p>]):::last
+	EMERGENCY_MSG --> supervisor;
+	__start__ --> initial_analysis;
+	analyst --> supervisor;
+	data_cleaner --> supervisor;
+	file_writer --> supervisor;
+	initial_analysis --> supervisor;
+	report_join --> supervisor;
+	report_orchestrator -.-> report_section_worker;
+	report_orchestrator --> supervisor;
+	report_packager --> supervisor;
+	report_section_worker --> report_join;
+	supervisor -.-> EMERGENCY_MSG;
+	supervisor -.-> FINISH;
+	supervisor -.-> analyst;
+	supervisor -.-> data_cleaner;
+	supervisor -.-> file_writer;
+	supervisor -.-> initial_analysis;
+	supervisor -.-> report_join;
+	supervisor -.-> report_orchestrator;
+	supervisor -.-> report_packager;
+	supervisor -.-> report_section_worker;
+	supervisor -.-> visualization;
+	supervisor -.-> viz_evaluator;
+	supervisor -.-> viz_join;
+	supervisor -.-> viz_worker;
+	visualization -.-> viz_worker;
+	viz_evaluator -. &nbsp;Revise&nbsp; .-> analyst;
+	viz_evaluator -. &nbsp;Accepted&nbsp; .-> report_orchestrator;
+	viz_evaluator --> supervisor;
+	viz_join --> supervisor;
+	viz_worker --> viz_join;
+	FINISH --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
