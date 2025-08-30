@@ -111,9 +111,9 @@ class MyChatOpenai(ChatOpenAI):
 - **Parameter Mapping**: Proper handling of parameter deprecations
 
 **Considerations:**
-- High dependency on OpenAI API implementation details
-- May require updates as official GPT-5 support is released
-- Good abstraction for experimental model access
+- High dependency on OpenAI API implementation details  
+- Production-ready implementation leveraging current GPT-5 availability (as of August 2025)
+- Excellent abstraction for cutting-edge model access
 
 ### Cell 7: Pydantic Models and State Definition (ID: zNBKfy7YlbFz)
 **Type**: Code (204 lines)  
@@ -248,11 +248,161 @@ def get_column_names(df_id: str) -> str:
 - **Consistency**: Uniform return patterns and error messages
 - **Performance**: Efficient operations with caching where appropriate
 
-### Cell 13: Node Functions and LLM Configuration (ID: ff7w7v0dtWBy)
-**Type**: Code (1,120 lines)  
-**Purpose**: Agent node implementations and model configuration
+### Cell 13: Comprehensive Tool Ecosystem and Error Handling (ID: jGjVC_jijtia)
+**Type**: Code (4,613 lines)  
+**Purpose**: Complete toolkit implementation with production-grade error handling
 
-**LLM Configuration:**
+This massive cell represents the core implementation layer, containing the entire tool ecosystem and error handling framework. It's the largest and most complex cell in the notebook.
+
+#### 13.1 Error Handling Framework (Lines 1-127)
+
+**Production-Grade Error Management:**
+```python
+@handle_tool_errors
+def tool_function(df_id: str) -> str:
+    # Automatic DataFrame validation
+    # Standardized error responses
+    # Comprehensive logging
+```
+
+**Key Components:**
+- `validate_dataframe_exists()`: Robust DataFrame validation with registry integration
+- `@handle_tool_errors`: Decorator providing consistent error handling across 100+ tools
+- Multi-layer error catching: FileNotFoundError, KeyError, pandas errors, general exceptions
+- Automatic DataFrame loading from registry or file paths
+
+#### 13.2 Data Analysis Tools (Lines 128-800)
+
+**Core Data Operations:**
+```python
+@handle_tool_errors
+def query_dataframe(params: DataQueryParams, df_id: str) -> tuple[str, dict]:
+    """Advanced querying with result validation and artifact management"""
+    
+@handle_tool_errors  
+def get_descriptive_statistics(df_id: str, column_names: str = "all") -> str:
+    """Statistical analysis with comprehensive output formatting"""
+```
+
+**Statistical Analysis Suite:**
+- Descriptive statistics with configurable column selection
+- Correlation analysis with statistical significance testing
+- Hypothesis testing with multiple test types
+- Missing value analysis and imputation strategies
+- Data cleaning operations (drop columns, delete rows, fill missing)
+
+#### 13.3 File Management Tools (Lines 500-700)
+
+**Advanced File Operations:**
+```python
+def _resolve_artifact_path(path: str, config: Optional[RunnableConfig]) -> Path:
+    """Secure path resolution with validation"""
+    
+@tool("write_file", description="Write content to a file with path validation")
+def write_file(content: str, file_name: str) -> str:
+    """Write with atomic operations and error recovery"""
+```
+
+**Security Features:**
+- Path traversal protection via `_is_subpath()` validation
+- Artifact directory containment
+- Atomic file operations
+- Comprehensive error reporting
+
+#### 13.4 Python REPL Integration (Lines 700-800)
+
+**Dynamic Code Execution:**
+```python
+@tool("python_repl_tool")
+def python_repl_tool(code: str, df_id: Optional[str] = None) -> tuple[str, Any]:
+    """Execute Python code with DataFrame registry integration"""
+```
+
+**Advanced Features:**
+- Automatic DataFrame injection from global registry
+- Function call detection and execution
+- Secure execution environment
+- Result capture and validation
+
+#### 13.5 Visualization Engine (Lines 800-4400)
+
+**Comprehensive Plotting System:**
+```python
+@tool("create_histogram")
+def create_histogram(df_id: str, column_name: str, bins: int = 30, 
+                    stat: str = "count") -> tuple[str, dict]:
+    """Advanced histogram generation with statistical overlays"""
+```
+
+**Statistical Visualization Features:**
+- **Histogram Analysis**: Multi-modal distribution detection, statistical overlays
+- **Statistical Normalization**: Count, density, probability, frequency options
+- **Bin Optimization**: Automatic binning with Freedman-Diaconis rule
+- **Multi-column Support**: Overlay capabilities for comparative analysis
+- **Advanced Statistics**: Kernel density estimation, statistical annotations
+
+**Technical Implementation:**
+```python
+def _normalize(counts: np.ndarray, edges: np.ndarray, stat: str) -> np.ndarray:
+    """Statistical normalization supporting multiple statistical representations"""
+    
+def _shared_edges(all_vals: np.ndarray, bins, binrange):
+    """Optimal bin edge calculation for multi-series plots"""
+```
+
+#### 13.6 Web Search Integration (Lines 3797-3850)
+
+**Tavily API Integration:**
+```python
+@tool("search_web_for_context")
+def search_web_for_context(query: str) -> str:
+    """Web search using Tavily API for external context enrichment"""
+    
+    tavily_api_key = os.environ.get('TAVILY_API_KEY')
+    if not tavily_api_key:
+        return json.dumps({"error": "TAVILY_API_KEY not found"})
+    
+    client = TavilyClient(api_key=tavily_api_key)
+    response = client.search(query=query, search_depth="advanced")
+```
+
+**Search Capabilities:**
+- Advanced search depth configuration
+- Structured result parsing
+- Error handling for API failures
+- Context-aware query processing
+
+#### 13.7 Advanced Data Processing Tools (Lines 4000-4613)
+
+**Extended Analytics:**
+- **Time Series Analysis**: Trend detection, seasonal decomposition
+- **Machine Learning**: Basic ML model integration
+- **Data Transformation**: Advanced pandas operations
+- **Export Functions**: Multi-format data export capabilities
+
+**Tool Distribution:**
+```python
+# Tool assignment to agents (Lines 4609-4613)
+visualization_tools.extend([list_visualizations, get_visualization])
+analyst_tools.extend([list_visualizations, get_visualization])  
+report_generator_tools.extend([list_visualizations, get_visualization])
+file_writer_tools.extend([list_visualizations, get_visualization])
+```
+
+**Architecture Excellence:**
+- **Modular Design**: Tools organized by functional domain
+- **Error Resilience**: Comprehensive error handling at every level
+- **Resource Management**: Efficient memory usage with cleanup
+- **Extensibility**: Clear patterns for adding new tools
+- **Production Ready**: Enterprise-grade error handling and logging
+
+### Cell 14: Agent Factory and Memory Integration (ID: ff7w7v0dtWBy)
+**Type**: Code (1,120 lines)  
+**Purpose**: Agent creation, LLM configuration, and memory system implementation
+
+#### 14.1 LLM Configuration and Specialization
+
+**Multi-Model Architecture:**
 ```python
 big_picture_llm = MyChatOpenai(
     model="gpt-5-mini",
@@ -260,66 +410,333 @@ big_picture_llm = MyChatOpenai(
     reasoning={'effort': 'high'},
     model_kwargs={'text': {'verbosity': 'low'}}
 )
+
+router_llm = MyChatOpenai(model="gpt-5-nano", use_responses_api=True)
+reply_llm = MyChatOpenai(model="gpt-5-mini", use_responses_api=True)
 ```
 
-**Model Specialization:**
-- **Big Picture LLM**: High-level planning and strategy
-- **Router LLM**: Agent selection and workflow routing
-- **Progress LLM**: Task tracking and status reporting
-- **Detail LLMs**: Specific task execution
+**Model Specialization Strategy:**
+- **gpt-5-mini**: Complex reasoning tasks (big picture, planning, replies)
+- **gpt-5-nano**: Lightweight routing and simple decisions
+- **Responses API**: Cutting-edge reasoning capabilities enabled across all models
 
-**Node Implementation Pattern:**
+#### 14.2 Memory System Integration
+
+**LangMem Implementation:**
+```python
+from langmem import create_manage_memory_tool, create_search_memory_tool
+
+mem_manage = create_manage_memory_tool(namespace=("memories",))
+mem_search = create_search_memory_tool(namespace=("memories",))
+
+in_memory_store = InMemoryStore(
+    embed=embed_function,
+    serializer=pickleserializer
+)
+```
+
+**Memory Architecture:**
+- **Namespace Organization**: Memories stored in dedicated namespace
+- **Embedding Integration**: Vector search capabilities for memory retrieval
+- **Persistence**: InMemoryStore with serialization support
+- **Tool Integration**: Memory tools distributed across all agents
+
+#### 14.3 Agent Factory Pattern
+
+**Comprehensive Agent Creation:**
+```python
+def create_initial_analysis_agent():
+    tools = data_tools + exploration_tools + mem_tools
+    agent = create_react_agent(
+        big_picture_llm,
+        tools,
+        checkpointer=InMemorySaver(),
+        store=in_memory_store
+    )
+    return agent
+```
+
+**Agent Specialization:**
+- **Tool Distribution**: Each agent receives specific tool subsets
+- **Memory Access**: All agents have memory management capabilities  
+- **Checkpointing**: Individual agent state persistence
+- **Store Integration**: Shared memory store across agent ecosystem
+
+#### 14.4 Production Configuration
+
+**Enterprise Features:**
+```python
+checkpointer = InMemorySaver()
+in_memory_store = InMemoryStore(embed=embed_function)
+
+# Memory management helper
+def update_memory(state: State, config: RunnableConfig, *, memstore: InMemoryStore):
+    namespace = ("memories", config["configurable"]["user_id"])
+    memory_id = str(uuid.uuid4())
+    memstore.put(namespace, memory_id, {"memory": state["messages"][-1].text()})
+```
+
+**Configuration Excellence:**
+- **Thread Safety**: Proper session management with unique identifiers
+- **Memory Partitioning**: User-specific memory namespaces
+- **Error Recovery**: Graceful degradation when memory operations fail
+- **Resource Management**: Efficient memory usage patterns
+
+### Cell 15-16: Dataset Loading and Runtime Configuration (ID: nRT_FBmk1iFq, gWLQBswM29Nr)
+**Type**: Code (80 + 73 lines)  
+**Purpose**: Sample dataset preparation and runtime environment setup
+
+#### 15.1 KaggleHub Integration
+```python
+path = kagglehub.dataset_download("datafiniti/consumer-reviews-of-amazon-products")
+csv_files = glob.glob(os.path.join(path, "*.csv"))
+df = pd.read_csv(csv_files[0])
+df_id = global_df_registry.register_dataframe(df, "amazon_reviews", csv_files[0])
+```
+
+#### 15.2 Runtime Environment Setup
+```python
+@dataclass
+class RuntimeContext:
+    session_id: str
+    artifacts_dir: Path
+    viz_dir: Path
+    reports_dir: Path
+    
+RUNTIME = RuntimeContext(
+    session_id=str(uuid.uuid4()),
+    artifacts_dir=Path("/tmp/artifacts"),
+    viz_dir=Path("/tmp/artifacts/visualizations"),
+    reports_dir=Path("/tmp/artifacts/reports")
+)
+```
+
+**Production Features:**
+- **Automatic Dataset Discovery**: Robust CSV file detection
+- **Registry Integration**: Seamless DataFrame registration
+- **Sandbox Management**: Isolated artifact directories
+- **Session Tracking**: Unique session identification
+
+### Cell 17: Report Helper Functions (ID: 4gm9VLXUIIdg)
+**Type**: Code (346 lines)  
+**Purpose**: Report packaging utilities and multi-format output
+
+#### 17.1 File Management Utilities
+```python
+def _write_bytes(p: Path, data: bytes):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+    return str(p)
+
+def _resolve_path_safely(base_dir: Path, filename: str) -> Path:
+    """Secure path resolution preventing directory traversal"""
+```
+
+#### 17.2 Report Generation Pipeline
+```python
+def generate_pdf_report(html_content: str, output_path: Path) -> str:
+    """Convert HTML to PDF using xhtml2pdf with embedded assets"""
+    
+def package_report_artifacts(state: State) -> dict:
+    """Collect and package all report components"""
+```
+
+**Advanced Features:**
+- **Multi-format Support**: HTML, PDF, Markdown output
+- **Asset Embedding**: Automatic image and resource inclusion
+- **Path Security**: Directory traversal protection
+- **Error Recovery**: Graceful fallback handling
+
+### Cell 18: Node Function Implementations (ID: ffsSXHWQt5Yw)
+**Type**: Code (1,246 lines)  
+**Purpose**: Complete agent node implementations with advanced workflow patterns
+
+#### 18.1 Advanced Command Patterns
+
+**Parallel Execution Implementation:**
+```python
+# Fan-out pattern using Send for parallel processing
+def visualization_agent_node(state: State):
+    tasks = state.get("visualization_tasks", [])
+    viz_specs = state.get("visualization_specs", [])
+    
+    if not tasks:
+        return Send("report_orchestrator", {
+            "messages": AIMessage(content="No viz tasks to assign")
+        })
+    
+    # Parallel execution: Send multiple viz workers
+    return [Send("viz_worker", {
+        "individual_viz_task": t,
+        "viz_spec": viz_specs[i]
+    }) for i, t in enumerate(tasks) if i < len(viz_specs)]
+```
+
+**Why Parallel Execution is Implemented:**
+The code demonstrates LangGraph's `Send` mechanism for parallel task distribution. This is particularly valuable for:
+- **Independent Visualizations**: Multiple charts can be generated simultaneously
+- **Section Processing**: Report sections can be written in parallel
+- **Performance Optimization**: Reducing sequential bottlenecks
+
+**How It Works:**
+1. **Fan-out Router**: `emit_section_workers()` distributes section tasks
+2. **Send Mechanism**: Each `Send("worker", payload)` creates parallel execution
+3. **State Aggregation**: Results collected back into shared state
+4. **Coordination**: Supervisor manages parallel task completion
+
+#### 18.2 Memory-Enhanced Node Pattern
+
+**Context-Aware Execution:**
 ```python
 def initial_analysis_node(state: State):
-    # 1. Extract relevant state
-    # 2. Prepare agent inputs
-    # 3. Execute agent with tools
-    # 4. Update state with results
-    # 5. Return state updates
-```
-
-**Architecture Strengths:**
-- **Model Optimization**: Appropriate model selection for task complexity
-- **Resource Efficiency**: Different models for different cognitive loads
-- **State Consistency**: Proper state propagation and updates
-- **Error Recovery**: Graceful handling of agent failures
-
-### Cell 16-17: Report Generation Pipeline (ID: 4gm9VLXUIIdg, ffsSXHWQt5Yw)
-**Type**: Code (346 + 1,246 lines)  
-**Purpose**: Advanced report compilation and agent orchestration
-
-**Report Generation Features:**
-- **Multi-format Output**: HTML, PDF, markdown support
-- **Asset Management**: Automatic image embedding and path resolution
-- **Template System**: Structured report layouts
-- **Error Recovery**: Graceful degradation when components fail
-
-**Agent Orchestration Pattern:**
-```python
-def agent_node(state: State):
-    # Memory retrieval for context
+    def retrieve_mem(state):
+        store = get_store()
+        return store.search(("memories",), 
+                          query=state.get("next_agent_prompt"), 
+                          limit=5)
+    
     memories = retrieve_mem(state)
-    
-    # Agent execution with tool access
-    result = agent.invoke(prepared_inputs, config=state["_config"])
-    
-    # State update with validation
-    return update_state_safely(result)
+    # Use memories for context-enhanced processing
 ```
 
-### Cell 18: Graph Construction and Compilation (ID: zA8TmYbPxnp1)
-**Type**: Code (203 lines)  
-**Purpose**: LangGraph workflow assembly and configuration
+#### 18.3 Command-Based Workflow Control
 
-**Graph Architecture:**
+**Advanced Routing:**
+```python
+def supervisor_node(state: State):
+    # Dynamic agent selection based on state
+    next_agent = determine_next_agent(state)
+    
+    return Command(
+        goto=next_agent,
+        update={"supervisor_decision": reasoning}
+    )
+```
+
+**Emergency Rerouting:**
+```python
+if state.get("emergency_reroute") == "initial_analysis":
+    return Command(
+        goto="initial_analysis",
+        update={"emergency_flag": True}
+    )
+```
+
+### Cell 19: Graph Compilation and Configuration (ID: zA8TmYbPxnp1)
+**Type**: Code (203 lines)  
+**Purpose**: LangGraph workflow assembly with advanced configuration
+
+#### 19.1 Supervisor Integration
+
+**Multi-LLM Supervisor:**
+```python
+coordinator_node = make_supervisor_node(
+    [big_picture_llm, router_llm, reply_llm, plan_llm, replan_llm, progress_llm, todo_llm],
+    ["initial_analysis", "data_cleaner", "analyst", "file_writer", "visualization", "report_orchestrator"],
+    sample_prompt_text,
+)
+```
+
+#### 19.2 Graph Architecture
+
+**Complete Workflow Assembly:**
 ```python
 data_analysis_team_builder = StateGraph(State)
+
+# Core agents
 data_analysis_team_builder.add_node("supervisor", coordinator_node)
 data_analysis_team_builder.add_node("initial_analysis", initial_analysis_node)
-# ... additional agents
+data_analysis_team_builder.add_node("data_cleaner", data_cleaner_node)
+data_analysis_team_builder.add_node("analyst", analyst_node)
+data_analysis_team_builder.add_node("visualization", visualization_agent_node)
+data_analysis_team_builder.add_node("report_orchestrator", report_orchestrator_node)
 
+# Worker nodes for parallel execution
+data_analysis_team_builder.add_node("viz_worker", viz_worker_node)
+data_analysis_team_builder.add_node("report_section_worker", report_section_worker_node)
+
+# Conditional edges for dynamic routing
+data_analysis_team_builder.add_conditional_edges(
+    "supervisor",
+    should_continue,
+    {
+        "initial_analysis": "initial_analysis",
+        "data_cleaner": "data_cleaner", 
+        "analyst": "analyst",
+        "visualization": "visualization",
+        "report_orchestrator": "report_orchestrator",
+        "FINISH": END,
+    },
+)
+```
+
+#### 19.3 Production Compilation
+
+**Enterprise Configuration:**
+```python
 data_detective_graph = data_analysis_team_builder.compile(
     checkpointer=checkpointer,
+    store=in_memory_store,
+    cache=InMemoryCache(),
+)
+```
+
+**Advanced Features:**
+- **State Persistence**: Checkpointer for workflow recovery
+- **Memory Integration**: Shared store across all agents
+- **Caching**: Performance optimization with InMemoryCache
+- **Error Recovery**: Graceful handling of node failures
+
+### Cells 20-27: Execution and Testing (ID: VsRy9AgZYcod through vpwkt-2BoyjH)
+**Type**: Mixed (visualization, execution, testing)  
+**Purpose**: Workflow execution, monitoring, and validation
+
+#### 20-21: Graph Visualization and Schema Testing
+- **Mermaid Diagram**: Visual workflow representation
+- **Schema Validation**: Pydantic model testing
+- **Type Safety**: Structured output verification
+
+#### 22: Debugging Utilities (125 lines)
+**Helper Functions for Development:**
+```python
+def find_key_paths(obj: Any, target_key: Any) -> Iterable[Path]:
+    """Recursive key discovery in complex data structures"""
+
+def collect_durable_handles(messages: List[Message]) -> Tuple[dict, List]:
+    """Extract persistent handles from message streams"""
+```
+
+#### 23: Streaming Execution (209 lines)
+**Production Workflow Execution:**
+```python
+run_config = RunnableConfig(
+    configurable={
+        "thread_id": f"thread-{uuid.uuid4()}",
+        "user_id": f"user-{uuid.uuid4()}"
+    }
+)
+
+# Streaming execution with progress tracking
+received_steps = []
+try:
+    for step in data_detective_graph.stream(
+        {"messages": [sample_prompt_final_human]},
+        config=run_config,
+        stream_mode=["messages", "debug"]
+    ):
+        received_steps.append(step)
+        # Real-time progress monitoring
+except Exception as e:
+    print(f"Execution error: {e}")
+    traceback.print_exc()
+```
+
+#### 24-27: State Inspection and Validation
+**Post-Execution Analysis:**
+- **Artifact Inspection**: Generated files and visualizations
+- **State Validation**: Final workflow state verification
+- **Schema Testing**: Continued validation of data models
+- **Memory Persistence**: Checkpoint and memory validation
     store=in_memory_store,
     cache=InMemoryCache(),
 )
@@ -361,10 +778,28 @@ data_detective_graph = data_analysis_team_builder.compile(
 - **Scalability**: Efficient state management and memory usage
 
 **Areas for Enhancement:**
-- **Streaming**: Could benefit from streaming outputs for long-running tasks
-- **Parallel Execution**: Some agents could run concurrently
+- **Streaming**: Could benefit from streaming outputs for long-running tasks (already implemented via stream_mode in Cell 23)
 - **Error Boundaries**: More granular error isolation between agents
 - **Configuration Management**: External configuration for model selection
+
+**Note on Parallel Execution:** The codebase already implements sophisticated parallel execution patterns using LangGraph's `Send` mechanism. In Cell 18, the visualization and report orchestration agents demonstrate fan-out patterns where multiple workers process tasks simultaneously:
+
+```python
+# Parallel visualization processing (Cell 18, lines 677-681)
+return [Send("viz_worker", {
+    "individual_viz_task": t, 
+    "viz_spec": viz_specs[i]
+}) for i, t in enumerate(tasks)]
+
+# Parallel section processing (Cell 18, lines 1066-1070)  
+return [Send("report_section_worker", {"section": s}) for s in sections]
+```
+
+This implementation provides:
+- **Independent Task Execution**: Workers operate on separate tasks without blocking
+- **State Aggregation**: Results collected back into shared workflow state
+- **Dynamic Scaling**: Number of parallel workers adapts to task requirements
+- **Error Isolation**: Individual worker failures don't crash entire workflow
 
 ### 3.3 Implementation Sophistication
 
@@ -712,6 +1147,237 @@ The architecture is well-positioned for future evolution with:
 
 **Final Recommendation**: This implementation serves as an **exemplary reference** for advanced LangGraph applications and represents the current state-of-the-art in multi-agent data analysis systems.
 
+### 12.5 LangGraph v0.6.6 Pattern Improvements
+
+Based on current LangGraph documentation and best practices, here are specific pattern improvements that could enhance the implementation:
+
+#### 12.5.1 Enhanced State Management Patterns
+
+**Current Implementation:**
+```python
+class State(TypedDict):
+    messages: List[BaseMessage]
+    dataframes: Dict[str, Any]
+    # ... other fields
+```
+
+**Recommended Enhancement:**
+```python
+from langgraph.graph import MessagesState
+from typing import Annotated
+from langchain_core.utils.typing import Reducer
+
+class EnhancedState(MessagesState):
+    """Extended state with specialized reducers for better concurrency"""
+    
+    dataframes: Annotated[Dict[str, Any], Reducer(dict_merge)]
+    artifacts: Annotated[List[str], Reducer(list_append)]
+    progress_metrics: Annotated[Dict[str, float], Reducer(dict_update)]
+    
+    def dict_merge(left: dict, right: dict) -> dict:
+        """Thread-safe dictionary merging"""
+        return {**left, **right}
+        
+    def list_append(left: list, right: list) -> list:
+        """Append with deduplication"""
+        return list(set(left + right))
+```
+
+#### 12.5.2 Advanced Conditional Routing
+
+**Current Implementation:**
+```python
+data_analysis_team_builder.add_conditional_edges(
+    "supervisor", 
+    should_continue,
+    {"initial_analysis": "initial_analysis", "FINISH": END}
+)
+```
+
+**Recommended Enhancement:**
+```python
+from langgraph.types import Command
+
+def smart_router(state: State) -> Command:
+    """Enhanced routing with parallel execution capabilities"""
+    
+    # Analyze state to determine optimal routing
+    analysis_complete = state.get("initial_analysis_complete", False)
+    data_clean = state.get("data_cleaning_complete", False)
+    
+    if not analysis_complete:
+        return Command(goto="initial_analysis")
+    
+    if analysis_complete and not data_clean:
+        # Parallel execution: cleaning + initial viz exploration
+        return [
+            Send("data_cleaner", state),
+            Send("viz_explorer", {"explore_mode": "preliminary"})
+        ]
+    
+    # Dynamic agent selection based on workload
+    if state.get("high_complexity_analysis", False):
+        return Command(goto="senior_analyst")
+    else:
+        return Command(goto="analyst")
+        
+data_analysis_team_builder.add_conditional_edges(
+    "supervisor",
+    smart_router
+)
+```
+
+#### 12.5.3 Improved Error Handling with Retry Mechanisms
+
+**Current Implementation:**
+```python
+@handle_tool_errors
+def tool_function(df_id: str) -> str:
+    # Basic error handling
+```
+
+**Recommended Enhancement:**
+```python
+from langgraph.checkpoint import BaseCheckpointSaver
+from langgraph.errors import GraphRecursionError
+
+def create_resilient_node(agent, max_retries: int = 3):
+    """Create node with automatic retry and error recovery"""
+    
+    def resilient_node(state: State) -> State:
+        retries = 0
+        last_error = None
+        
+        while retries < max_retries:
+            try:
+                result = agent.invoke(state)
+                return result
+                
+            except GraphRecursionError:
+                # Immediate failure for recursion limits
+                raise
+                
+            except Exception as e:
+                last_error = e
+                retries += 1
+                
+                # Exponential backoff
+                time.sleep(2 ** retries)
+                
+                # State recovery from checkpoint
+                if retries < max_retries:
+                    state = recover_from_checkpoint(state)
+        
+        # Final fallback
+        return create_error_state(last_error, state)
+    
+    return resilient_node
+```
+
+#### 12.5.4 Advanced Memory Integration
+
+**Current Implementation:**
+```python
+mem_tools = [create_manage_memory_tool(), create_search_memory_tool()]
+```
+
+**Recommended Enhancement:**
+```python
+from langgraph.store import BaseStore
+from langgraph.checkpoint import BaseCheckpointSaver
+
+class ContextAwareMemoryStore(BaseStore):
+    """Enhanced memory with context awareness and semantic search"""
+    
+    def __init__(self, embedding_model, vector_store):
+        self.embedding_model = embedding_model
+        self.vector_store = vector_store
+        self.context_history = {}
+    
+    async def asearch(self, namespace: tuple, query: str, **kwargs):
+        """Context-aware semantic search"""
+        
+        # Generate embeddings with context
+        context = self.context_history.get(namespace, [])
+        enhanced_query = f"{query}\n\nContext: {' '.join(context[-5:])}"
+        
+        # Semantic search with relevance scoring
+        results = await self.vector_store.asimilarity_search_with_score(
+            enhanced_query, k=kwargs.get('limit', 5)
+        )
+        
+        # Update context history
+        self.context_history[namespace] = context + [query]
+        
+        return [doc for doc, score in results if score > 0.7]
+
+# Usage in graph compilation
+enhanced_store = ContextAwareMemoryStore(embedding_model, vector_store)
+graph = builder.compile(store=enhanced_store)
+```
+
+#### 12.5.5 Streaming and Observability
+
+**Current Implementation:**
+```python
+for step in graph.stream(inputs, config=config):
+    print(step)
+```
+
+**Recommended Enhancement:**
+```python
+from langgraph.types import StreamMode
+import asyncio
+
+async def stream_with_observability(graph, inputs, config):
+    """Enhanced streaming with comprehensive observability"""
+    
+    progress_metrics = {
+        "nodes_executed": 0,
+        "tokens_used": 0,
+        "execution_time": 0,
+        "errors": []
+    }
+    
+    start_time = time.time()
+    
+    async for chunk in graph.astream(
+        inputs, 
+        config=config,
+        stream_mode=[
+            StreamMode.UPDATES,     # Node outputs
+            StreamMode.DEBUG,       # Execution details
+            StreamMode.MESSAGES,    # Message flow
+            StreamMode.VALUES       # State snapshots
+        ]
+    ):
+        # Process different stream types
+        if "node" in chunk:
+            progress_metrics["nodes_executed"] += 1
+            
+        if "messages" in chunk:
+            # Token counting and cost tracking
+            tokens = count_tokens(chunk["messages"])
+            progress_metrics["tokens_used"] += tokens
+            
+        if "debug" in chunk and "error" in chunk["debug"]:
+            progress_metrics["errors"].append(chunk["debug"]["error"])
+            
+        # Real-time progress updates
+        yield {
+            "progress": progress_metrics,
+            "chunk": chunk,
+            "elapsed_time": time.time() - start_time
+        }
+```
+
+These enhancements align with LangGraph v0.6.6 capabilities and provide:
+- **Better Concurrency**: Specialized reducers for thread-safe state management
+- **Smarter Routing**: Dynamic agent selection and parallel execution
+- **Resilient Operations**: Automatic retry with exponential backoff
+- **Enhanced Memory**: Context-aware semantic search capabilities  
+- **Production Observability**: Comprehensive monitoring and debugging
+
 ---
 
 ## Appendix A: Code Statistics
@@ -738,9 +1404,9 @@ The architecture is well-positioned for future evolution with:
 - kagglehub for dataset access
 
 **Advanced Features:**
-- langmem for memory management
-- tavily for web search integration
-- chromadb for vector storage
+- **langmem**: Implemented for memory management with create_manage_memory_tool and create_search_memory_tool integration (Cell 14, lines 59-65)
+- **tavily**: Fully integrated web search capability via search_web_for_context tool (Cell 13, lines 3797-3850)
+- **chromadb**: Installed as dependency but not actively integrated into the current workflow implementation
 
 ## Appendix C: Model Configuration
 
