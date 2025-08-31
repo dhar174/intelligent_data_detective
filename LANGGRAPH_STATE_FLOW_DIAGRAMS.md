@@ -6,54 +6,39 @@ This document contains detailed mermaid diagrams to visualize the state flow and
 
 ```mermaid
 graph TD
-    START([User Request]) --> |"user_prompt, available_df_ids"| supervisor{Supervisor Node}
-    
-    supervisor --> |"next_agent_prompt, tools, memories"| initial_analysis[Initial Analysis]
-    initial_analysis --> |"initial_description, complete=True"| supervisor
-    
-    supervisor --> |"cleaning_instructions, initial_description"| data_cleaner[Data Cleaner]
-    data_cleaner --> |"cleaning_metadata, cleaned_description, complete=True"| supervisor
-    
-    supervisor --> |"analysis_instructions, cleaned_data"| analyst[Analyst]
-    analyst --> |"analysis_insights, complete=True"| supervisor
-    
-    supervisor --> |"viz_requirements, insights"| viz_orchestrator[Visualization Orchestrator]
-    viz_orchestrator --> |"viz_tasks[], viz_specs[]"| dispatch_viz{Dispatch Workers}
-    
+    START([User Request]) -->|user_prompt, available_df_ids| supervisor{Supervisor Node}
+    supervisor -->|next_agent_prompt, tools, memories| initial_analysis[Initial Analysis]
+    initial_analysis -->|initial_description, complete=True| supervisor
+    supervisor -->|cleaning_instructions, initial_description| data_cleaner[Data Cleaner]
+    data_cleaner -->|cleaning_metadata, cleaned_description, complete=True| supervisor
+    supervisor -->|analysis_instructions, cleaned_data| analyst[Analyst]
+    analyst -->|analysis_insights, complete=True| supervisor
+    supervisor -->|viz_requirements, insights| viz_orchestrator[Visualization Orchestrator]
+    viz_orchestrator -->|viz_tasks[], viz_specs[]| dispatch_viz{Dispatch Workers}
     dispatch_viz --> viz_worker1[Viz Worker 1]
     dispatch_viz --> viz_worker2[Viz Worker 2]
     dispatch_viz --> viz_workern[Viz Worker N]
-    
-    viz_worker1 --> |"viz_results[0]"| viz_evaluator1[Viz Evaluator 1]
-    viz_worker2 --> |"viz_results[1]"| viz_evaluator2[Viz Evaluator 2]
-    viz_workern --> |"viz_results[n]"| viz_evaluatorn[Viz Evaluator N]
-    
-    viz_evaluator1 --> |"viz_eval_result"| viz_join[Viz Join]
-    viz_evaluator2 --> |"viz_eval_result"| viz_join
-    viz_evaluatorn --> |"viz_eval_result"| viz_join
-    
-    viz_join --> |"visualization_results, viz_paths[], complete=True"| supervisor
-    
-    supervisor --> |"report_requirements, all_results"| report_orchestrator[Report Orchestrator]
-    report_orchestrator --> |"report_outline, sections[]"| dispatch_sections{Dispatch Sections}
-    
+    viz_worker1 -->|viz_results[0]| viz_evaluator1[Viz Evaluator 1]
+    viz_worker2 -->|viz_results[1]| viz_evaluator2[Viz Evaluator 2]
+    viz_workern -->|viz_results[n]| viz_evaluatorn[Viz Evaluator N]
+    viz_evaluator1 -->|viz_eval_result| viz_join[Viz Join]
+    viz_evaluator2 -->|viz_eval_result| viz_join
+    viz_evaluatorn -->|viz_eval_result| viz_join
+    viz_join -->|visualization_results, viz_paths[], complete=True| supervisor
+    supervisor -->|report_requirements, all_results| report_orchestrator[Report Orchestrator]
+    report_orchestrator -->|report_outline, sections[]| dispatch_sections{Dispatch Sections}
     dispatch_sections --> section_worker1[Section Worker 1]
     dispatch_sections --> section_worker2[Section Worker 2]
     dispatch_sections --> section_workern[Section Worker N]
-    
-    section_worker1 --> |"written_sections[0]"| report_join[Report Join]
-    section_worker2 --> |"written_sections[1]"| report_join
-    section_workern --> |"written_sections[n]"| report_join
-    report_orchestrator --> |"report_outline"| report_join
-    
-    report_join --> |"report_draft"| report_packager[Report Packager]
-    report_packager --> |"report_results, report_paths{}, complete=True"| route_decision{Route Decision}
-    
-    route_decision --> |"file_instructions"| file_writer[File Writer]
-    route_decision --> |"workflow complete"| END([END])
-    
-    file_writer --> |"file_writer_complete=True, final_paths"| route_decision
-    
+    section_worker1 -->|written_sections[0]| report_join[Report Join]
+    section_worker2 -->|written_sections[1]| report_join
+    section_workern -->|written_sections[n]| report_join
+    report_orchestrator -->|report_outline| report_join
+    report_join -->|report_draft| report_packager[Report Packager]
+    report_packager -->|report_results, report_paths{}, complete=True| route_decision{Route Decision}
+    route_decision -->|file_instructions| file_writer[File Writer]
+    route_decision -->|workflow complete| END([END])
+    file_writer -->|file_writer_complete=True, final_paths| route_decision
     subgraph "State Updates Legend"
         direction TB
         legend1["🔵 Input Context"]

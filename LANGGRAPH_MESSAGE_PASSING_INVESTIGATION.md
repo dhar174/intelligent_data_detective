@@ -19,42 +19,62 @@ This document provides a comprehensive investigation of the Intelligent Data Det
 
 The Intelligent Data Detective uses a hub-and-spoke architecture with the supervisor node at the center, coordinating all agent activities.
 
+### **Actual Graph Nodes in Compiled Graph**
+
+Based on examination of the `IntelligentDataDetective_beta_v4.ipynb` file, the compiled graph contains exactly these 15 nodes:
+
+1. **`supervisor`** - Central coordinator node (coordinator_node)
+2. **`initial_analysis`** - Dataset exploration and characterization
+3. **`data_cleaner`** - Data quality assessment and cleaning
+4. **`analyst`** - Statistical analysis and insights
+5. **`viz_worker`** - Individual visualization creation worker
+6. **`viz_join`** - Aggregates results from parallel viz workers
+7. **`viz_evaluator`** - Evaluates and validates visualizations
+8. **`report_orchestrator`** - Plans and coordinates report generation
+9. **`report_section_worker`** - Writes individual report sections
+10. **`report_join`** - Aggregates parallel section results
+11. **`report_packager`** - Packages final report in multiple formats
+12. **`file_writer`** - Writes all deliverables to disk
+13. **`visualization`** - Visualization orchestrator (visualization_orchestrator)
+14. **`EMERGENCY_MSG`** - Emergency correspondence for error handling
+15. **`FINISH`** - Final completion node (write_output_to_file)
+
 ### Mermaid Diagram of Complete Workflow
 
 ```mermaid
 graph TD
-    START([START]) --> supervisor{Supervisor Node}
+    START([START]) --> initial_analysis[Initial Analysis]
+    initial_analysis --> supervisor{Supervisor Node}
     
-    supervisor -->|Route Decision| initial_analysis[Initial Analysis Agent]
+    supervisor -->|Route Decision| initial_analysis
     supervisor -->|Route Decision| data_cleaner[Data Cleaner Agent]
     supervisor -->|Route Decision| analyst[Analyst Agent]
     supervisor -->|Route Decision| visualization[Visualization Orchestrator]
     supervisor -->|Route Decision| report_orchestrator[Report Orchestrator]
     supervisor -->|Route Decision| file_writer[File Writer Agent]
-    supervisor -->|Route Decision| END([END])
+    supervisor -->|Route Decision| FINISH[FINISH Node]
+    supervisor -->|Route Decision| EMERGENCY_MSG[Emergency Correspondence]
     
-    initial_analysis --> supervisor
     data_cleaner --> supervisor
     analyst --> supervisor
     
     visualization --> dispatch_viz_workers{Dispatch Viz Workers}
     dispatch_viz_workers --> viz_worker[Viz Worker]
-    viz_worker --> viz_evaluator[Viz Evaluator]
-    viz_evaluator --> viz_join[Viz Join]
-    viz_join --> supervisor
+    viz_worker --> viz_join[Viz Join]
+    viz_join --> viz_evaluator[Viz Evaluator]
+    viz_evaluator -->|Accepted| report_orchestrator
+    viz_evaluator -->|Revise| analyst
     
     report_orchestrator --> dispatch_sections{Dispatch Sections}
     dispatch_sections --> report_section_worker[Report Section Worker]
     report_section_worker --> report_join[Report Join]
     report_orchestrator --> report_join
     report_join --> report_packager[Report Packager]
-    report_packager --> route_to_writer{Route to Writer}
+    report_packager --> supervisor
     
-    route_to_writer -->|File Writing| file_writer
-    route_to_writer -->|Complete| supervisor
-    route_to_writer -->|End| END
-    
-    file_writer --> route_to_writer
+    file_writer --> supervisor
+    FINISH --> END([END])
+    EMERGENCY_MSG --> supervisor
     
     subgraph "Fan-out/Fan-in Patterns"
         direction TB
@@ -201,8 +221,10 @@ The supervisor follows this execution sequence:
    - Analyzes completion flags to understand workflow progress
 
 2. **Memory Integration**
-   - Searches existing memories related to current task
-   - Retrieves relevant historical context
+   - Calls `_mem_text(last_message_text)` to search stored memories
+   - Uses `in_memory_store.search(("memories",), query=query, limit=5)`
+   - Retrieves contextually relevant historical patterns and solutions
+   - Includes memory search results in agent prompts via `{memories}` template variable
 
 3. **Routing Decision**
    - Uses routing LLM to determine next agent
@@ -327,8 +349,10 @@ def data_cleaner_node(state: State) -> Dict
 - `messages`: Full conversation history
 
 **Memory Integration:**
-- Searches for relevant cleaning strategies
-- Retrieves similar data quality issues handled before
+- Supervisor calls `_mem_text()` function to search stored memories using current message as query
+- Retrieves up to 5 relevant memory items from the `("memories",)` namespace  
+- Memory search results included in agent prompts as contextual information
+- All agents have access to memory tools: `create_manage_memory_tool()` and `create_search_memory_tool()`
 
 **Tools Available:**
 - Data cleaning tools (missing value handling, outlier detection, etc.)
@@ -771,31 +795,39 @@ agent_response = AIMessage(
 ```
 
 #### 3. Memory Integration
-Memory storage and retrieval happens at key points:
+Memory storage and retrieval is actively implemented using the `langmem` package:
 
-**Storage (Supervisor):**
+**Memory Search (Supervisor):**
 ```python
-def update_memory(state, config, store):
-    """Stores conversation in memory for future retrieval"""
-    last_message = state["messages"][-1]
-    memory_id = str(uuid.uuid4())
-    store.put(
-        namespace=("memories",),
-        key=memory_id,
-        value={"message": last_message.content, "context": context}
-    )
+def _mem_text(query: str, limit: int = 5) -> str:
+    try:
+        items = in_memory_store.search(("memories",), query=query, limit=limit)
+        if not items:
+            return "None."
+        return "\n".join(str(it) for it in items)
+    except Exception:
+        return "None."
+
+# Used in supervisor at multiple points:
+"memories": _mem_text(last_message_text)  # Progress accounting
+"memories": _mem_text(user_prompt)        # Planning phase
 ```
 
-**Retrieval (Agents):**
+**Memory Tools (All Agents):**
 ```python
-def retrieve_memories(state):
-    """Retrieves relevant memories for context"""
-    store = get_store()
-    return store.search(
-        namespace=("memories",),
-        query=state.get("next_agent_prompt") or state["user_prompt"],
-        limit=5
-    )
+mem_tools = [
+    create_manage_memory_tool(namespace=("memories",)),
+    create_search_memory_tool(namespace=("memories",)), 
+    report_intermediate_progress
+]
+
+# Added to all agent toolkits:
+for tool in mem_tools:
+    data_cleaning_tools.append(tool)
+    analyst_tools.append(tool) 
+    report_generator_tools.append(tool)
+    file_writer_tools.append(tool)
+    visualization_tools.append(tool)
 ```
 
 ## State Updates Documentation
@@ -888,44 +920,41 @@ The supervisor continuously updates progress:
 
 ### Happy Path Execution Flow
 
-#### Phase 1: Initialization
-1. **START → Supervisor**
-   - **Input**: User prompt, configuration
-   - **State**: Empty state with user request
-   - **Output**: Routing decision to initial_analysis
+**Note**: Based on examination of the actual graph construction in `IntelligentDataDetective_beta_v4.ipynb`, the workflow starts directly with `initial_analysis`, not the supervisor.
 
-2. **Supervisor → Initial Analysis**
-   - **Context Passed**:
-     - User prompt
-     - Available DataFrame IDs
-     - Memory search results
-     - Tool descriptions
-   - **Agent Processing**:
-     - Analyzes dataset structure
-     - Identifies data quality issues
-     - Creates initial description
+#### Phase 1: Initialization  
+1. **START → Initial Analysis** (Direct Edge)
+   - **Input**: User prompt and DataFrame IDs via initial state
+   - **State**: Fresh state with user request
+   - **Agent Processing**: 
+     - Analyzes dataset structure and quality
+     - Creates comprehensive initial description  
+     - Documents findings and recommendations
    - **State Updates**:
      - `initial_description`: Complete dataset analysis
      - `initial_analysis_complete`: True
-     - `messages`: Conversation history with analysis
+     - `messages`: Analysis results and insights
 
-#### Phase 2: Data Preparation
-3. **Initial Analysis → Supervisor**
+2. **Initial Analysis → Supervisor**
    - **Context Received**:
-     - Initial description with identified issues
-     - Completion status
+     - Complete initial description with data insights
+     - Quality issues identification
      - Recommended next steps
    - **Supervisor Processing**:
-     - Reviews analysis results
-     - Updates plan with cleaning tasks
-     - Routes to data cleaner
+     - Increments `_count_` (step 1)
+     - Reviews analysis results 
+     - Searches memory for relevant context
+     - Plans data cleaning phase
+     - **Routing Decision**: Routes to `data_cleaner`
 
-4. **Supervisor → Data Cleaner**
+#### Phase 2: Data Preparation
+3. **Supervisor → Data Cleaner**
+3. **Supervisor → Data Cleaner**
    - **Context Passed**:
      - Initial description findings
-     - Specific cleaning instructions
-     - Available DataFrames
-     - Memory context
+     - Specific cleaning instructions  
+     - Available DataFrames and cleaning tools
+     - Memory context for cleaning patterns
    - **Agent Processing**:
      - Applies data cleaning operations
      - Documents all transformations
@@ -935,18 +964,19 @@ The supervisor continuously updates progress:
      - `data_cleaning_complete`: True
      - `cleaned_dataset_description`: Updated description
 
-#### Phase 3: Statistical Analysis
-5. **Data Cleaner → Supervisor**
+4. **Data Cleaner → Supervisor**
    - **Context Received**:
-     - Cleaning metadata
+     - Cleaning metadata and results
      - Clean dataset description
      - Completion confirmation
    - **Supervisor Processing**:
+     - Increments `_count_` (step 2)
      - Reviews cleaning results
-     - Plans statistical analysis
-     - Routes to analyst
+     - Plans statistical analysis phase
+     - **Routing Decision**: Routes to `analyst`
 
-6. **Supervisor → Analyst**
+#### Phase 3: Statistical Analysis
+5. **Supervisor → Analyst**
    - **Context Passed**:
      - Cleaned dataset information
      - User analytical objectives

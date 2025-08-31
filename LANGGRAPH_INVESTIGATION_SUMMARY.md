@@ -8,9 +8,28 @@ This investigation of the Intelligent Data Detective's LangGraph workflow has re
 
 ### Hub-and-Spoke Design
 - **Central Supervisor**: Orchestrates all agent activities and routing decisions
-- **6 Primary Agents**: Each specialized for specific data analysis tasks
+- **15 Graph Nodes**: Based on actual examination of `IntelligentDataDetective_beta_v4.ipynb`
 - **Fan-out/Fan-in Patterns**: Used for visualization and report generation
-- **Memory Integration**: Persistent context storage and retrieval
+- **Memory Integration**: Persistent context storage and retrieval with `_mem_text()` function
+
+### **Complete Graph Node List** 
+*(From actual compiled graph in notebook)*
+
+1. **`supervisor`** - Central coordinator node (coordinator_node from make_supervisor_node)
+2. **`initial_analysis`** - Dataset exploration and characterization
+3. **`data_cleaner`** - Data quality assessment and cleaning
+4. **`analyst`** - Statistical analysis and insights generation
+5. **`viz_worker`** - Individual visualization creation worker
+6. **`viz_join`** - Aggregates results from parallel viz workers
+7. **`viz_evaluator`** - Evaluates and validates visualizations
+8. **`report_orchestrator`** - Plans and coordinates report generation
+9. **`report_section_worker`** - Writes individual report sections
+10. **`report_join`** - Aggregates parallel section results
+11. **`report_packager`** - Packages final report in multiple formats
+12. **`file_writer`** - Writes all deliverables to disk
+13. **`visualization`** - Visualization orchestrator (visualization_orchestrator)
+14. **`EMERGENCY_MSG`** - Emergency correspondence for error handling
+15. **`FINISH`** - Final completion node (write_output_to_file)
 
 ### State Management Complexity
 - **50+ State Fields**: Comprehensive tracking of workflow progress
@@ -41,20 +60,36 @@ Each agent receives:
 
 ## Workflow Execution Sequence
 
-### Happy Path Flow (13 Steps)
-1. **START → Supervisor**: User request initialization
-2. **Supervisor → Initial Analysis**: Dataset exploration
-3. **Initial Analysis → Supervisor**: Dataset characterization complete
-4. **Supervisor → Data Cleaner**: Quality issue resolution
-5. **Data Cleaner → Supervisor**: Clean dataset available
-6. **Supervisor → Analyst**: Statistical analysis execution
-7. **Analyst → Supervisor**: Insights and patterns identified
-8. **Supervisor → Visualization Orchestrator**: Chart planning
-9. **Viz Fan-out/Fan-in**: Parallel visualization creation and evaluation
-10. **Viz Join → Supervisor**: Complete visualization package
-11. **Supervisor → Report Orchestrator**: Report planning
-12. **Report Fan-out/Fan-in**: Parallel section writing and assembly
-13. **Report Package → File Writer → END**: Final deliverable creation
+### Happy Path Flow (Corrected Based on Actual Graph)
+**Note**: Graph starts directly with `initial_analysis`, not supervisor.
+
+1. **START → Initial Analysis**: Direct edge - dataset exploration and characterization
+2. **Initial Analysis → Supervisor**: Dataset analysis complete, route to next phase
+3. **Supervisor → Data Cleaner**: Quality issue resolution based on initial findings
+4. **Data Cleaner → Supervisor**: Clean dataset available, route to analysis
+5. **Supervisor → Analyst**: Statistical analysis execution on cleaned data
+6. **Analyst → Supervisor**: Insights and patterns identified, route to visualization
+7. **Supervisor → Visualization Orchestrator**: Chart planning and coordination
+8. **Visualization → Viz Workers**: Fan-out to parallel visualization creation
+9. **Viz Workers → Viz Join**: Aggregation of parallel visualization results
+10. **Viz Join → Viz Evaluator**: Quality evaluation of visualizations
+11. **Viz Evaluator → Supervisor** (if accepted) or **→ Analyst** (if revision needed)
+12. **Supervisor → Report Orchestrator**: Report planning and section assignment
+13. **Report Orchestrator → Report Section Workers**: Fan-out to parallel section writing
+14. **Report Section Workers → Report Join**: Aggregation of written sections
+15. **Report Join → Report Packager**: Final report assembly in multiple formats
+16. **Report Packager → Supervisor**: Report ready for file operations
+17. **Supervisor → File Writer**: Write all deliverables to disk
+18. **File Writer → Supervisor**: Files written, workflow assessment
+19. **Supervisor → FINISH**: Completion routing
+20. **FINISH → END**: Workflow termination
+
+### Supervisor Routing Destinations
+Based on `route_from_supervisor()` function, the supervisor can route to any of these 14 destinations:
+- `initial_analysis`, `data_cleaner`, `analyst`
+- `viz_worker`, `viz_join`, `viz_evaluator`, `visualization` 
+- `report_orchestrator`, `report_section_worker`, `report_join`, `report_packager`
+- `file_writer`, `FINISH`, `EMERGENCY_MSG`
 
 ### State Evolution
 - **Initial State**: User prompt + DataFrame IDs
@@ -64,16 +99,52 @@ Each agent receives:
 ## Technical Implementation Details
 
 ### Supervisor Node Logic
+Based on `make_supervisor_node()` and the actual supervisor implementation:
+
 ```python
-# Core supervisor processing pattern
+# Supervisor node processing phases
 def supervisor_node(state: State):
+    # Phase 1: Progress Accounting
     1. Increment _count_ (step tracking)
-    2. Analyze current state and completion flags
-    3. Search memory for relevant context
-    4. Determine next agent via routing LLM
-    5. Update plan and progress tracking
-    6. Generate instructions for next agent
-    7. Return routing command with context
+    2. Analyze completion flags and current state
+    3. Search memory via _mem_text(last_message_text) 
+    4. Update progress tracking with LLM assessment
+    5. Mark completed steps and tasks
+    
+    # Phase 2: Planning
+    6. Generate/update plan based on current progress
+    7. Identify remaining agents and tasks
+    8. Create to-do list for next phase
+    
+    # Phase 3: Routing Decision
+    9. Analyze state to determine next agent
+    10. Generate specific instructions via next_agent_prompt
+    11. Return routing command to selected destination
+    
+    # Routing destinations (14 total):
+    # - Core agents: initial_analysis, data_cleaner, analyst
+    # - Viz pipeline: visualization, viz_worker, viz_join, viz_evaluator  
+    # - Report pipeline: report_orchestrator, report_section_worker, 
+    #                   report_join, report_packager
+    # - File ops: file_writer
+    # - Special: FINISH, EMERGENCY_MSG
+```
+
+### Memory Integration Details
+```python
+# Memory search function used by supervisor
+def _mem_text(query: str, limit: int = 5) -> str:
+    items = in_memory_store.search(("memories",), query=query, limit=limit)
+    return "\n".join(str(it) for it in items)
+
+# Memory tools provided to all agents:
+mem_tools = [
+    create_manage_memory_tool(namespace=("memories",)),
+    create_search_memory_tool(namespace=("memories",)), 
+    report_intermediate_progress
+]
+# Added to: data_cleaning_tools, analyst_tools, report_generator_tools,
+#          file_writer_tools, visualization_tools
 ```
 
 ### Agent Node Pattern
