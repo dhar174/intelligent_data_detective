@@ -22,18 +22,25 @@ graph TD;
 	FINISH(FINISH)
 	__end__([<p>__end__</p>]):::last
 	EMERGENCY_MSG --> supervisor;
+	FINISH -. &nbsp;END&nbsp; .-> __end__;
+	FINISH -.-> file_writer;
+	FINISH -.-> supervisor;
 	__start__ --> initial_analysis;
 	analyst --> supervisor;
 	data_cleaner --> supervisor;
 	file_writer --> supervisor;
 	initial_analysis --> supervisor;
+	report_join --> report_packager;
 	report_join --> supervisor;
+	report_orchestrator --> report_join;
 	report_orchestrator -.-> report_section_worker;
 	report_orchestrator --> supervisor;
 	report_packager --> supervisor;
 	report_section_worker --> report_join;
+	report_section_worker --> supervisor;
 	supervisor -.-> EMERGENCY_MSG;
 	supervisor -.-> FINISH;
+	supervisor -. &nbsp;END&nbsp; .-> __end__;
 	supervisor -.-> analyst;
 	supervisor -.-> data_cleaner;
 	supervisor -.-> file_writer;
@@ -51,8 +58,8 @@ graph TD;
 	viz_evaluator -. &nbsp;Accepted&nbsp; .-> report_orchestrator;
 	viz_evaluator --> supervisor;
 	viz_join --> supervisor;
+	viz_worker --> supervisor;
 	viz_worker --> viz_join;
-	FINISH --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
