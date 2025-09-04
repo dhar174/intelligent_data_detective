@@ -62,8 +62,7 @@ graph TD;
 	viz_worker --> viz_join;
 	EMERGENCY_MSG --> __end__;
 	FINISH --> __end__;
-	file_writer -.-> file_writer;
-	supervisor -.-> supervisor;
+	supervisor -. &nbsp;Self-loop&nbsp; .-> supervisor;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
