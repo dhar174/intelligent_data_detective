@@ -1,0 +1,104 @@
+# Memory Configuration for Intelligent Data Detective
+# Enhanced Memory Categorization System
+
+memory:
+  # Memory kind configuration with limits per category
+  kinds:
+    conversation:
+      limit: 5
+      description: "User interactions, questions, and dialogue context"
+    
+    analysis:
+      limit: 8
+      description: "Statistical analysis results, correlations, and data insights"
+    
+    cleaning:
+      limit: 5
+      description: "Data cleaning steps, preprocessing actions, and quality improvements"
+    
+    visualization:
+      limit: 4
+      description: "Chart creation, graph generation, and visual representation details"
+    
+    insights:
+      limit: 6
+      description: "Key findings, conclusions, and synthesized knowledge"
+    
+    errors:
+      limit: 3
+      description: "Error patterns, failure modes, and troubleshooting information"
+  
+  # Default settings
+  default_limit: 5
+  fallback_limit: 10
+  
+  # Namespace configuration
+  namespaces:
+    # New categorized namespaces
+    categorized_format: "('memories', '<kind>')"
+    
+    # Legacy fallback namespaces
+    user_specific_format: "('<user_id>', 'memories')"  
+    generic_format: "('memories',)"
+
+# Agent memory specialization mapping
+agents:
+  initial_analysis:
+    memory_kinds: ["conversation", "analysis"]
+    description: "Understands user requirements and leverages previous analysis insights"
+  
+  data_cleaner:
+    memory_kinds: ["conversation", "cleaning", "analysis"]
+    description: "Remembers cleaning requirements and previous preprocessing steps"
+  
+  analyst:
+    memory_kinds: ["conversation", "analysis", "insights"]
+    description: "Accesses analytical context and synthesized knowledge"
+  
+  viz_worker:
+    memory_kinds: ["conversation", "analysis", "visualization"]
+    description: "Creates relevant visualizations based on analysis and user needs"
+  
+  report_orchestrator:
+    memory_kinds: ["conversation", "analysis", "visualization", "insights"]
+    description: "Plans comprehensive reports using all analytical context"
+  
+  section_worker:
+    memory_kinds: ["conversation", "analysis", "visualization", "insights"]
+    description: "Writes report sections with full context awareness"
+  
+  report_packager:
+    memory_kinds: ["conversation", "analysis", "cleaning", "visualization", "insights"]
+    description: "Packages final reports with complete workflow memory"
+  
+  file_writer:
+    memory_kinds: ["conversation", "analysis", "cleaning", "visualization"]
+    description: "File operations with comprehensive context"
+  
+  supervisor:
+    memory_kinds: ["conversation", "analysis", "cleaning", "visualization", "insights"]
+    description: "Orchestrates workflow with access to all memory categories"
+
+# Migration and compatibility settings
+compatibility:
+  preserve_legacy_namespace: true
+  fallback_to_generic: true
+  gradual_migration: true
+  
+  # Backward compatibility warnings
+  warn_legacy_usage: false
+  log_namespace_access: false
+
+# Performance and optimization
+performance:
+  cache_memory_results: true
+  cache_ttl_seconds: 120
+  max_concurrent_searches: 5
+  search_timeout_seconds: 10
+
+# Debugging and monitoring
+debugging:
+  log_memory_operations: false
+  track_memory_categories: true
+  export_memory_metrics: false
+  memory_usage_reporting: false
