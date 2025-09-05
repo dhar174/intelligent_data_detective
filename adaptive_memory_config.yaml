@@ -1,0 +1,160 @@
+# Adaptive Memory Retrieval Configuration
+# Dynamic memory window sizing with per-agent profiles
+
+adaptive_retrieval:
+  global:
+    default_memory_token_budget: 900        # soft cap for memory section
+    hard_token_budget_fraction: 0.35        # max fraction of full prompt tokens
+    fallback_limit: 5
+    intent_boost_factor: 0.15               # boost factor for analytical queries
+    enable_intent_adjustments: true
+    enable_diagnostics: false               # set to true for verbose debugging
+  
+  agents:
+    initial_analysis:
+      kinds: ["conversation", "analysis"]
+      min_items: 3
+      max_items: 10
+      target_items: 7
+      token_budget: 600
+      weighting_overrides: 
+        similarity: 0.6
+        importance: 0.2
+        recency: 0.15
+        usage: 0.05
+    
+    data_cleaner:
+      kinds: ["cleaning", "analysis", "conversation"]
+      min_items: 2
+      max_items: 8
+      target_items: 5
+      token_budget: 450
+      weighting_overrides:
+        similarity: 0.5
+        importance: 0.3
+        recency: 0.15
+        usage: 0.05
+    
+    analyst:
+      kinds: ["analysis", "cleaning", "conversation"]
+      min_items: 5
+      max_items: 18
+      target_items: 12
+      token_budget: 1000
+      weighting_overrides:
+        similarity: 0.4
+        importance: 0.35
+        recency: 0.15
+        usage: 0.1
+    
+    visualization:
+      kinds: ["visualization", "analysis"]
+      min_items: 3
+      max_items: 12
+      target_items: 8
+      token_budget: 650
+      weighting_overrides:
+        similarity: 0.55
+        importance: 0.25
+        recency: 0.15
+        usage: 0.05
+    
+    report_orchestrator:
+      kinds: ["analysis", "visualization", "cleaning"]
+      min_items: 4
+      max_items: 15
+      target_items: 10
+      token_budget: 800
+      weighting_overrides:
+        similarity: 0.45
+        importance: 0.3
+        recency: 0.15
+        usage: 0.1
+    
+    file_writer:
+      kinds: ["analysis", "visualization"]
+      min_items: 1
+      max_items: 6
+      target_items: 4
+      token_budget: 300
+      weighting_overrides:
+        similarity: 0.6
+        importance: 0.2
+        recency: 0.15
+        usage: 0.05
+    
+    supervisor:
+      kinds: ["conversation", "analysis", "cleaning", "visualization", "insights"]
+      min_items: 6
+      max_items: 20
+      target_items: 12
+      token_budget: 1200
+      weighting_overrides:
+        similarity: 0.4
+        importance: 0.3
+        recency: 0.2
+        usage: 0.1
+
+# Task phase specific overrides (optional)
+phase_overrides:
+  exploration:
+    # During exploration phase, prefer more diverse memories
+    token_budget_multiplier: 1.2
+    min_items_boost: 1
+  
+  analysis:
+    # During analysis, focus on analytical memories
+    kinds_boost: ["analysis", "insights"]
+    importance_weight_boost: 0.1
+  
+  reporting:
+    # During reporting, need comprehensive context
+    token_budget_multiplier: 1.5
+    max_items_boost: 3
+
+# Intent-based adjustments
+intent_patterns:
+  analytical:
+    keywords: ["trend", "correlation", "outlier", "pattern", "analysis", "insight", 
+               "statistic", "distribution", "anomaly", "relationship", "significant"]
+    kind_boosts:
+      analysis: 1.2
+      insights: 1.15
+  
+  cleaning:
+    keywords: ["clean", "missing", "duplicate", "quality", "preprocessing", "transform"]
+    kind_boosts:
+      cleaning: 1.2
+      analysis: 1.1
+  
+  visualization:
+    keywords: ["chart", "graph", "plot", "visual", "display", "show", "image"]
+    kind_boosts:
+      visualization: 1.3
+      analysis: 1.1
+
+# Token estimation configuration
+token_estimation:
+  method: "heuristic"  # options: "heuristic", "tiktoken" (future)
+  avg_chars_per_token: 4.0
+  safety_margin: 1.1   # 10% safety margin for token estimates
+
+# Performance and debugging
+performance:
+  candidate_expansion_factor: 3  # retrieve 3x max_items for better ranking
+  enable_caching: true
+  cache_ttl_seconds: 300
+  max_diagnostic_candidates: 25
+
+# Metrics collection
+metrics:
+  enable_collection: true
+  detailed_timing: false
+  export_interval_seconds: 3600
+
+# Backward compatibility
+compatibility:
+  legacy_fallback_enabled: true
+  fallback_on_errors: true
+  preserve_existing_behavior: true
+  migration_mode: false  # set to true for gradual migration
