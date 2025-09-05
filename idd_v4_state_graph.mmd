@@ -21,22 +21,28 @@ graph TD;
 	EMERGENCY_MSG(EMERGENCY_MSG)
 	FINISH(FINISH)
 	__end__([<p>__end__</p>]):::last
-	EMERGENCY_MSG --> supervisor;
 	__start__ --> initial_analysis;
 	analyst --> supervisor;
 	data_cleaner --> supervisor;
-	file_writer --> supervisor;
+	file_writer -. report_done&report_ready&already_wrote .-> __end__;
+	file_writer -. otherwise .-> supervisor;
 	initial_analysis --> supervisor;
+	report_join --> report_packager;
 	report_join --> supervisor;
+	report_orchestrator --> report_join;
 	report_orchestrator -.-> report_section_worker;
 	report_orchestrator --> supervisor;
-	report_packager --> supervisor;
+	report_packager -. report_done&report_ready&already_wrote .-> __end__;
+	report_packager -. report_done&report_ready&!already_wrote .-> file_writer;
+	report_packager -. otherwise .-> supervisor;
 	report_section_worker --> report_join;
+	report_section_worker --> supervisor;
 	supervisor -.-> EMERGENCY_MSG;
 	supervisor -.-> FINISH;
+	supervisor -. report_done&report_ready&already_wrote .-> __end__;
 	supervisor -.-> analyst;
 	supervisor -.-> data_cleaner;
-	supervisor -.-> file_writer;
+	supervisor -. report_done&report_ready&!already_wrote .-> file_writer;
 	supervisor -.-> initial_analysis;
 	supervisor -.-> report_join;
 	supervisor -.-> report_orchestrator;
@@ -51,8 +57,13 @@ graph TD;
 	viz_evaluator -. &nbsp;Accepted&nbsp; .-> report_orchestrator;
 	viz_evaluator --> supervisor;
 	viz_join --> supervisor;
+	viz_join --> viz_evaluator;
+	viz_worker --> supervisor;
 	viz_worker --> viz_join;
+	EMERGENCY_MSG --> __end__;
 	FINISH --> __end__;
+	file_writer -.-> file_writer;
+	supervisor -.-> supervisor;
 	classDef default fill:#f2f0ff,line-height:1.2
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
