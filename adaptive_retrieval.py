@@ -781,9 +781,13 @@ class AdaptiveRetriever:
 
 
 # Feature flag control
+def parse_env_bool(value: str) -> bool:
+    """Parse a string environment variable to boolean, supporting common values."""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 def is_adaptive_retrieval_enabled() -> bool:
     """Check if adaptive retrieval is enabled via environment variable."""
-    return os.getenv("ADAPTIVE_RETRIEVAL_ENABLED", "false").lower() == "true"
+    return parse_env_bool(os.getenv("ADAPTIVE_RETRIEVAL_ENABLED", "false"))
 
 
 def create_adaptive_retriever(store: InMemoryStore, config_path: Optional[str] = None) -> Optional[AdaptiveRetriever]:
