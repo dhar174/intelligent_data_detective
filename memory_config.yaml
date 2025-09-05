@@ -1,5 +1,41 @@
 # Memory Configuration for Intelligent Data Detective
-# Enhanced Memory Categorization System
+# Enhanced Memory Categorization System with Lifecycle Management
+
+memory_policy:
+  defaults:
+    ttl_seconds: 604800          # 7 days
+    max_items: 1500
+    max_items_per_kind: 400
+    min_importance: 0.05
+    decay:
+      half_life_seconds: 259200   # 3 days
+      floor: 0.05
+  kinds:
+    conversation:
+      ttl_seconds: 259200         # 3 days
+      max_items: 600
+    analysis:
+      ttl_seconds: 1209600        # 14 days
+      max_items: 500
+    cleaning:
+      ttl_seconds: 1209600        # 14 days
+      max_items: 400
+    visualization:
+      ttl_seconds: 604800         # 7 days
+      max_items: 300
+    insights:
+      ttl_seconds: 1814400        # 21 days - keep insights longer
+      max_items: 600
+    errors:
+      ttl_seconds: 604800         # 7 days
+      max_items: 200
+
+ranking:
+  weights:
+    similarity: 0.55
+    importance: 0.25
+    recency: 0.15
+    usage: 0.05
 
 memory:
   # Memory kind configuration with limits per category
