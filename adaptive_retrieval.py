@@ -523,7 +523,7 @@ class AdaptiveRetriever:
         
         # Recency factor (exponential decay)
         age_seconds = time.time() - record.created_at
-        half_life = MEMORY_POLICIES.get(record.kind, type('obj', (object,), {"decay_half_life_seconds": 259200})()).decay_half_life_seconds
+        half_life = getattr(MEMORY_POLICIES.get(record.kind), 'decay_half_life_seconds', 259200)
         recency_factor = math.exp(-age_seconds / half_life)
         
         # Usage factor (logarithmic scaling)
