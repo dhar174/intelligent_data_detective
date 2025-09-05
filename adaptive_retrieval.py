@@ -236,7 +236,10 @@ class AdaptiveRetriever:
             # Step 5: Update metrics
             self.metrics["adaptive_memory_selected_avg"] += len(selected)
             self.metrics["adaptive_memory_token_usage"] += token_usage
-            self.metrics["adaptive_memory_candidates_avg"] += len(candidates)  # Fix: accumulate candidates
+            self.metrics["adaptive_memory_candidates_avg"] = (
+                (self.metrics["adaptive_memory_candidates_avg"] * (self.metrics["adaptive_memory_requests_total"] - 1) + len(candidates))
+                / self.metrics["adaptive_memory_requests_total"]
+            )
             if truncated:
                 self.metrics["adaptive_memory_truncated_total"] += 1
             
