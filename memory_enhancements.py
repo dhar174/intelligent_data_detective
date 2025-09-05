@@ -135,10 +135,12 @@ def load_memory_policy(config_path: Optional[str] = None) -> tuple[Dict[str, Mem
         kinds_config = config.get("memory_policy", {}).get("kinds", {})
         for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
             kind_config = kinds_config.get(kind, {})
+            # For kinds without specific config, inherit from defaults
+            kind_max_items = kind_config.get("max_items", default_policy.max_items)
             policies[kind] = MemoryPolicy(
                 ttl_seconds=kind_config.get("ttl_seconds", default_policy.ttl_seconds),
-                max_items=kind_config.get("max_items", default_policy.max_items_per_kind),
-                max_items_per_kind=kind_config.get("max_items", default_policy.max_items_per_kind),
+                max_items=kind_max_items,
+                max_items_per_kind=kind_max_items,
                 min_importance=kind_config.get("min_importance", default_policy.min_importance),
                 decay_half_life_seconds=default_policy.decay_half_life_seconds,
                 decay_floor=default_policy.decay_floor

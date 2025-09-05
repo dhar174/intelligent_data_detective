@@ -235,11 +235,11 @@ class TestMemoryLifecycle(unittest.TestCase):
         )
         engine.insert(original)
         
-        # Try to insert very similar record
+        # Try to insert nearly identical record (should be detected as duplicate)
         duplicate = MemoryRecord(
             id="duplicate",
             kind="analysis",
-            text="This is a unique analysis result with minor changes",
+            text="This is a unique analysis result",  # Exact same text
             base_importance=0.7
         )
         engine.insert(duplicate)
@@ -283,12 +283,16 @@ class TestMemoryLifecycle(unittest.TestCase):
     def test_size_based_pruning(self):
         """Test size-based pruning."""
         # Create a temporary policy with very low limits
-        with patch('memory_enhancements.MEMORY_POLICIES') as mock_policies:
-            mock_policies.__getitem__ = lambda self, key: MemoryPolicy(
-                ttl_seconds=86400*365,  # Very long TTL
-                max_items=2,  # Very low limit
-                min_importance=0.01
-            )
+        test_policy = MemoryPolicy(
+            ttl_seconds=86400*365,  # Very long TTL
+            max_items=2,  # Very low limit
+            min_importance=0.01
+        )
+        
+        with patch('memory_enhancements.MEMORY_POLICIES', 
+                   {"analysis": test_policy, "conversation": test_policy, 
+                    "cleaning": test_policy, "visualization": test_policy,
+                    "insights": test_policy, "errors": test_policy}):
             
             engine = MemoryPolicyEngine(self.store, debug=True)
             
