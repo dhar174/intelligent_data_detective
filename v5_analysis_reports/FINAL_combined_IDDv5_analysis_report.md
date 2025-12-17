@@ -45,7 +45,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 | `run_config` print (Cell 93) | Pa | M | M | P | M |
 
 ### Inaccuracies / Inconsistencies Detected
-- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head`/`describe_dataset` and uses simplified agent names that do **not** exist in the notebook’s tooling cell; understates the actual toolset and omits memory/hooks/runtime context. Routes and nodes are described only generically.
+- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head`/`describe_dataset` and uses simplified agent names that are **absent in the current notebook toolset**; understates the actual toolset and omits memory/hooks/runtime context. Routes and nodes are described only generically.
 - **IntelligentDataDetective_Analysis.md**: References an `AgentState`/`StatefulGraph` pattern and “unit tests” for `DataFrameRegistry` in Cell 16 that are **not present**. Tooling and prompts are described with names that do not match the notebook (e.g., `execute_python_code` emphasized while many concrete tools exist).
 - **Jules Analysis**: Generally accurate, but notes like “RuntimeCtx holds agent instances” are not reflected in the notebook (RuntimeCtx manages paths/directories, not agent objects).
 - Minor omissions: Several reports skip the dependency check cell, output capping utilities, debug helpers, graph visualization display, and the function-calling helper import.
@@ -64,7 +64,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 
 ### 3) Custom OpenAI Client & Dependency Check (Cells 10–15)
 - Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenAI` overriding `_get_request_payload_mod/_get_request_payload` to normalize roles/parameters for responses API and o-series models.
-- Version probe via Jupyter magic `!pip show --verbose langchain_experimental`.
+- Version probe for `langchain_experimental` via Jupyter magic `!pip show --verbose langchain_experimental`.
 
 ### 4) Models, Registry, State (Cells 16–24)
 - Pydantic models (`BaseNoExtrasModel`, `AnalysisConfig`, `CleaningMetadata`, `InitialDescription`, `VizSpec`, `AnalysisInsights`, `ImagePayload`, `DataVisualization`, `VisualizationResults`, `ReportResults`, `DataQueryParams`, `QueryDataframeInput`, `FileResult`, `ListOfFiles`, `DataFrameRegistryError`, `ProgressReport`, plan/task structures).
