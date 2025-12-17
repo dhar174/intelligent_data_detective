@@ -201,7 +201,7 @@ print('✅ Pydantic models validated')
 
 **Documentation files:**
 - `IntelligentDataDetective_Documentation.md` - Notebook structure analysis
-- `idd_v4_technical_review.md` - Technical implementation review
+- `idd_v5_technical_review.md` - Technical implementation review
 - `Project_Tech_Spec_Intelligent_Data_Detective.md` - Technical specification
 
 **Generated artifacts:**
