@@ -7,8 +7,9 @@ This document synthesizes **all reports in `/v5_analysis_reports`** and the **no
 - `IDD_v5_analysis_report.md`
 - `IntelligentDataDetective_Analysis.md`
 - `IntelligentDataDetective_beta_v5_Report.md`
+- `IntelligentDataDetective_beta_v5_function_status_report.md`
 - `IntelligentDataDetective_v5_Analysis_Jules.md`
-- Notebook: `IntelligentDataDetective_beta_v5.ipynb` (96 cells, all `execution_count=None`)
+- Notebook: `IntelligentDataDetective_beta_v5.ipynb` (96 cells in current snapshot, all `execution_count=None`; earlier reports mention 94)
 
 Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I = Incorrect**
 
