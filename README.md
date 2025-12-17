@@ -235,7 +235,7 @@ flowchart LR
 
 1. **Open the main notebook**:
    ```bash
-   jupyter notebook IntelligentDataDetective_beta_v3.ipynb
+   jupyter notebook IntelligentDataDetective_beta_v5.ipynb
    ```
 
 2. **Configure your analysis**:
@@ -264,7 +264,7 @@ flowchart LR
 
 ```python
 # Note: This project is currently notebook-based. Use the Jupyter notebook for analysis.
-# Open IntelligentDataDetective_beta_v3.ipynb and run the cells
+# Open IntelligentDataDetective_beta_v5.ipynb and run the cells
 
 # Example of how to use the compiled graph from the notebook:
 # After running the notebook setup cells (e.g., cells 1–5, which import libraries, initialize variables, and load data), you can use:

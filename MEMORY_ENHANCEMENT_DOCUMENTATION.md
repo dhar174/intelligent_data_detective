@@ -164,7 +164,7 @@ memory_id = store_categorized_memory(state, config, in_memory_store)
 
 ### Notebook Integration
 
-The enhanced memory functions are integrated into `IntelligentDataDetective_beta_v4.ipynb`:
+The enhanced memory functions are integrated into `IntelligentDataDetective_beta_v5.ipynb`:
 
 1. **Memory Configuration** (Cell 35): Configuration constants and mappings
 2. **Enhanced Functions** (Cell 35): Core memory categorization functions  
