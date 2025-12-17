@@ -1,6 +1,6 @@
 # FINAL Combined Analysis – IntelligentDataDetective_beta_v5.ipynb
 
-This document synthesizes **all reports in `/v5_analysis_reports`** and the **notebook source (`IntelligentDataDetective_beta_v5.ipynb`)**. It includes a coverage cross‑reference matrix, flags inaccuracies, and provides a comprehensive, cell-by-cell analysis of every component (imports, classes, functions, prompts, nodes, graph wiring, streaming, and persistence).
+This document synthesizes **all reports in `/v5_analysis_reports`** and the **notebook source (`IntelligentDataDetective_beta_v5.ipynb`)**. It includes a coverage cross-reference matrix, flags inaccuracies, and provides a comprehensive, cell-by-cell analysis of every component (imports, classes, functions, prompts, nodes, graph wiring, streaming, and persistence).
 
 ## Sources Reviewed
 - `File_analysis_report_chatgpt_agent.md`
@@ -63,7 +63,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 
 ### 3) Custom OpenAI Client & Dependency Check (Cells 10–15)
 - Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenai` overriding `_get_request_payload_mod/_get_request_payload` to normalize roles/parameters for responses API and o‑series models.
-- Version probe via `!pip show --verbose langchain_experimental`.
+- Version probe via Jupyter magic `!pip show --verbose langchain_experimental`.
 
 ### 4) Models, Registry, State (Cells 16–24)
 - Pydantic models (`BaseNoExtrasModel`, `AnalysisConfig`, `CleaningMetadata`, `InitialDescription`, `VizSpec`, `AnalysisInsights`, `ImagePayload`, `DataVisualization`, `VisualizationResults`, `ReportResults`, `DataQueryParams`, `QueryDataframeInput`, `FileResult`, `ListOfFiles`, `DataFrameRegistryError`, `ProgressReport`, plan/task structures).
@@ -83,7 +83,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 - Tool-call parsing/formatting: `_safe_json_loads`, `extract_tool_calls`, `retry_extract_tool_calls`, Qwen3 pre/post hooks, `is_final_answer`, `extract_final_text`, tool deduplication, conversation summarization/collapse (`make_pre_model_hook` and helpers), token counting, protection windows.
 
 ### 8) LLM Setup, Agent Factories, Supervisor (Cells 40–45)
-- Global toggles for strict JSON schema and manual binding; LLM instantiation for multiple roles (big_picture, router, reply, plan, replan, progress, todo, low_reasoning) with responses API or local ngrok path when `use_local_llm` is true.
+- Global toggles for strict JSON schema and manual binding; LLM instantiation for multiple roles (`big_picture`, `router`, `reply`, `plan`, `replan`, `progress`, `todo`, `low_reasoning`) with responses API or local ngrok path when `use_local_llm` is true.
 - `_dedupe_tools`, model-doc formatting utilities.
 - Agent factory functions to build data cleaner, initial analyst, analyst, file writer, visualization, viz evaluator, report generator; memory updater; `make_supervisor_node` with routing/deduplication/plan consolidation; `Router` model.
 
