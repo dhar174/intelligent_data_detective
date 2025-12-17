@@ -15,7 +15,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 
 ### Coverage Cross-Reference Matrix (notebook elements vs. reports)
 
-| Notebook Element / Cell Group | ChatGPT Agent | IDD_v5_analysis | IntelligentDataDetective_Analysis | Function Status | Jules Analysis |
+| Notebook Element / Cell Group | ChatGPT Agent Report | IDD_v5_analysis_report | IntelligentDataDetective_Analysis | Function Status Report | Jules Analysis |
 | --- | --- | --- | --- | --- | --- |
 | Intro + env flag + pip bootstrap (Cells 0–5) | P | Pa | Pa | P | P |
 | Core imports, helpers, agent member classes (Cell 8) | P | Pa | Pa | P | P |
@@ -45,8 +45,8 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 | `run_config` print (Cell 93) | Pa | M | M | P | M |
 
 ### Inaccuracies / Inconsistencies Detected
-- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head`/`describe_dataset` and uses simplified agent names that are **absent in the current notebook toolset**; understates the actual toolset and omits memory/hooks/runtime context. Routes and nodes are described only generically.
-- **IntelligentDataDetective_Analysis.md**: References an `AgentState`/`StatefulGraph` pattern and “unit tests” for `DataFrameRegistry` in Cell 16 that are **not present**. Tooling and prompts are described with names that do not match the notebook (e.g., `execute_python_code` emphasized while many concrete tools exist).
+- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head`/`describe_dataset` for the Initial Analysis Agent (see section “Agent Configuration & Tools”), yet these tool names do **not** appear in the tooling mega-cell (Cells 33–34) of the current notebook; also uses simplified agent labels and omits memory/hooks/runtime context.
+- **IntelligentDataDetective_Analysis.md**: Describes an `AgentState`/`StatefulGraph` pattern and claims `DataFrameRegistry` unit tests in “Cell 16” that are absent from the notebook; tooling examples (e.g., heavy reliance on `execute_python_code`) do not match the explicit tools defined in Cells 32–34.
 - **Jules Analysis**: Generally accurate, but notes like “RuntimeCtx holds agent instances” are not reflected in the notebook (RuntimeCtx manages paths/directories, not agent objects).
 - Minor omissions: Several reports skip the dependency check cell, output capping utilities, debug helpers, graph visualization display, and the function-calling helper import.
 
@@ -63,7 +63,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 - Agent member classes enumerating node names; `agent_list_default_generator` produces ordered agent list.
 
 ### 3) Custom OpenAI Client & Dependency Check (Cells 10–15)
-- Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenAI` overriding `_get_request_payload_mod/_get_request_payload` to normalize roles/parameters for responses API and o-series models.
+- Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenAI` overriding `_get_request_payload_mod` and `_get_request_payload` to normalize roles/parameters for responses API and o-series models.
 - Version probe for `langchain_experimental` via Jupyter magic `!pip show --verbose langchain_experimental`.
 
 ### 4) Models, Registry, State (Cells 16–24)
