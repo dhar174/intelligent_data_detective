@@ -2,7 +2,7 @@
 """
 Unit tests for Intelligent Data Detective components.
 
-This file tests the key components from the IntelligentDataDetective_beta_v3.ipynb notebook
+This file tests the key components from the IntelligentDataDetective_beta_v5.ipynb notebook
 to ensure they work correctly and catch any bugs.
 """
 

@@ -1,8 +1,8 @@
-# Analysis of IntelligentDataDetective_beta_v3.ipynb
+# Analysis of IntelligentDataDetective_beta_v5.ipynb
 
 ## 1. Introduction
 
-This document provides a detailed analysis of the `IntelligentDataDetective_beta_v3.ipynb` Jupyter Notebook. The notebook implements a multi-agent system for automated data analysis, cleaning, visualization, and report generation. This analysis aims to break down the notebook's structure, components, and functionality to understand its capabilities and potential areas for improvement or future development.
+This document provides a detailed analysis of the `IntelligentDataDetective_beta_v5.ipynb` Jupyter Notebook. The notebook implements a multi-agent system for automated data analysis, cleaning, visualization, and report generation. This analysis aims to break down the notebook's structure, components, and functionality to understand its capabilities and potential areas for improvement or future development.
 
 ## 2. Architecture
 ### 2.1. Overview
@@ -148,7 +148,7 @@ Guides the main Analyst Agent.
     #### 4.6.1. Purpose
     #### 4.6.2. Tools
 
-## 5. Detailed Cell-by-Cell Analysis of `IntelligentDataDetective_beta_v3.ipynb`
+## 5. Detailed Cell-by-Cell Analysis of `IntelligentDataDetective_beta_v5.ipynb`
 ### 5.1. Cell 1: Environment Setup and Package Installation
 ### 5.2. Cell 2: Essential Imports
 ### 5.3. Cell 3: Working Directory Definition
@@ -171,7 +171,7 @@ Guides the main Analyst Agent.
 
 ## 7. Conclusion
 
-The `IntelligentDataDetective_beta_v3.ipynb` notebook presents a powerful and sophisticated framework for automated data analysis using a multi-agent system orchestrated by LangGraph. It effectively combines the strengths of Large Language Models for reasoning and task delegation with a robust set of Python tools for data manipulation, analysis, visualization, and reporting.
+The `IntelligentDataDetective_beta_v5.ipynb` notebook presents a powerful and sophisticated framework for automated data analysis using a multi-agent system orchestrated by LangGraph. It effectively combines the strengths of Large Language Models for reasoning and task delegation with a robust set of Python tools for data manipulation, analysis, visualization, and reporting.
 
 **Key Strengths:**
 

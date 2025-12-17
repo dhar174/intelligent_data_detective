@@ -8,7 +8,7 @@ This investigation of the Intelligent Data Detective's LangGraph workflow has re
 
 ### Hub-and-Spoke Design
 - **Central Supervisor**: Orchestrates all agent activities and routing decisions
-- **15 Graph Nodes**: Based on actual examination of `IntelligentDataDetective_beta_v4.ipynb`
+- **15 Graph Nodes**: Based on actual examination of `IntelligentDataDetective_beta_v5.ipynb`
 - **Fan-out/Fan-in Patterns**: Used for visualization and report generation
 - **Memory Integration**: Persistent context storage and retrieval with `_mem_text()` function
 

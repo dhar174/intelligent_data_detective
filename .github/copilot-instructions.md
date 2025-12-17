@@ -31,7 +31,7 @@ python3 -m pytest test_error_handling_framework.py -v
 
 This is a **Jupyter notebook-based multi-agent system** using LangChain and LangGraph:
 
-- **Main implementation**: `IntelligentDataDetective_beta_v4.ipynb` (27 cells)
+- **Main implementation**: `IntelligentDataDetective_beta_v5.ipynb` (27 cells)
 - **Multi-agent workflow**: Data Cleaner → Analyst → Visualization → Report Generator
 - **Execution time**: 6-25 minutes for complete analysis (NEVER CANCEL)
 - **API requirements**: OpenAI API key (required), Tavily API key (optional)
@@ -54,10 +54,10 @@ export TAVILY_API_KEY="your-tavily-api-key"  # Optional
 **Primary execution method** - Jupyter notebook:
 ```bash
 # Start Jupyter (takes ~5-10 seconds)
-jupyter notebook IntelligentDataDetective_beta_v4.ipynb
+jupyter notebook IntelligentDataDetective_beta_v5.ipynb
 
 # OR for JupyterLab
-jupyter lab IntelligentDataDetective_beta_v4.ipynb
+jupyter lab IntelligentDataDetective_beta_v5.ipynb
 ```
 
 **Quick validation** (no API keys needed):
@@ -138,7 +138,7 @@ print('✅ Basic data analysis workflow validated')
 ```
 
 ### Scenario 2: Notebook Cell Execution (if API keys available)
-1. Open `IntelligentDataDetective_beta_v4.ipynb`
+1. Open `IntelligentDataDetective_beta_v5.ipynb`
 2. Run cells 1-5 (setup and imports) - takes ~10-15 seconds - NEVER CANCEL
 3. Verify no import errors
 4. Check sample data loading works correctly
@@ -193,7 +193,7 @@ print('✅ Pydantic models validated')
 ## Project Structure Reference
 
 **Key files:**
-- `IntelligentDataDetective_beta_v4.ipynb` - Main implementation (27 cells)
+- `IntelligentDataDetective_beta_v5.ipynb` - Main implementation (27 cells)
 - `test_intelligent_data_detective.py` - Core functionality tests (22 tests)
 - `test_error_handling_framework.py` - Error handling tests (16 tests)
 - `README.md` - Project documentation and usage examples
@@ -264,7 +264,7 @@ black test_intelligent_data_detective.py
 # 5. Manual scenario testing (see scenarios above)
 ```
 
-**For notebook changes**: Always test with `jupyter notebook IntelligentDataDetective_beta_v4.ipynb` and run at least the first 5 cells.
+**For notebook changes**: Always test with `jupyter notebook IntelligentDataDetective_beta_v5.ipynb` and run at least the first 5 cells.
 
 **For algorithm changes**: Always run complete manual validation scenarios and check that test suite still passes.
 

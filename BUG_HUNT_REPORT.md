@@ -1,6 +1,6 @@
-# Bug Hunt Report: IntelligentDataDetective_beta_v3.ipynb
+# Bug Hunt Report: IntelligentDataDetective_beta_v5.ipynb
 
-This document summarizes all bugs, errors, and typos found and fixed during the comprehensive analysis of the IntelligentDataDetective_beta_v3.ipynb notebook.
+This document summarizes all bugs, errors, and typos found and fixed during the comprehensive analysis of the IntelligentDataDetective_beta_v5.ipynb notebook.
 
 ## Bugs Found and Fixed
 
