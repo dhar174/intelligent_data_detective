@@ -9,9 +9,10 @@ This document synthesizes **all reports in `/v5_analysis_reports`** and the **no
 - `IntelligentDataDetective_beta_v5_Report.md`
 - `IntelligentDataDetective_beta_v5_function_status_report.md`
 - `IntelligentDataDetective_v5_Analysis_Jules.md`
-- Notebook: `IntelligentDataDetective_beta_v5.ipynb` (96 cells in current snapshot, all `execution_count=None`; earlier reports mention 94)
+- Notebook: `IntelligentDataDetective_beta_v5.ipynb` (96 cells counted in the current snapshot, all `execution_count=None`; some earlier reports list 94, likely from older revisions or badge/markdown additions)
 
 Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I = Incorrect**
+Column-to-source mapping: ChatGPT Agent Report → `File_analysis_report_chatgpt_agent.md`; IDD_v5_analysis_report → `IDD_v5_analysis_report.md`; IntelligentDataDetective_Analysis → `IntelligentDataDetective_Analysis.md`; Function Status Report → `IntelligentDataDetective_beta_v5_function_status_report.md`; Jules Analysis → `IntelligentDataDetective_v5_Analysis_Jules.md`.
 
 ### Coverage Cross-Reference Matrix (notebook elements vs. reports)
 
@@ -45,9 +46,9 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 | `run_config` print (Cell 93) | Pa | M | M | P | M |
 
 ### Inaccuracies / Inconsistencies Detected
-- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head`/`describe_dataset` for the Initial Analysis Agent (see section “Agent Configuration & Tools”), yet these tool names do **not** appear in the tooling mega-cell (Cells 33–34) of the current notebook; also uses simplified agent labels and omits memory/hooks/runtime context.
-- **IntelligentDataDetective_Analysis.md**: Describes an `AgentState`/`StatefulGraph` pattern and claims `DataFrameRegistry` unit tests in “Cell 16” that are absent from the notebook; tooling examples (e.g., heavy reliance on `execute_python_code`) do not match the explicit tools defined in Cells 32–34.
-- **Jules Analysis**: Generally accurate, but notes like “RuntimeCtx holds agent instances” are not reflected in the notebook (RuntimeCtx manages paths/directories, not agent objects).
+- **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head` / `describe_dataset` for the Initial Analysis Agent (see section “Agent Configuration & Tools”); those exact strings do **not** appear in the tooling mega-cell (Cells 33–34) of the current notebook. Cell 33 instead exposes a broad set of dataframe tools under different names (as reflected in the Function Status Report), so the capability exists but via differently named or consolidated tools. The report also uses simplified agent labels and omits memory/hooks/runtime context.
+- **IntelligentDataDetective_Analysis.md**: Describes an `AgentState`/`StatefulGraph` pattern and claims `DataFrameRegistry` unit tests in “Cell 16” that are absent from the notebook (see IntelligentDataDetective_Analysis.md, line 21); tooling examples (e.g., heavy reliance on `execute_python_code`) do not match the explicit tools defined in Cells 32–34.
+- **Jules Analysis**: Generally accurate; however, it states `RuntimeCtx` encapsulates paths/config/agent instances (line 53). In the notebook (Cell 49), `RuntimeCtx` holds directories and run IDs but no agent objects, so the “agent instances” part does not align with the current code.
 - Minor omissions: Several reports skip the dependency check cell, output capping utilities, debug helpers, graph visualization display, and the function-calling helper import.
 
 ## Comprehensive Notebook Walkthrough (grounded in the notebook)
@@ -88,9 +89,11 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 - `_dedupe_tools`, model-doc formatting utilities.
 - Agent factory functions to build data cleaner, initial analyst, analyst, file writer, visualization, viz evaluator, report generator; memory updater; `make_supervisor_node` with routing/deduplication/plan consolidation; `Router` model.
 
-### 9) Runtime Context & Artifacts (Cells 46–53)
+### 9a) Runtime Context (Cell 49)
 - `RuntimeCtx` dataclass (`artifacts_dir`, `reports_dir`, `viz_dir`, `checkpoints_dir`, run IDs) and `_touch_dir`, `make_runtime_ctx`.
-- Artifact/report helpers: `_sha256_bytes`, `_detect_mime_and_encoding`, atomic write helpers, visualization persistence (`save_viz_for_state`), manifest builder, versioned paths.
+
+### 9b) Artifact & Report Helpers (Cell 52)
+- `_sha256_bytes`, `_detect_mime_and_encoding`, atomic write helpers, visualization persistence (`save_viz_for_state`), manifest builder, versioned paths.
 
 ### 10) Nodes, Routing, Graph (Cells 54–63)
 - Node implementations: `initial_analysis_node`, `data_cleaner_node`, `analyst_node`, `_normalize_meta`, `file_writer_node`, viz orchestrator/worker/evaluator (`_guess_viz_type`, `_normalize_viz_spec`, `visualization_orchestrator`, `assign_viz_workers`, `viz_worker`, `viz_join`, `viz_evaluator_node`, `route_viz`), report orchestration (`report_orchestrator`, `section_worker`, `dispatch_sections`, `assign_section_workers`, `report_join`, `report_packager_node`), `emergency_correspondence_node`.
@@ -117,7 +120,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 - Memory and hook infrastructure is robust: embeddings-based memory policies, Qwen/OpenAI tool-call normalization, and conversation summarization to stay within token budgets.
 - Graph orchestration uses supervisor + map-reduce patterns for visualization/reporting, with emergency routing and progress tracking.
 - Persistence is covered end-to-end: runtime directories, artifact manifests, drive copy, and SQLite checkpoint migration/restore.
-- **Actionable gaps**: Stub in Cell 34 could be completed; validation cells (87) are commented; dependency/version cells rely on magics and should be run in the target environment before execution.
+- **Actionable gaps**: Stub in Cell 34 could be completed; validation cells (82–83) are commented; dependency/version cells rely on magics and should be run in the target environment before execution.
 
 ## How to Use This Report
 - Use the matrix to locate which source report covers (or misses) each notebook element.
