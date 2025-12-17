@@ -62,7 +62,7 @@ Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I =
 - Agent member classes enumerating node names; `agent_list_default_generator` produces ordered agent list.
 
 ### 3) Custom OpenAI Client & Dependency Check (Cells 10–15)
-- Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenai` overriding `_get_request_payload_mod/_get_request_payload` to normalize roles/parameters for responses API and o‑series models.
+- Custom payload builder `_construct_responses_api_payload` and subclass `MyChatOpenAI` overriding `_get_request_payload_mod/_get_request_payload` to normalize roles/parameters for responses API and o-series models.
 - Version probe via Jupyter magic `!pip show --verbose langchain_experimental`.
 
 ### 4) Models, Registry, State (Cells 16–24)
