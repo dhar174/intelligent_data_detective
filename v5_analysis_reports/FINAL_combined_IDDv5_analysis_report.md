@@ -12,38 +12,38 @@ This document synthesizes **all reports in `/v5_analysis_reports`** and the **no
 - Notebook: `IntelligentDataDetective_beta_v5.ipynb` (96 cells counted in the current snapshot, all `execution_count=None`; some earlier reports list 94, likely from older revisions or badge/markdown additions)
 
 Legend for the matrix: **P = Present**, **Pa = Partial**, **M = Missing**, **I = Incorrect**
-Column-to-source mapping: ChatGPT Agent Report → `File_analysis_report_chatgpt_agent.md`; IDD_v5_analysis_report → `IDD_v5_analysis_report.md`; IntelligentDataDetective_Analysis → `IntelligentDataDetective_Analysis.md`; Function Status Report → `IntelligentDataDetective_beta_v5_function_status_report.md`; Jules Analysis → `IntelligentDataDetective_v5_Analysis_Jules.md`.
+Column-to-source mapping: ChatGPT Agent Report → `File_analysis_report_chatgpt_agent.md`; IDD_v5_analysis_report → `IDD_v5_analysis_report.md`; IntelligentDataDetective_Analysis → `IntelligentDataDetective_Analysis.md`; Function Status Report → `IntelligentDataDetective_beta_v5_function_status_report.md`; Jules Analysis → `IntelligentDataDetective_v5_Analysis_Jules.md`; IDD_beta_v5_Report → `IntelligentDataDetective_beta_v5_Report.md`.
 
 ### Coverage Cross-Reference Matrix (notebook elements vs. reports)
 
-| Notebook Element / Cell Group | ChatGPT Agent Report | IDD_v5_analysis_report | IntelligentDataDetective_Analysis | Function Status Report | Jules Analysis |
-| --- | --- | --- | --- | --- | --- |
-| Intro + env flag + pip bootstrap (Cells 0–5) | P | Pa | Pa | P | P |
-| Core imports, helpers, agent member classes (Cell 8) | P | Pa | Pa | P | P |
-| Custom ChatOpenAI / responses API wrapper (Cell 11) | P | M | M | P | P |
-| Dependency version check `pip show` (Cell 14) | P | M | M | P | M |
-| Pydantic models & plan structures (Cell 17) | P | Pa | P | P | P |
-| DataFrameRegistry & section/report models (Cell 20) | P | M | P | P | P |
-| State reducers + `State`/`VizWorkerState` (Cell 23) | P | Pa | Pa | P | P |
-| Prompt templates (Cells 26–30) | P | Pa | Pa | P | P |
-| Output capping utilities (Cell 32) | P | M | M | P | M |
-| Tooling mega-cell (data/clean/viz/report/ML/file tools) + stub (Cells 33–34) | P | M | Pa | P | Pa |
-| Memory & embeddings subsystem (Cell 37) | P | M | M | P | P |
-| Tool-call extraction / model hooks (Cells 40–43) | P | M | M | P | Pa |
-| Agent factories & supervisor node (Cell 44) | P | Pa | Pa | P | P |
-| Runtime context (`RuntimeCtx`) (Cell 49) | P | M | M | P | P |
-| Artifact/report helpers (Cell 52) | P | M | M | P | Pa |
-| Node implementations (analysis/clean/viz/report/file, Cell 55) | P | Pa | Pa | P | P |
-| Routing helpers (Cell 58) | P | Pa | Pa | P | P |
-| Graph compile (Cell 61) | P | Pa | Pa | P | P |
-| Graph visualization (Cell 61 mermaid display) | P | M | M | P | M |
-| Debug helpers (Cell 64) | P | M | M | P | M |
-| Streaming setup & utilities (Cells 70–75) | P | M | M | P | P |
-| Drive persistence (Cell 77) | P | M | M | P | P |
-| Final state inspection (Cell 79) | P | M | M | P | Pa |
-| Function-calling helper import (Cell 83) | Pa | M | M | P | M |
-| Checkpoint migration/restore (Cells 90–92) | P | M | M | P | P |
-| `run_config` print (Cell 93) | Pa | M | M | P | M |
+| Notebook Element / Cell Group | ChatGPT Agent Report | IDD_v5_analysis_report | IntelligentDataDetective_Analysis | Function Status Report | Jules Analysis | IDD_beta_v5_Report |
+| --- | --- | --- | --- | --- | --- | --- |
+| Intro + env flag + pip bootstrap (Cells 0–5) | P | Pa | Pa | P | P | P |
+| Core imports, helpers, agent member classes (Cell 8) | P | Pa | Pa | P | P | P |
+| Custom ChatOpenAI / responses API wrapper (Cell 11) | P | M | M | P | P | P |
+| Dependency version check `pip show` (Cell 14) | P | M | M | P | M | P |
+| Pydantic models & plan structures (Cell 17) | P | Pa | P | P | P | P |
+| DataFrameRegistry & section/report models (Cell 20) | P | M | P | P | P | P |
+| State reducers + `State`/`VizWorkerState` (Cell 23) | P | Pa | Pa | P | P | P |
+| Prompt templates (Cells 26–30) | P | Pa | Pa | P | P | P |
+| Output capping utilities (Cell 32) | P | M | M | P | M | P |
+| Tooling mega-cell (data/clean/viz/report/ML/file tools) + stub (Cells 33–34) | P | M | Pa | P | Pa | P |
+| Memory & embeddings subsystem (Cell 37) | P | M | M | P | P | P |
+| Tool-call extraction / model hooks (Cells 40–43) | P | M | M | P | Pa | P |
+| Agent factories & supervisor node (Cell 44) | P | Pa | Pa | P | P | P |
+| Runtime context (`RuntimeCtx`) (Cell 49) | P | M | M | P | P | P |
+| Artifact/report helpers (Cell 52) | P | M | M | P | Pa | P |
+| Node implementations (analysis/clean/viz/report/file, Cell 55) | P | Pa | Pa | P | P | P |
+| Routing helpers (Cell 58) | P | Pa | Pa | P | P | P |
+| Graph compile (Cell 61) | P | Pa | Pa | P | P | P |
+| Graph visualization (Cell 61 mermaid display) | P | M | M | P | M | P |
+| Debug helpers (Cell 64) | P | M | M | P | M | P |
+| Streaming setup & utilities (Cells 70–75) | P | M | M | P | P | P |
+| Drive persistence (Cell 77) | P | M | M | P | P | P |
+| Final state inspection (Cell 79) | P | M | M | P | Pa | P |
+| Function-calling helper import (Cell 83) | Pa | M | M | P | M | P |
+| Checkpoint migration/restore (Cells 90–92) | P | M | M | P | P | P |
+| `run_config` print (Cell 93) | Pa | M | M | P | M | P |
 
 ### Inaccuracies / Inconsistencies Detected
 - **IDD_v5_analysis_report.md**: Lists tools like `read_csv_head` / `describe_dataset` for the Initial Analysis Agent (see section “Agent Configuration & Tools”); those exact strings do **not** appear in the tooling mega-cell (Cells 33–34) of the current notebook. Cell 33 instead exposes a broad set of dataframe tools under different names (as reflected in the Function Status Report), so the capability exists but via differently named or consolidated tools. The report also uses simplified agent labels and omits memory/hooks/runtime context.
