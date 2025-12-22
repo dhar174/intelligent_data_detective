@@ -176,7 +176,7 @@ All identified bugs have been fixed and the notebook should now run without synt
 ## Additional Findings (2025-12-22)
 
 - **Test runs performed:** `python3 -m pytest test_intelligent_data_detective.py -v` (22/22 passed) and `python3 -m pytest test_error_handling_framework.py -v` (15/16 passed; one known failure reproduced).
-- **Decorator df_id detection bug:** The `handle_tool_errors` decorator misidentifies `df_id` when it is provided as a keyword argument and the first positional argument is a non-`df_id` string. Example reproduction:
+- **Decorator df_id detection bug:** The `handle_tool_errors` decorator misidentifies `df_id` when it is provided as a keyword argument and the first positional argument is a non-`df_id` string because it always treats the first string positional argument as the dataframe ID before checking keyword arguments. Example reproduction:
   - Call: `func_with_df_id_kwarg("test", df_id="test_df")`
   - **Expected:** `"other: test, df_id: test_df"`
   - **Actual:** `"Error: DataFrame with ID 'test' not found or is invalid."` because the decorator treats the first positional string as `df_id`. This impacts notebook cells that wrap tools with the same detection logic.
