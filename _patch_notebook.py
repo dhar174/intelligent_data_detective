@@ -221,45 +221,6 @@ def main():
             count=1,
         )
 
-        # 4. Wrap data_cleaner_agent.invoke() with try/except for GraphRecursionError recovery
-        #    This handles the case where 100 steps isn't enough and allows the pipeline to continue
-        _recovery_block = (
-            '_dc_exc_recovery = None\n'
-            'try:\n'
-            '    result = data_cleaner_agent.invoke('
-        )
-        _recovery_except = (
-            '    )\nexcept Exception as _dc_exc:\n'
-            '    _is_recursion = "recursion" in str(_dc_exc).lower() or "GraphRecursion" in type(_dc_exc).__name__\n'
-            '    if not _is_recursion:\n'
-            '        raise\n'
-            '    print(f"⚠️ data_cleaner hit recursion limit; building recovery CleaningMetadata")\n'
-            '    from langchain_core.messages import AIMessage as _RLAIM\n'
-            '    result = {\n'
-            '        "structured_response": CleaningMetadata(\n'
-            '            steps_taken=["deduplication", "imputation", "normalization", "outlier_flagging"],\n'
-            '            data_description_after_cleaning="Dataset cleaned (recursion-limit recovery)",\n'
-            '            finished_this_task=True,\n'
-            '            expect_reply=False,\n'
-            '            reply_msg_to_supervisor="Data cleaning partially complete; proceed to analysis.",\n'
-            '        ),\n'
-            '        "messages": (state.get("messages") or []) + [\n'
-            '            _RLAIM(content="Data cleaning completed (partial recovery)", name="data_cleaner")\n'
-            '        ],\n'
-            '    }\n'
-        )
-        if '    result = data_cleaner_agent.invoke(' in new_src and _recovery_block not in new_src:
-            new_src = new_src.replace(
-                '    result = data_cleaner_agent.invoke(',
-                _recovery_block,
-            )
-            # Close the try block: find the config line ending and add except
-            new_src = new_src.replace(
-                'config={**state["_config"], "recursion_limit": 100}  # capped to prevent runaway loops\n    )',
-                'config={**state["_config"], "recursion_limit": 100}  # capped to prevent runaway loops\n'
-                + _recovery_except,
-            )
-
         # 2. Force data_cleaning_complete=True regardless of what LLM returned
         new_src = new_src.replace(
             '"data_cleaning_complete": True if cleaning_metadata.finished_this_task else False,',
