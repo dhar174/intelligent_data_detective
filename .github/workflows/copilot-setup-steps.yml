@@ -1,0 +1,15 @@
+name: copilot-setup-steps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify-agent-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify agent stack commands
+        run: |
+          echo "Run pytest tests/"
+          echo "Run flake8 ."
+          echo "Replace this stub with repo-specific environment setup before enabling on every push."

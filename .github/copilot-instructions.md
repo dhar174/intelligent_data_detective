@@ -91,3 +91,28 @@ All file-writing tools call `_resolve_artifact_path()` which validates that the 
 
 - `test_error_handling_framework.py`: one test fails due to an edge case in function-signature introspection. This is pre-existing and has no runtime impact.
 - `flake8` reports some whitespace warnings on test files; these are acceptable.
+
+<!-- repo-agent-bootstrap:file-kind=copilot-instructions -->
+<!-- repo-agent-bootstrap:provenance=repo-agent-bootstrap@2026-04-20 -->
+<!-- repo-agent-bootstrap:managed:start -->
+# Repository-wide Copilot instructions
+
+This repository uses Python and LangGraph, LangChain, pytest.
+
+When making changes:
+- prefer small, focused diffs
+- preserve existing architecture unless the task explicitly changes it
+- run the relevant validation commands before finishing
+- update `memory-bank/activeContext.md` and `memory-bank/progress.md` when project state shifts
+
+Important references:
+- `AGENTS.md`
+- `docs/architecture.md`
+- `memory-bank/activeContext.md`
+- `memory-bank/progress.md`
+
+Do not:
+- edit generated files casually
+- introduce new dependencies without justification
+- remove tests to avoid fixing failures
+<!-- repo-agent-bootstrap:managed:end -->
