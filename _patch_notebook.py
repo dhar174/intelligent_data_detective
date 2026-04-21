@@ -407,6 +407,74 @@ def main():
     if not dc_patched:
         print("⚠️  data_cleaner_node patch: target cell not found or no replacements made")
 
+    # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
+    # Root cause: after data_cleaner recovery, the LLM supervisor creates a Plan with
+    # step 3 = "Persist cleaned data" and routes to file_writer, which fails silently.
+    # After ~15 supervisor calls the pipeline ends without running analyst/viz/report_generator.
+    # Fix: inject a short-circuit at the top of supervisor_node that forces routing to analyst
+    # when data_cleaning_complete=True but analyst_complete is not True.
+    # Per rubber-duck review: only add data_cleaner→analyst shortcut (not broader viz/report);
+    # use 'is not True' check; reset next_agent_prompt and next_agent_metadata.
+    import re as _re4
+
+    def _inject_supervisor_shortcut(src):
+        """Inject deterministic data_cleaner→analyst routing into supervisor_node."""
+        # Find function with any leading indentation
+        indent_match = _re4.search(r'^([ \t]*)def supervisor_node\(state', src, _re4.MULTILINE)
+        if not indent_match:
+            return src, False
+        fn_indent = indent_match.group(1)   # e.g. "    " (4 spaces if nested)
+        body_indent = fn_indent + "    "    # e.g. "        " (8 spaces for body)
+        shortcut = (
+            f"{body_indent}# --- PATCH: force analyst routing after data cleaning ---\n"
+            f"{body_indent}if state.get('data_cleaning_complete') is True and state.get('analyst_complete') is not True:\n"
+            f"{body_indent}    _sc = int(state.get('_count_', 0)) + 1\n"
+            f"{body_indent}    return Command(goto='analyst', update={{\n"
+            f"{body_indent}        '_count_': _sc,\n"
+            f"{body_indent}        'next': 'analyst',\n"
+            f"{body_indent}        'next_agent_prompt': (\n"
+            f"{body_indent}            'Please analyze the cleaned dataset. Compute descriptive statistics, '\n"
+            f"{body_indent}            'correlations, and key insights. Return an AnalysisInsights object when done.'\n"
+            f"{body_indent}        ),\n"
+            f"{body_indent}        'next_agent_metadata': None,\n"
+            f"{body_indent}    }})\n"
+            f"{body_indent}# --- END PATCH: force analyst routing ---\n"
+        )
+        # Inject immediately after the def line (before first line of body)
+        new_src = _re4.sub(
+            r'(^[ \t]*def supervisor_node\(state: State, config: RunnableConfig\):\n)',
+            lambda m: m.group(1) + shortcut,
+            src,
+            count=1,
+            flags=_re4.MULTILINE,
+        )
+        return new_src, new_src != src
+
+    sup_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        # Skip if already patched
+        if "PATCH: force analyst routing" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor_node already has analyst-routing patch")
+            sup_patched = True
+            break
+        new_src, changed = _inject_supervisor_shortcut(src)
+        if changed:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: supervisor_node patched — force analyst routing after cleaning")
+            sup_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: supervisor_node def found but injection failed")
+        break
+    if not sup_patched:
+        print("⚠️  supervisor_node patch: target cell not found (no cell has both supervisor_node and make_supervisor_node)")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
