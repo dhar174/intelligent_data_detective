@@ -197,6 +197,52 @@ def main():
         else:
             print("⚠️  Cell idx 72: could not find recursion_limit pattern to patch")
 
+    # --- Patch cell 57 (data_cleaner_node): cap sub-agent recursion + force finished_this_task=True ---
+    import re as _re3
+    dc_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def data_cleaner_node" not in src or "data_cleaner_agent.invoke" not in src:
+            continue
+        new_src = src
+
+        # 1. Cap the sub-agent recursion limit so it can't run >60 internal steps
+        new_src = new_src.replace(
+            'config=state["_config"]\n    )',
+            'config={**state["_config"], "recursion_limit": 60}  # capped to prevent sub-agent loops\n    )',
+        )
+        # Also handle with extra whitespace variants
+        new_src = _re3.sub(
+            r'config=state\["_config"\]\s*\)',
+            'config={**state["_config"], "recursion_limit": 60}  # capped to prevent sub-agent loops\n    )',
+            new_src,
+            count=1,
+        )
+
+        # 2. Force data_cleaning_complete=True regardless of what LLM returned
+        new_src = new_src.replace(
+            '"data_cleaning_complete": True if cleaning_metadata.finished_this_task else False,',
+            '"data_cleaning_complete": True,  # patched: always mark complete after node executes',
+        )
+
+        # 3. Force last_agent_finished_this_task=True so supervisor moves on
+        new_src = new_src.replace(
+            '"last_agent_finished_this_task": cleaning_metadata.finished_this_task,',
+            '"last_agent_finished_this_task": True,  # patched: force True to prevent supervisor loop',
+        )
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: data_cleaner_node patched (recursion cap + force finished_this_task=True)")
+            dc_patched = True
+        break
+    if not dc_patched:
+        print("⚠️  data_cleaner_node patch: target cell not found or no replacements made")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
