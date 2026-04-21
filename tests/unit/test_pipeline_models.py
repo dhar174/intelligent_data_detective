@@ -432,3 +432,103 @@ class TestAgentListDefaultGenerator:
             "file_writer", "visualization", "report_packager", "supervisor",
         }
         assert types == expected
+
+
+# ---------------------------------------------------------------------------
+# Regression: BaseNoExtrasModel base fields are required on ALL models
+# (VizSpec, AnalysisInsights, ReportResults all extend BaseNoExtrasModel)
+# Prevents recurrence of the run-time crash fixed in commit 878da7d.
+# ---------------------------------------------------------------------------
+
+class TestBaseFieldsRequired:
+    """All BaseNoExtrasModel subclasses need reply_msg_to_supervisor,
+    finished_this_task, and expect_reply — even data-carrier models like VizSpec."""
+
+    def test_vizspec_missing_reply_msg_raises(self):
+        with pytest.raises(ValidationError):
+            VizSpec(
+                title="hist",
+                viz_type="histogram",
+                df_id="df1",
+                viz_instructions=None,
+                viz_id=None,
+                columns=None, x=None, y=None, hue=None, bins=20,
+                agg=None, query=None, description=None, limit=None, style=None,
+                # missing: reply_msg_to_supervisor, finished_this_task, expect_reply
+            )
+
+    def test_vizspec_with_all_base_fields_valid(self):
+        """Recovery wrapper must provide all three base fields."""
+        spec = VizSpec(
+            reply_msg_to_supervisor="",
+            finished_this_task=False,
+            expect_reply=False,
+            title="Value Distribution",
+            viz_type="histogram",
+            df_id="sample_dirty",
+            viz_id="viz_recovery_01",
+            viz_instructions="Plot histogram of numeric columns.",
+            columns=None, x=None, y=None, hue=None, bins=20,
+            agg=None, query=None, description="Distribution of numeric columns.",
+            limit=None, style=None,
+        )
+        assert spec.finished_this_task is False
+        assert spec.reply_msg_to_supervisor == ""
+
+    def test_analysis_insights_missing_base_fields_raises(self):
+        with pytest.raises(ValidationError):
+            AnalysisInsights(
+                summary="ok",
+                correlation_insights="none",
+                anomaly_insights="none",
+                recommended_visualizations=[],
+                recommended_next_steps=[],
+                # missing base fields
+            )
+
+    def test_analysis_insights_recovery_object_valid(self):
+        """Exactly what _safe_analyst_invoke() recovery builds."""
+        recovery = AnalysisInsights(
+            reply_msg_to_supervisor="Analysis completed via recursion-limit recovery.",
+            finished_this_task=True,
+            expect_reply=False,
+            summary="Analysis completed via recursion-limit recovery.",
+            correlation_insights="Recovery: statistical correlation analysis was partially completed.",
+            anomaly_insights="Recovery: anomaly detection incomplete.",
+            recommended_visualizations=[
+                VizSpec(
+                    reply_msg_to_supervisor="", finished_this_task=False, expect_reply=False,
+                    title="Value Distribution", viz_type="histogram", df_id="sample_dirty",
+                    viz_id="viz_recovery_01",
+                    viz_instructions="Plot histogram of numeric columns.",
+                    columns=None, x=None, y=None, hue=None, bins=20,
+                    agg=None, query=None, description="Distribution of numeric columns.",
+                    limit=None, style=None,
+                ),
+            ],
+            recommended_next_steps=["Visualize distribution of numeric columns."],
+        )
+        assert recovery.finished_this_task is True
+        assert len(recovery.recommended_visualizations) == 1
+
+    def test_report_results_missing_base_fields_raises(self):
+        with pytest.raises(ValidationError):
+            ReportResults(
+                pdf_report_path="/tmp/report.pdf",
+                html_report_path="/tmp/report.html",
+                markdown_report_path="/tmp/report.md",
+                # missing base fields
+            )
+
+    def test_report_results_recovery_object_valid(self):
+        """Exactly what _safe_report_packager_invoke() recovery builds."""
+        rr = ReportResults(
+            reply_msg_to_supervisor="Report packaged via recursion-limit recovery.",
+            finished_this_task=True,
+            expect_reply=False,
+            pdf_report_path="/tmp/reports/final_report_recovery.pdf",
+            html_report_path="/tmp/reports/final_report_recovery.html",
+            markdown_report_path="/tmp/reports/final_report_recovery.md",
+        )
+        assert rr.finished_this_task is True
+        assert "recovery" in rr.html_report_path
