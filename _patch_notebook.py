@@ -279,7 +279,10 @@ def main():
     dc_patched = False
     SAFE_INVOKE_HELPER = (
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
-        "def _safe_data_cleaner_invoke(agent, inputs, cfg):\n"
+        "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
+        "    cfg = kwargs.get('config', {})\n"
+        "    if cfg and 'recursion_limit' not in cfg:\n"
+        "        cfg = {**cfg, 'recursion_limit': 160}\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
         "    from langchain_core.messages import AIMessage as _DLAIM\n"
         "    try:\n"
@@ -336,36 +339,23 @@ def main():
         # 2. Replace data_cleaner_agent.invoke(...) with _safe_data_cleaner_invoke(...)
         #    Old: result = data_cleaner_agent.invoke(\n        {
         #    New: result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {
+        #    The config= keyword arg passes through unchanged — _safe_data_cleaner_invoke
+        #    accepts **kwargs so it receives config=... naturally.
         new_src = new_src.replace(
             "    result = data_cleaner_agent.invoke(\n        {",
             "    result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {",
             1,
         )
 
-        # 3. Replace the closing config=... line — change limit from old value (may have been 60 or none)
-        #    to 160 and remove 'config=' keyword (positional arg now).
-        #    Pattern: config={**state["_config"], "recursion_limit": 100}  # capped ...
-        new_src = _re3.sub(
-            r'config=\{[^}]*"recursion_limit":\s*\d+\}[^\n]*',
-            '{**state["_config"], "recursion_limit": 160},  # capped — safe wrapper handles overrun',
-            new_src,
-            count=1,
-        )
-        # Also handle un-patched case: config=state["_config"]
-        new_src = _re3.sub(
-            r'config=state\["_config"\]\s*(\))',
-            r'{**state["_config"], "recursion_limit": 160},  # capped\n    \1',
-            new_src,
-            count=1,
-        )
+        # No need to change config= line — **kwargs handles it
 
-        # 4. Force data_cleaning_complete=True regardless of what LLM returned
+        # 3. Force data_cleaning_complete=True regardless of what LLM returned
         new_src = new_src.replace(
             '"data_cleaning_complete": True if cleaning_metadata.finished_this_task else False,',
             '"data_cleaning_complete": True,  # patched: always mark complete after node executes',
         )
 
-        # 5. Force last_agent_finished_this_task=True so supervisor moves on
+        # 4. Force last_agent_finished_this_task=True so supervisor moves on
         new_src = new_src.replace(
             '"last_agent_finished_this_task": cleaning_metadata.finished_this_task,',
             '"last_agent_finished_this_task": True,  # patched: force True to prevent supervisor loop',
