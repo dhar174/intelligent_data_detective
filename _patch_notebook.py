@@ -170,6 +170,39 @@ def main():
     else:
         print("⚠️  Cell idx 7: expected _is_colab() pattern not found — skipping")
 
+    # --- Patch cell idx 7 (also): fix bool_or reducer to handle None initial values ---
+    # operator.or_(None, True) raises TypeError — so data_cleaning_complete stays None
+    # on first recovery, supervisor shortcut never fires, LLM loops back to data_cleaner.
+    # Fix: replace or_ import with a safe lambda that treats None as False.
+    src7_after = join_source(c7["source"])
+    OLD_BOOL_OR = "from operator import add, or_ as bool_or"
+    NEW_BOOL_OR = (
+        "from operator import add\n"
+        "def bool_or(a, b):\n"
+        "    \"\"\"Safe boolean-OR reducer: treats None as False, avoids TypeError.\"\"\"\n"
+        "    return b if a is None else (a if b is None else bool(a | b))"
+    )
+    if OLD_BOOL_OR in src7_after:
+        c7["source"] = src7_after.replace(OLD_BOOL_OR, NEW_BOOL_OR, 1)
+        if c7.get("cell_type") == "code":
+            c7["outputs"] = []
+            c7["execution_count"] = None
+        print("✅ Cell idx 7: fixed bool_or reducer (None-safe) — root cause of double data_cleaner run")
+    else:
+        # Try searching across all cells
+        for _ci, _cell in enumerate(cells):
+            if _cell.get("cell_type") != "code":
+                continue
+            _src = join_source(_cell["source"])
+            if OLD_BOOL_OR in _src:
+                _cell["source"] = _src.replace(OLD_BOOL_OR, NEW_BOOL_OR, 1)
+                _cell["outputs"] = []
+                _cell["execution_count"] = None
+                print(f"✅ Cell idx {_ci}: fixed bool_or reducer (found outside cell 7)")
+                break
+        else:
+            print("⚠️  bool_or reducer fix: 'from operator import add, or_ as bool_or' not found")
+
     # --- Patch cell idx 72: increase recursion_limit (120 is too low; data cleaner loops) ---
     import re as _re2
     c72 = cells[72]
@@ -376,7 +409,7 @@ def main():
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
         "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
         "    cfg = dict(kwargs.get('config', {}))\n"
-        "    cfg['recursion_limit'] = 160  # always cap regardless of outer graph limit\n"
+        "    cfg['recursion_limit'] = 50  # always cap (reduced for faster recovery)\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
         "    from langchain_core.messages import AIMessage as _DLAIM\n"
         "    try:\n"
@@ -386,7 +419,7 @@ def main():
         "            raise\n"
         "        _nm = type(_exc).__name__\n"
         "        print(f'WARNING data_cleaner hit error ({_nm}: {str(_exc)[:120]}) -- building recovery CleaningMetadata')\n"
-        "        try: _log_recovery('data_cleaner', 160)\n"
+        "        try: _log_recovery('data_cleaner', 50)\n"
         "        except Exception: pass\n"
         "        _msgs = list(inputs.get('messages') or [])\n"
         "        _msgs.append(_DLAIM(content='Data cleaning completed (recursion recovery).', name='data_cleaner'))\n"
@@ -462,6 +495,39 @@ def main():
             1,
         )
 
+        # 1b. Idempotency guard: if data cleaning already complete, skip re-run immediately
+        DC_IDEMPOTENT_GUARD = (
+            "    # --- PATCH: idempotency guard — skip if already complete ---\n"
+            "    if (bool(state.get('data_cleaning_complete')) or state.get('cleaning_metadata') is not None) \\\n"
+            "            and state.get('cleaning_metadata') is not None:\n"
+            "        _cm_exist = state.get('cleaning_metadata')\n"
+            "        from langchain_core.messages import AIMessage as _DCGUARD_AIM\n"
+            "        _skip_msgs = list(state.get('messages') or [])\n"
+            "        _skip_msgs.append(_DCGUARD_AIM(\n"
+            "            content='Data cleaning already complete — skipping re-run.', name='data_cleaner'))\n"
+            "        print('ℹ️  data_cleaner_node: skipping (already complete)')\n"
+            "        return {\n"
+            "            'data_cleaning_complete': True,\n"
+            "            'cleaning_metadata': _cm_exist,\n"
+            "            'messages': _skip_msgs,\n"
+            "            'last_agent_message': _skip_msgs[-1],\n"
+            "            'last_agent_finished_this_task': True,\n"
+            "            'last_agent_expects_reply': False,\n"
+            "            'last_agent_reply_msg': 'Data cleaning already complete.',\n"
+            "            'last_created_obj': 'cleaning_metadata',\n"
+            "            'last_agent_id': 'data_cleaner',\n"
+            "            'current_turn_agent_id': 'supervisor',\n"
+            "            'dataset_description': _cm_exist.data_description_after_cleaning or '',\n"
+            "            'available_df_ids': list(state.get('available_df_ids') or []),\n"
+            "        }\n"
+            "    # --- END PATCH: idempotency guard ---\n"
+        )
+        new_src = new_src.replace(
+            "def data_cleaner_node(state: State):\n    user_prompt",
+            "def data_cleaner_node(state: State):\n" + DC_IDEMPOTENT_GUARD + "    user_prompt",
+            1,
+        )
+
         # 2. Replace data_cleaner_agent.invoke(...) with _safe_data_cleaner_invoke(...)
         #    Old: result = data_cleaner_agent.invoke(\n        {
         #    New: result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {
@@ -513,7 +579,7 @@ def main():
         "# --- patched: safe invoke wrapper for analyst_node ---\n"
         "def _safe_analyst_invoke(agent, inputs, config=None):\n"
         "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 120  # cap analyst to prevent runaway loop\n"
+        "    cfg['recursion_limit'] = 50  # cap analyst to prevent runaway loop\n"
         "    from langchain_core.messages import AIMessage as _AAIM\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
@@ -522,7 +588,7 @@ def main():
         "            raise\n"
         "        _nm = type(_aexc).__name__\n"
         "        print(f'WARNING analyst hit error ({_nm}: {str(_aexc)[:120]}) -- building recovery AnalysisInsights')\n"
-        "        try: _log_recovery('analyst', 120)\n"
+        "        try: _log_recovery('analyst', 50)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -603,11 +669,53 @@ def main():
             1,
         )
 
+        # 5. Guard the two re-routes to data_cleaner: only re-route if data_cleaning_complete is False
+        #    If data_cleaning_complete is already True but cm is missing, build a minimal CleaningMetadata.
+        AN_REROUTE_OLD_1 = (
+            "    cm = state.get(\"cleaning_metadata\")\n"
+            "    if not cm or not isinstance(cm, CleaningMetadata) or not cm.data_description_after_cleaning:"
+        )
+        AN_REROUTE_NEW_1 = (
+            "    cm = state.get(\"cleaning_metadata\")\n"
+            "    # PATCH: only re-route to data_cleaner if not already complete\n"
+            "    _dc_already_done = bool(state.get('data_cleaning_complete')) or (cm is not None)\n"
+            "    if (not cm or not isinstance(cm, CleaningMetadata) or not cm.data_description_after_cleaning) \\\n"
+            "            and not _dc_already_done:"
+        )
+        # Guard second re-route (empty description check)
+        AN_REROUTE_OLD_2 = (
+            "    if isinstance(cm, CleaningMetadata) and (cm.data_description_after_cleaning or \"\").strip() == \"\":"
+        )
+        AN_REROUTE_NEW_2 = (
+            "    if isinstance(cm, CleaningMetadata) and (cm.data_description_after_cleaning or \"\").strip() == \"\" \\\n"
+            "            and not _dc_already_done:"
+        )
+        # Also: if data_cleaning_complete is True but cm is missing, synthesize one
+        AN_CM_SYNTH = (
+            "    # PATCH: if cleaning was done but cm is missing, build a minimal CleaningMetadata\n"
+            "    if (not cm or not isinstance(cm, CleaningMetadata)) and _dc_already_done:\n"
+            "        cm = CleaningMetadata(\n"
+            "            steps_taken=['recovery: data cleaning was marked complete'],\n"
+            "            data_description_after_cleaning='Dataset cleaned; recovery metadata.',\n"
+            "            finished_this_task=True, expect_reply=False,\n"
+            "            reply_msg_to_supervisor='Data cleaning complete.'\n"
+            "        )\n"
+        )
+        if AN_REROUTE_OLD_1 in new_src:
+            new_src = new_src.replace(AN_REROUTE_OLD_1, AN_REROUTE_NEW_1, 1)
+            # Insert cm synthesis AFTER the first guard block (after its Command block ends)
+            # Inject just before the second if check
+            if AN_REROUTE_OLD_2 in new_src:
+                new_src = new_src.replace(AN_REROUTE_OLD_2, AN_CM_SYNTH + AN_REROUTE_NEW_2, 1)
+            print(f"  ✅ analyst_node: re-route guards patched")
+        else:
+            print(f"  ⚠️  analyst_node: re-route guard pattern not found — skipping guard patch")
+
         if new_src != src:
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"✅ Cell idx {idx}: analyst_node patched (safe invoke + recursion cap=120 + recovery)")
+            print(f"✅ Cell idx {idx}: analyst_node patched (safe invoke + recursion cap=50 + recovery + reroute guards)")
             an_patched = True
         else:
             # Diagnose what didn't match
@@ -748,11 +856,14 @@ def main():
         body_indent = fn_indent + "    "
         shortcut = (
             f"{body_indent}# --- PATCH: force analyst routing after data cleaning ---\n"
-            f"{body_indent}if state.get('data_cleaning_complete') is True and state.get('analyst_complete') is not True:\n"
+            f"{body_indent}# Dual condition: bool_or reducer may silently drop True on None; use cleaning_metadata as fallback\n"
+            f"{body_indent}_dc_done = bool(state.get('data_cleaning_complete')) or (state.get('cleaning_metadata') is not None)\n"
+            f"{body_indent}if _dc_done and not state.get('analyst_complete'):\n"
             f"{body_indent}    _sc = int(state.get('_count_', 0)) + 1\n"
             f"{body_indent}    return Command(goto='analyst', update={{\n"
             f"{body_indent}        '_count_': _sc,\n"
             f"{body_indent}        'next': 'analyst',\n"
+            f"{body_indent}        'data_cleaning_complete': True,  # ensure it is set\n"
             f"{body_indent}        'next_agent_prompt': (\n"
             f"{body_indent}            'Please analyze the cleaned dataset. Compute descriptive statistics, '\n"
             f"{body_indent}            'correlations, and key insights. Return an AnalysisInsights object when done.'\n"
