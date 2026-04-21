@@ -918,29 +918,39 @@ def main():
         "    cfg = dict(config or {})\n"
         "    cfg['recursion_limit'] = 60  # cap viz_worker to prevent runaway loop\n"
         "    from langchain_core.messages import AIMessage as _VAIM\n"
-        "    try:\n"
-        "        return agent.invoke(inputs, config=cfg)\n"
-        "    except Exception as _vexc:\n"
-        "        if isinstance(_vexc, (KeyboardInterrupt, SystemExit)):\n"
+        "    import time as _vwtime\n"
+        "    _vwretries = 0\n"
+        "    while True:\n"
+        "        try:\n"
+        "            return agent.invoke(inputs, config=cfg)\n"
+        "        except (KeyboardInterrupt, SystemExit):\n"
         "            raise\n"
-        "        _nm = type(_vexc).__name__\n"
-        "        print(f'WARNING visualization_agent hit error ({_nm}: {str(_vexc)[:120]}) -- building recovery DataVisualization')\n"
-        "        try: _log_recovery('visualization', 60)\n"
-        "        except Exception: pass\n"
-        "        import uuid as _vuuid\n"
-        "        _recovery_dv = DataVisualization(\n"
-        "            reply_msg_to_supervisor='Visualization completed (recursion-limit recovery). No file produced.',\n"
-        "            finished_this_task=True,\n"
-        "            expect_reply=False,\n"
-        "            path='',\n"
-        "            visualization_id=_vuuid.uuid4().hex,\n"
-        "            visualization_type='none',\n"
-        "            visualization_description='Visualization skipped: recursion-limit recovery',\n"
-        "            visualization_style='none',\n"
-        "            visualization_title='Recovery Placeholder',\n"
-        "        )\n"
-        "        _rmsg = _VAIM(content='Visualization completed (recursion-limit recovery).', name='visualization')\n"
-        "        return {'messages': [_rmsg], 'structured_response': _recovery_dv}\n"
+        "        except Exception as _vexc:\n"
+        "            _nm = type(_vexc).__name__\n"
+        "            _vmsg = str(_vexc).lower()\n"
+        "            if any(x in _vmsg for x in ['500', '503', '429', 'rate limit', 'internal server', 'overloaded']) and _vwretries < 3:\n"
+        "                _vwretries += 1\n"
+        "                _vwwait = 2 ** _vwretries\n"
+        "                print(f'WARNING viz_worker transient API error ({_nm}), retry {_vwretries}/3 after {_vwwait}s')\n"
+        "                _vwtime.sleep(_vwwait)\n"
+        "                continue\n"
+        "            print(f'WARNING visualization_agent hit error ({_nm}: {str(_vexc)[:120]}) -- building recovery DataVisualization')\n"
+        "            try: _log_recovery('visualization', 60)\n"
+        "            except Exception: pass\n"
+        "            import uuid as _vuuid\n"
+        "            _recovery_dv = DataVisualization(\n"
+        "                reply_msg_to_supervisor='Visualization completed (recursion-limit recovery). No file produced.',\n"
+        "                finished_this_task=True,\n"
+        "                expect_reply=False,\n"
+        "                path='',\n"
+        "                visualization_id=_vuuid.uuid4().hex,\n"
+        "                visualization_type='none',\n"
+        "                visualization_description='Visualization skipped: recursion-limit recovery',\n"
+        "                visualization_style='none',\n"
+        "                visualization_title='Recovery Placeholder',\n"
+        "            )\n"
+        "            _rmsg = _VAIM(content='Visualization completed (recursion-limit recovery).', name='visualization')\n"
+        "            return {'messages': [_rmsg], 'structured_response': _recovery_dv}\n"
         "# --- end patched viz helper ---\n\n"
     )
 
@@ -998,6 +1008,126 @@ def main():
         break
     if not viz_patched:
         print("⚠️  viz_worker patch: target cell not found")
+
+    # --- Patch viz_evaluator_node: safe invoke wrapper + fix undefined `fb` in quick-rule path ---
+    # viz_evaluator_node calls viz_evaluator_agent.invoke() with NO error handling.
+    # A transient OpenAI 5xx error crashes the node and stalls the pipeline.
+    # Additionally, the "quick-rule" branch (results < half tasks) sets final_grade but never sets
+    # `fb`; the outer (4-space) return then NameErrors on fb["messages"][-1].
+    # Fix A1: inject _safe_viz_evaluator_invoke with retry + recovery VizFeedback fallback.
+    # Fix A2: in quick-rule branch, after finished_this_task assignment, set fb to a mock dict.
+    # Fix A3: replace viz_evaluator_agent.invoke with _safe_viz_evaluator_invoke.
+    SAFE_VIZ_EVALUATOR_HELPER = (
+        "# --- patched: safe invoke wrapper for viz_evaluator_node ---\n"
+        "def _safe_viz_evaluator_invoke(agent, inputs, config=None):\n"
+        "    import time as _vetime\n"
+        "    from langchain_core.messages import AIMessage as _VEAIM\n"
+        "    cfg = dict(config or {})\n"
+        "    _veretries = 0\n"
+        "    while True:\n"
+        "        try:\n"
+        "            return agent.invoke(inputs, config=cfg)\n"
+        "        except (KeyboardInterrupt, SystemExit):\n"
+        "            raise\n"
+        "        except Exception as _veexc:\n"
+        "            _nm = type(_veexc).__name__\n"
+        "            _vmsg = str(_veexc).lower()\n"
+        "            if any(x in _vmsg for x in ['500', '503', '429', 'rate limit', 'internal server', 'overloaded']) and _veretries < 3:\n"
+        "                _veretries += 1\n"
+        "                _vewait = 2 ** _veretries\n"
+        "                print(f'WARNING viz_evaluator transient API error ({_nm}), retry {_veretries}/3 after {_vewait}s')\n"
+        "                _vetime.sleep(_vewait)\n"
+        "                continue\n"
+        "            print(f'WARNING viz_evaluator hit error ({_nm}: {str(_veexc)[:120]}) -- building recovery VizFeedback')\n"
+        "            try: _log_recovery('viz_evaluator', 0)\n"
+        "            except Exception: pass\n"
+        "            _recovery_vf = VizFeedback(\n"
+        "                grade='acceptable',\n"
+        "                feedback='Evaluation skipped due to API error. Accepting all visualizations.',\n"
+        "                redo_list=[],\n"
+        "                reply_msg_to_supervisor='Visualization evaluation completed (API error recovery).',\n"
+        "                finished_this_task=True,\n"
+        "                expect_reply=False,\n"
+        "            )\n"
+        "            _rmsg = _VEAIM(content='Visualization evaluation completed (API error recovery).', name='viz_evaluator')\n"
+        "            return {'messages': [_rmsg], 'structured_response': _recovery_vf}\n"
+        "# --- end patched viz_evaluator helper ---\n\n"
+    )
+
+    ve_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_evaluator_node" not in src or "viz_evaluator_agent.invoke(" not in src:
+            continue
+        if "_safe_viz_evaluator_invoke" in src:
+            print(f"ℹ️  Cell idx {idx}: viz_evaluator_node already has safe-invoke patch")
+            ve_patched = True
+            break
+        new_src = src
+
+        # A1: Inject helper before viz_evaluator_node definition
+        new_src = new_src.replace(
+            "def viz_evaluator_node(",
+            SAFE_VIZ_EVALUATOR_HELPER + "def viz_evaluator_node(",
+            1,
+        )
+
+        # A2: In the quick-rule branch, set fb after finished_this_task so the outer return doesn't NameError
+        VE_QUICKRULE_OLD = (
+            "        finished_this_task = final_grade.finished_this_task\n"
+            "    else:\n"
+            "        # Let LLM score quality\n"
+            "        fb = viz_evaluator_agent.invoke({"
+        )
+        VE_QUICKRULE_NEW = (
+            "        finished_this_task = final_grade.finished_this_task\n"
+            "        fb = {'messages': [AIMessage(content='Viz eval: insufficient results (quick-rule).', name='viz_evaluator')], 'structured_response': final_grade}  # PATCH: set fb so outer return doesn't NameError\n"
+            "    else:\n"
+            "        # Let LLM score quality\n"
+            "        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {"
+        )
+        if VE_QUICKRULE_OLD in new_src:
+            new_src = new_src.replace(VE_QUICKRULE_OLD, VE_QUICKRULE_NEW, 1)
+            print(f"  ✅ viz_evaluator_node: quick-rule fb init + invoke replacement patched")
+        else:
+            print(f"  ⚠️  viz_evaluator_node: quick-rule+invoke pattern not found — checking fallback")
+            # Fallback: just replace invoke call
+            new_src = new_src.replace(
+                "        fb = viz_evaluator_agent.invoke({",
+                "        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {",
+                1,
+            )
+
+        # A3: Fix config kwarg to avoid KeyError on state["_config"] when _config missing
+        new_src = new_src.replace(
+            "        }, config=state[\"_config\"])\n"
+            "        # Reasoning",
+            "        }, config=state.get(\"_config\"))\n"
+            "        # Reasoning",
+            1,
+        )
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: viz_evaluator_node patched (safe invoke + retry + fb init fix)")
+            ve_patched = True
+        else:
+            checks = [
+                ("def viz_evaluator_node(", "def viz_evaluator_node( target"),
+                ("viz_evaluator_agent.invoke({", "viz_evaluator invoke target"),
+            ]
+            for needle, label in checks:
+                if needle not in src:
+                    print(f"⚠️  Cell idx {idx}: viz_evaluator patch - '{label}' not found")
+            if new_src == src:
+                print(f"⚠️  Cell idx {idx}: viz_evaluator_node patch - no replacements made")
+        break
+    if not ve_patched:
+        print("⚠️  viz_evaluator_node patch: target cell not found")
 
     # --- Patch stream_graph_output cell: inject PipelineLogger + stage-transition logging ---
     # PipelineLogger runs inside the Jupyter kernel; os.getcwd() = REPO_ROOT (nbclient resources).
