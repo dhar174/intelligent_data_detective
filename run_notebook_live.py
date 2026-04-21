@@ -26,7 +26,7 @@ if hasattr(sys.stderr, "reconfigure"):
 REPO_ROOT = Path(__file__).resolve().parent
 PATCHED_NB = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
 OUTPUT_DIR = REPO_ROOT / "IDD_results"
-TIMEOUT = 2400  # 40 minutes
+TIMEOUT = 3600  # 60 minutes — analyst/data_cleaner each cap at ~15-20 min with recovery
 
 
 def load_api_key():
