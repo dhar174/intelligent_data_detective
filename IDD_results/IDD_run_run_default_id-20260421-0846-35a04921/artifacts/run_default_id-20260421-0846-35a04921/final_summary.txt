@@ -1,0 +1,12 @@
+Cleaning complete. Artifacts saved:
+- output/sample_dirty_cleaned.csv
+- output/cleaning_log.json
+- output/cleaning_summary.md
+- output/cleaning_script.py
+- sample_dirty_cleaned_export.csv (exported)
+
+Notes:
+- Duplicates removed: 3 (53 -> 50 rows).
+- Final columns: 12 (original 5 + 7 new/derived).
+- Actions included: dtype enforcement, category normalization (trim/title), numeric imputation (group median when category has >=3 non-missing values, else global median), outlier flagging (value_outlier_iqr, value_outlier_z, score_outlier_iqr, score_outlier_z, outlier_flag).
+- A 10-row cleaned data sample is included in output/cleaning_summary.md.

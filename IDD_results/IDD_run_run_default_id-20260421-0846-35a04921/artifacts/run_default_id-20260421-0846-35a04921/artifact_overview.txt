@@ -1,0 +1,11 @@
+Paths:
+- Cleaned data CSV: output/sample_dirty_cleaned.csv
+- Cleaning log: output/cleaning_log.json
+- Cleaning script (repro): output/cleaning_script.py
+- Cleaning summary: output/cleaning_summary.md
+
+Notes:
+- The cleaning removed 3 duplicate rows from the original 53, resulting in 50 rows.
+- Columns: 12 in final cleaned dataset (original 5 plus 7 new/derived flags and metadata).
+- Key actions performed: dtype enforcement, category normalization, missing value imputation (group median when category has >=3 non-missing values, else global median), numeric outlier flagging (IQr and z-score methods).
+- A 10-row sample can be found in output/cleaning_summary.md.
