@@ -729,15 +729,18 @@ def main():
     if not rp_patched:
         print("⚠️  report_packager_node patch: target cell not found")
 
-    # --- Patch cell 46 (supervisor_node): deterministic routing shortcuts ---
-    # Shortcut 1: data_cleaning_complete=True → force analyst (bypasses LLM routing to file_writer)
-    # Shortcut 2: analyst_complete=True and visualization_complete not True → force report_packager
-    #   (safety valve: viz recovery wrapper or viz_join should set visualization_complete; this
-    #    catches any edge case where viz_complete stays None after all viz_workers complete)
+    # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
+    # Only shortcut 1: data_cleaning_complete=True → force analyst.
+    # NOTE: Shortcut 2 (analyst_complete → report_packager) was REMOVED.
+    # Rationale: shortcut 2 fired immediately after analyst_complete=True, BEFORE the
+    # visualization subgraph could run at all — completely bypassing visualization.
+    # The viz recovery wrapper (_safe_visualization_invoke, cap=60) + viz_join
+    # (sets visualization_complete=True unconditionally) already solve the root cause.
+    # The analyst recovery wrapper always provides 2 VizSpecs, so viz_tasks is never empty.
     import re as _re4
 
     def _inject_supervisor_shortcut(src):
-        """Inject deterministic routing shortcuts into supervisor_node."""
+        """Inject deterministic data_cleaner→analyst routing into supervisor_node."""
         indent_match = _re4.search(r'^([ \t]*)def supervisor_node\(state', src, _re4.MULTILINE)
         if not indent_match:
             return src, False
@@ -757,17 +760,6 @@ def main():
             f"{body_indent}        'next_agent_metadata': None,\n"
             f"{body_indent}    }})\n"
             f"{body_indent}# --- END PATCH: force analyst routing ---\n"
-            f"{body_indent}# --- PATCH: force report routing after visualization ---\n"
-            f"{body_indent}if state.get('analyst_complete') is True and state.get('visualization_complete') is not True:\n"
-            f"{body_indent}    _sc = int(state.get('_count_', 0)) + 1\n"
-            f"{body_indent}    return Command(goto='report_packager', update={{\n"
-            f"{body_indent}        '_count_': _sc,\n"
-            f"{body_indent}        'next': 'report_packager',\n"
-            f"{body_indent}        'visualization_complete': True,\n"
-            f"{body_indent}        'next_agent_prompt': 'Please package the final report in HTML, Markdown, and PDF formats.',\n"
-            f"{body_indent}        'next_agent_metadata': None,\n"
-            f"{body_indent}    }})\n"
-            f"{body_indent}# --- END PATCH: force report routing ---\n"
         )
         new_src = _re4.sub(
             r'(^[ \t]*def supervisor_node\(state: State, config: RunnableConfig\):\n)',
@@ -785,9 +777,8 @@ def main():
         src = join_source(cell["source"])
         if "def supervisor_node" not in src or "make_supervisor_node" not in src:
             continue
-        # Skip if already patched with BOTH shortcuts
-        if "PATCH: force analyst routing" in src and "PATCH: force report routing" in src:
-            print(f"ℹ️  Cell idx {idx}: supervisor_node already has both routing patches")
+        if "PATCH: force analyst routing" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor_node already has analyst-routing patch")
             sup_patched = True
             break
         new_src, changed = _inject_supervisor_shortcut(src)
@@ -795,7 +786,7 @@ def main():
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"✅ Cell idx {idx}: supervisor_node patched — force analyst + report routing shortcuts")
+            print(f"✅ Cell idx {idx}: supervisor_node patched — force analyst routing after cleaning")
             sup_patched = True
         else:
             print(f"⚠️  Cell idx {idx}: supervisor_node def found but injection failed")
