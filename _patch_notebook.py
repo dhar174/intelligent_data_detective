@@ -288,6 +288,8 @@ def main():
         "        if 'GraphRecursion' not in _nm and 'recursion' not in str(_iaexc).lower():\n"
         "            raise\n"
         "        print(f'WARNING initial_analysis hit recursion limit at 80 -- building recovery InitialDescription')\n"
+        "        try: _log_recovery('initial_analysis', 80)\n"
+        "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
         "        _recovery_desc = InitialDescription(\n"
@@ -384,6 +386,8 @@ def main():
         "        if 'GraphRecursion' not in _nm and 'recursion' not in str(_exc).lower():\n"
         "            raise\n"
         "        print(f'⚠️ data_cleaner hit recursion limit — building recovery CleaningMetadata')\n"
+        "        try: _log_recovery('data_cleaner', 160)\n"
+        "        except Exception: pass\n"
         "        _msgs = list(inputs.get('messages') or [])\n"
         "        _msgs.append(_DLAIM(content='Data cleaning completed (recursion recovery).', name='data_cleaner'))\n"
         "        _ap = str(inputs.get('artifacts_path', '') or '')\n"
@@ -518,6 +522,8 @@ def main():
         "        if 'GraphRecursion' not in _nm and 'recursion' not in str(_aexc).lower():\n"
         "            raise\n"
         "        print(f'WARNING analyst hit recursion limit at 120 -- building recovery AnalysisInsights')\n"
+        "        try: _log_recovery('analyst', 120)\n"
+        "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
         "        _desc = str(inputs.get('dataset_description') or 'Dataset analysis (recovery).')\n"
@@ -637,6 +643,8 @@ def main():
         "        if 'GraphRecursion' not in _nm and 'recursion' not in str(_rexc).lower():\n"
         "            raise\n"
         "        print(f'WARNING report_packager hit recursion limit at 120 -- building recovery ReportResults')\n"
+        "        try: _log_recovery('report_packager', 120)\n"
+        "        except Exception: pass\n"
         "        _reports = str(inputs.get('reports_path') or (WORKING_DIRECTORY / 'reports'))\n"
         "        import os as _os2\n"
         "        _os2.makedirs(_reports, exist_ok=True)\n"
@@ -721,24 +729,20 @@ def main():
     if not rp_patched:
         print("⚠️  report_packager_node patch: target cell not found")
 
-    # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
-    # Root cause: after data_cleaner recovery, the LLM supervisor creates a Plan with
-    # step 3 = "Persist cleaned data" and routes to file_writer, which fails silently.
-    # After ~15 supervisor calls the pipeline ends without running analyst/viz/report_generator.
-    # Fix: inject a short-circuit at the top of supervisor_node that forces routing to analyst
-    # when data_cleaning_complete=True but analyst_complete is not True.
-    # Per rubber-duck review: only add data_cleaner→analyst shortcut (not broader viz/report);
-    # use 'is not True' check; reset next_agent_prompt and next_agent_metadata.
+    # --- Patch cell 46 (supervisor_node): deterministic routing shortcuts ---
+    # Shortcut 1: data_cleaning_complete=True → force analyst (bypasses LLM routing to file_writer)
+    # Shortcut 2: analyst_complete=True and visualization_complete not True → force report_packager
+    #   (safety valve: viz recovery wrapper or viz_join should set visualization_complete; this
+    #    catches any edge case where viz_complete stays None after all viz_workers complete)
     import re as _re4
 
     def _inject_supervisor_shortcut(src):
-        """Inject deterministic data_cleaner→analyst routing into supervisor_node."""
-        # Find function with any leading indentation
+        """Inject deterministic routing shortcuts into supervisor_node."""
         indent_match = _re4.search(r'^([ \t]*)def supervisor_node\(state', src, _re4.MULTILINE)
         if not indent_match:
             return src, False
-        fn_indent = indent_match.group(1)   # e.g. "    " (4 spaces if nested)
-        body_indent = fn_indent + "    "    # e.g. "        " (8 spaces for body)
+        fn_indent = indent_match.group(1)
+        body_indent = fn_indent + "    "
         shortcut = (
             f"{body_indent}# --- PATCH: force analyst routing after data cleaning ---\n"
             f"{body_indent}if state.get('data_cleaning_complete') is True and state.get('analyst_complete') is not True:\n"
@@ -753,8 +757,18 @@ def main():
             f"{body_indent}        'next_agent_metadata': None,\n"
             f"{body_indent}    }})\n"
             f"{body_indent}# --- END PATCH: force analyst routing ---\n"
+            f"{body_indent}# --- PATCH: force report routing after visualization ---\n"
+            f"{body_indent}if state.get('analyst_complete') is True and state.get('visualization_complete') is not True:\n"
+            f"{body_indent}    _sc = int(state.get('_count_', 0)) + 1\n"
+            f"{body_indent}    return Command(goto='report_packager', update={{\n"
+            f"{body_indent}        '_count_': _sc,\n"
+            f"{body_indent}        'next': 'report_packager',\n"
+            f"{body_indent}        'visualization_complete': True,\n"
+            f"{body_indent}        'next_agent_prompt': 'Please package the final report in HTML, Markdown, and PDF formats.',\n"
+            f"{body_indent}        'next_agent_metadata': None,\n"
+            f"{body_indent}    }})\n"
+            f"{body_indent}# --- END PATCH: force report routing ---\n"
         )
-        # Inject immediately after the def line (before first line of body)
         new_src = _re4.sub(
             r'(^[ \t]*def supervisor_node\(state: State, config: RunnableConfig\):\n)',
             lambda m: m.group(1) + shortcut,
@@ -771,9 +785,9 @@ def main():
         src = join_source(cell["source"])
         if "def supervisor_node" not in src or "make_supervisor_node" not in src:
             continue
-        # Skip if already patched
-        if "PATCH: force analyst routing" in src:
-            print(f"ℹ️  Cell idx {idx}: supervisor_node already has analyst-routing patch")
+        # Skip if already patched with BOTH shortcuts
+        if "PATCH: force analyst routing" in src and "PATCH: force report routing" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor_node already has both routing patches")
             sup_patched = True
             break
         new_src, changed = _inject_supervisor_shortcut(src)
@@ -781,13 +795,271 @@ def main():
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"✅ Cell idx {idx}: supervisor_node patched — force analyst routing after cleaning")
+            print(f"✅ Cell idx {idx}: supervisor_node patched — force analyst + report routing shortcuts")
             sup_patched = True
         else:
             print(f"⚠️  Cell idx {idx}: supervisor_node def found but injection failed")
         break
     if not sup_patched:
         print("⚠️  supervisor_node patch: target cell not found (no cell has both supervisor_node and make_supervisor_node)")
+
+    # --- Patch viz_worker: cap sub-agent recursion + recovery DataVisualization ---
+    # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
+    # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
+    # Fix: cap at 60 steps; on GraphRecursionError return a recovery DataVisualization.
+    # Note: save_viz_for_state(state, sr, ...).update({...}) always returns None (pre-existing bug
+    # — dict.update returns None). viz_join sets visualization_complete=True unconditionally, so
+    # the pipeline always progresses regardless of whether viz_worker returns a result.
+    SAFE_VIZ_HELPER = (
+        "# --- patched: safe invoke wrapper for viz_worker ---\n"
+        "def _safe_visualization_invoke(agent, inputs, config=None):\n"
+        "    cfg = dict(config or {})\n"
+        "    cfg['recursion_limit'] = 60  # cap viz_worker to prevent runaway loop\n"
+        "    from langchain_core.messages import AIMessage as _VAIM\n"
+        "    try:\n"
+        "        return agent.invoke(inputs, config=cfg)\n"
+        "    except Exception as _vexc:\n"
+        "        _nm = type(_vexc).__name__\n"
+        "        if 'GraphRecursion' not in _nm and 'recursion' not in str(_vexc).lower():\n"
+        "            raise\n"
+        "        print('WARNING visualization_agent hit recursion limit at 60 -- building recovery DataVisualization')\n"
+        "        try: _log_recovery('visualization', 60)\n"
+        "        except Exception: pass\n"
+        "        import uuid as _vuuid\n"
+        "        _recovery_dv = DataVisualization(\n"
+        "            reply_msg_to_supervisor='Visualization completed (recursion-limit recovery). No file produced.',\n"
+        "            finished_this_task=True,\n"
+        "            expect_reply=False,\n"
+        "            path='',\n"
+        "            visualization_id=_vuuid.uuid4().hex,\n"
+        "            visualization_type='none',\n"
+        "            visualization_description='Visualization skipped: recursion-limit recovery',\n"
+        "            visualization_style='none',\n"
+        "            visualization_title='Recovery Placeholder',\n"
+        "        )\n"
+        "        _rmsg = _VAIM(content='Visualization completed (recursion-limit recovery).', name='visualization')\n"
+        "        return {'messages': [_rmsg], 'structured_response': _recovery_dv}\n"
+        "# --- end patched viz helper ---\n\n"
+    )
+
+    viz_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_worker(" not in src or "visualization_agent.invoke(" not in src:
+            continue
+        if "_safe_visualization_invoke" in src:
+            print(f"ℹ️  Cell idx {idx}: viz_worker already has safe-invoke patch")
+            viz_patched = True
+            break
+        new_src = src
+
+        # 1. Inject helper before viz_worker definition
+        new_src = new_src.replace(
+            "def viz_worker(",
+            SAFE_VIZ_HELPER + "def viz_worker(",
+            1,
+        )
+
+        # 2. Replace visualization_agent.invoke call opening
+        new_src = new_src.replace(
+            "    result = visualization_agent.invoke(\n        {",
+            "    result = _safe_visualization_invoke(visualization_agent, {",
+            1,
+        )
+
+        # 3. Replace the config kwarg and closing paren to match new signature
+        new_src = new_src.replace(
+            "        },\n        config=state[\"_config\"]\n    )\n    # Reasoning",
+            "        }, config=state.get(\"_config\"))\n    # Reasoning",
+            1,
+        )
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: viz_worker patched (safe invoke + recursion cap=60 + recovery)")
+            viz_patched = True
+        else:
+            checks = [
+                ("def viz_worker(", "def viz_worker( target"),
+                ("    result = visualization_agent.invoke(\n        {", "viz invoke target"),
+                ('        },\n        config=state["_config"]\n    )\n    # Reasoning', "config close target"),
+            ]
+            for needle, label in checks:
+                if needle not in src:
+                    print(f"⚠️  Cell idx {idx}: viz_worker patch - '{label}' not found")
+            if new_src == src:
+                print(f"⚠️  Cell idx {idx}: viz_worker patch - no replacements made")
+        break
+    if not viz_patched:
+        print("⚠️  viz_worker patch: target cell not found")
+
+    # --- Patch stream_graph_output cell: inject PipelineLogger + stage-transition logging ---
+    # PipelineLogger runs inside the Jupyter kernel; os.getcwd() = REPO_ROOT (nbclient resources).
+    # Writes timestamped entries to notebook_run_log.txt; also emits to stdout for nbclient capture.
+    # Stage logging: parse "updates" events (already in stream_mode) to detect node entry/exit.
+    # All _log_*() calls in recovery wrappers are guarded with try/except (logger may not be
+    # defined if execution order is unusual).
+    PIPELINE_LOGGER_CODE = (
+        "# --- PIPELINE LOGGER (injected by _patch_notebook.py) ---\n"
+        "import logging as _pl_logging, time as _pl_time, sys as _pl_sys, os as _pl_os\n"
+        "_pl_log_path = _pl_os.path.join(_pl_os.getcwd(), 'notebook_run_log.txt')\n"
+        "_pl_logger = _pl_logging.getLogger('idd_pipeline')\n"
+        "_pl_logger.setLevel(_pl_logging.DEBUG)\n"
+        "if not _pl_logger.handlers:\n"
+        "    _pl_fh = _pl_logging.FileHandler(_pl_log_path, mode='w', encoding='utf-8')\n"
+        "    _pl_fh.setFormatter(_pl_logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))\n"
+        "    _pl_logger.addHandler(_pl_fh)\n"
+        "    _pl_sh = _pl_logging.StreamHandler(_pl_sys.stdout)\n"
+        "    _pl_sh.setFormatter(_pl_logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S'))\n"
+        "    _pl_logger.addHandler(_pl_sh)\n"
+        "_pl_stage_times: dict = {}\n"
+        "_pl_logged_nodes: set = set()\n"
+        "\n"
+        "def _log_stage_start(stage: str) -> None:\n"
+        "    if stage in _pl_logged_nodes: return\n"
+        "    _pl_logged_nodes.add(stage)\n"
+        "    _pl_stage_times[stage] = _pl_time.time()\n"
+        "    _pl_logger.info(f'STAGE {stage} START')\n"
+        "\n"
+        "def _log_stage_end(stage: str, status: str = 'OK') -> None:\n"
+        "    elapsed = _pl_time.time() - _pl_stage_times.get(stage, _pl_time.time())\n"
+        "    _pl_logger.info(f'STAGE {stage} DONE [{status}] ({elapsed:.0f}s)')\n"
+        "\n"
+        "def _log_recovery(agent: str, cap: int) -> None:\n"
+        "    _pl_logger.warning(f'RECOVERY {agent} hit recursion limit at {cap}')\n"
+        "\n"
+        "def _log_final_state(sv: dict) -> None:\n"
+        "    _pl_logger.info(\n"
+        "        f'FINAL initial_analysis={sv.get(\"initial_analysis_complete\")} '\n"
+        "        f'cleaning={sv.get(\"data_cleaning_complete\")} '\n"
+        "        f'analyst={sv.get(\"analyst_complete\")} '\n"
+        "        f'viz={sv.get(\"visualization_complete\")} '\n"
+        "        f'report={sv.get(\"report_generator_complete\")}'\n"
+        "    )\n"
+        "# --- END PIPELINE LOGGER ---\n\n"
+    )
+
+    STREAM_LOG_PATCH = (
+        "            # --- PATCH: log stage transitions ---\n"
+        "            try:\n"
+        "                if isinstance(event, tuple) and len(event) == 3:\n"
+        "                    _ev_ns, _ev_mode, _ev_data = event\n"
+        "                    if _ev_mode == 'updates' and isinstance(_ev_data, dict):\n"
+        "                        for _nname, _nupdate in _ev_data.items():\n"
+        "                            _log_stage_start(_nname)\n"
+        "                            if isinstance(_nupdate, dict):\n"
+        "                                for _flag, _stage in [\n"
+        "                                    ('initial_analysis_complete', 'initial_analysis'),\n"
+        "                                    ('data_cleaning_complete', 'data_cleaner'),\n"
+        "                                    ('analyst_complete', 'analyst'),\n"
+        "                                    ('visualization_complete', 'visualization'),\n"
+        "                                    ('report_generator_complete', 'report_packager'),\n"
+        "                                ]:\n"
+        "                                    if _nupdate.get(_flag) is True:\n"
+        "                                        _log_stage_end(_stage)\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            # --- END PATCH: log stage transitions ---\n"
+    )
+
+    sg_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def stream_graph_output(" not in src:
+            continue
+        if "_pl_logger" in src:
+            print(f"ℹ️  Cell idx {idx}: stream_graph_output already has pipeline logger")
+            sg_patched = True
+            break
+        new_src = src
+
+        # 1. Prepend PipelineLogger setup before stream_graph_output definition
+        new_src = new_src.replace(
+            "def stream_graph_output(",
+            PIPELINE_LOGGER_CODE + "def stream_graph_output(",
+            1,
+        )
+
+        # 2. Inject stage logging after process_stream_event call
+        OLD_PROC = (
+            "            current_step, empty_count = process_stream_event(\n"
+            "                event, current_step, empty_count\n"
+            "            )\n"
+            "\n"
+            "            # Warn if too many consecutive empties"
+        )
+        NEW_PROC = (
+            "            current_step, empty_count = process_stream_event(\n"
+            "                event, current_step, empty_count\n"
+            "            )\n"
+            + STREAM_LOG_PATCH +
+            "\n"
+            "            # Warn if too many consecutive empties"
+        )
+        new_src = new_src.replace(OLD_PROC, NEW_PROC, 1)
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: stream_graph_output patched (PipelineLogger + stage logging)")
+            sg_patched = True
+        else:
+            checks = [
+                ("def stream_graph_output(", "def stream_graph_output( target"),
+                ("            current_step, empty_count = process_stream_event(\n"
+                 "                event, current_step, empty_count\n"
+                 "            )\n", "process_stream_event target"),
+            ]
+            for needle, label in checks:
+                if needle not in src:
+                    print(f"⚠️  Cell idx {idx}: stream_graph_output patch - '{label}' not found")
+            if new_src == src:
+                print(f"⚠️  Cell idx {idx}: stream_graph_output patch - no replacements made")
+        break
+    if not sg_patched:
+        print("⚠️  stream_graph_output patch: target cell not found")
+
+    # --- Patch final-state cell: add _log_final_state call ---
+    # Find the post-run inspection cell that contains state_vals = final_state.values
+    # and the "Final state summary" print. Inject _log_final_state after state_vals assignment.
+    fs_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "state_vals = final_state.values" not in src or "Final state summary" not in src:
+            continue
+        if "_log_final_state" in src:
+            print(f"ℹ️  Cell idx {idx}: final-state cell already has _log_final_state")
+            fs_patched = True
+            break
+        new_src = src.replace(
+            "        state_vals = final_state.values\n"
+            "        print(\"— Final state summary —\")",
+            "        state_vals = final_state.values\n"
+            "        try: _log_final_state(state_vals)  # patched: log final pipeline state\n"
+            "        except Exception: pass\n"
+            "        print(\"— Final state summary —\")",
+            1,
+        )
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: final-state cell patched (_log_final_state injection)")
+            fs_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: final-state cell - _log_final_state replacement failed")
+        break
+    if not fs_patched:
+        print("⚠️  final-state patch: target cell not found")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re

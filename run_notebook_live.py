@@ -117,6 +117,31 @@ def execute_notebook():
     cell_errors = []
     start = datetime.now()
 
+    # Start log-tail thread: streams notebook_run_log.txt to stdout in real time
+    import threading as _threading
+
+    _log_file = REPO_ROOT / "notebook_run_log.txt"
+    _log_file.write_text("", encoding="utf-8")  # truncate / create
+    _stop_tail = _threading.Event()
+
+    def _tail_log_to_stdout(log_path: Path, stop_evt: _threading.Event) -> None:
+        import time
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(0, 2)  # seek to end (file is empty at start, robust for later writes)
+                while not stop_evt.is_set():
+                    line = fh.readline()
+                    if line:
+                        print(f"[PIPELINE] {line}", end="", flush=True)
+                    else:
+                        time.sleep(0.5)
+        except Exception as exc:
+            print(f"[PIPELINE tail error] {exc}", flush=True)
+
+    _tail_thread = _threading.Thread(target=_tail_log_to_stdout, args=(_log_file, _stop_tail), daemon=True)
+    _tail_thread.start()
+    print(f"OK  Log tail started → {_log_file}")
+
     try:
         client.execute()
         elapsed = (datetime.now() - start).total_seconds()
@@ -147,6 +172,12 @@ def execute_notebook():
     with open(executed_nb_path, "w", encoding="utf-8") as f:
         nbformat.write(nb, f)
     print(f"OK  Executed notebook saved: {executed_nb_path}")
+
+    # Stop log tail thread and drain remaining lines
+    _stop_tail.set()
+    _tail_thread.join(timeout=3)
+    log_size = _log_file.stat().st_size if _log_file.exists() else 0
+    print(f"OK  Pipeline log: {_log_file} ({log_size} bytes)")
 
     return nb, cell_errors, executed_nb_path
 
