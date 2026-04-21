@@ -41,6 +41,7 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 ```
 
 ## Collaboration rules
+- **Delegate all test harness work** (anything under `tests/`, `idd_core.py`, `pytest.ini`) to `idd-test-specialist` via `custom-agent`.
 - Delegate notebook cell edits to `notebook-specialist` via `custom-agent`.
 - Delegate docs/memory-bank updates to `docs-memory-curator` via `custom-agent`.
 - Keep diffs focused and explain validation steps before handing work back.
