@@ -873,7 +873,7 @@ class Plan(BaseNoExtrasModel):
     plan_steps: Annotated[List[PlanStep], AfterValidator(_sort_plan_steps)] = Field(...)
 
     _lock: ClassVar[threading.Lock] = threading.Lock()
-    _next = itertools.count(1).__next__
+    _counter: ClassVar[itertools.count] = itertools.count(1)
     _ver_assigned: bool = PrivateAttr(default=False)
 
 
@@ -896,7 +896,7 @@ class Plan(BaseNoExtrasModel):
     def _sync_steps_and_assert_increasing(self) -> "Plan":
         if not self._ver_assigned:
             with self._lock:
-                v = self._next()
+                v = Plan._counter.__next__()
             object.__setattr__(self, "plan_version", v)
             self._ver_assigned = True
 
@@ -948,8 +948,8 @@ class CompletedStepsAndTasks(BaseNoExtrasModel):
         # sort ascending by step_number
         dedup_list = list(seen.values())
         dedup_list.sort(key=lambda d: int(d.get("step_number", 10**9)))
-        # return the deduped raw list; PlanStep validation happens next
-        return list(seen.values())
+        # return the deduped, sorted raw list; PlanStep validation happens next
+        return dedup_list  # BUG FIX: was list(seen.values()) which discarded the sort
 
     @field_validator("completed_steps", mode="after")
     @classmethod
