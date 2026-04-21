@@ -280,9 +280,8 @@ def main():
     SAFE_INVOKE_HELPER = (
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
         "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
-        "    cfg = kwargs.get('config', {})\n"
-        "    if cfg and 'recursion_limit' not in cfg:\n"
-        "        cfg = {**cfg, 'recursion_limit': 160}\n"
+        "    cfg = dict(kwargs.get('config', {}))\n"
+        "    cfg['recursion_limit'] = 160  # always cap regardless of outer graph limit\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
         "    from langchain_core.messages import AIMessage as _DLAIM\n"
         "    try:\n"
