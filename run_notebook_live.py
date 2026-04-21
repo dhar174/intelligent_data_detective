@@ -17,6 +17,12 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+# Ensure stdout/stderr use UTF-8 so Unicode in notebook output doesn't crash the runner
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 REPO_ROOT = Path(__file__).resolve().parent
 PATCHED_NB = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
 OUTPUT_DIR = REPO_ROOT / "IDD_results"
@@ -117,7 +123,8 @@ def execute_notebook():
         print(f"\nOK  Notebook completed in {elapsed:.0f}s ({elapsed / 60:.1f} min)")
     except Exception as exc:
         elapsed = (datetime.now() - start).total_seconds()
-        print(f"\nWARN Notebook raised an exception after {elapsed:.0f}s: {exc}")
+        exc_str = str(exc).encode("utf-8", errors="replace").decode("utf-8")
+        print(f"\nWARN Notebook raised an exception after {elapsed:.0f}s: {exc_str[:500]}")
         # Collect cell errors from outputs
         for i, cell in enumerate(nb.cells):
             if cell.cell_type != "code":
