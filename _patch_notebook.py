@@ -197,6 +197,34 @@ def main():
         else:
             print("⚠️  Cell idx 72: could not find recursion_limit pattern to patch")
 
+    # --- Patch query_dataframe: add **kwargs so LLM-supplied 'params' doesn't crash ---
+    qdf_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def query_dataframe" not in src:
+            continue
+        new_src = src.replace(
+            "    filter_value: Optional[Any] = None,\n) -> tuple[str, dict]:",
+            "    filter_value: Optional[Any] = None,\n    **kwargs,\n) -> tuple[str, dict]:  # **kwargs absorbs extra LLM-supplied params",
+        )
+        if new_src == src:
+            # Try alternate closing paren style
+            new_src = src.replace(
+                "    filter_value: Optional[Any] = None,\n) -> ",
+                "    filter_value: Optional[Any] = None,\n    **kwargs,\n) -> ",
+            )
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: query_dataframe patched to accept **kwargs (fixes LLM 'params' arg)")
+            qdf_patched = True
+        break
+    if not qdf_patched:
+        print("⚠️  query_dataframe patch: cell not found or signature didn't match")
+
     # --- Patch cell 57 (data_cleaner_node): cap sub-agent recursion + force finished_this_task=True ---
     import re as _re3
     dc_patched = False
