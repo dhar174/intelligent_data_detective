@@ -18604,9 +18604,8 @@ if final_state and final_state.values:
     state_vals = final_state.values
     final_dst = persist_to_drive(WORKING_DIRECTORY, run_id = str(run_config.get("run_id") or state_vals.get("run_id") or state_vals.get("_config", {}).get("run_id", run_id)))
 
-    if state_vals.get("final_report") is not None and isinstance(state_vals.get("final_report"), ReportResults):
-        assert state_vals.get("final_report") is not None
-        report_results: ReportResults = state_vals.get("final_report")
+    if state_vals.get("report_results") is not None and isinstance(state_vals.get("report_results"), ReportResults):
+        report_results: ReportResults = state_vals.get("report_results")
         assert report_results is not None and isinstance(report_results, ReportResults)
 
         md_path = report_results.markdown_report_path

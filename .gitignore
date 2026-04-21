@@ -114,3 +114,8 @@ temp*.png
 .Trashes
 ehthumbs.db
 Thumbs.db
+# Executed notebooks with outputs
+*_patched.ipynb
+*_executed.ipynb
+IDD_results/executed_*.ipynb
+checkpoints.sqlite
