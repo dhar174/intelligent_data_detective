@@ -58,8 +58,13 @@ def check_nbclient():
 
 
 def execute_notebook():
+    import asyncio
     import nbformat
     from nbclient import NotebookClient
+
+    # Suppress ZMQ/tornado warning on Windows about ProactorEventLoop
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     if not PATCHED_NB.exists():
         print(f"ERR Patched notebook not found: {PATCHED_NB}")
@@ -163,10 +168,17 @@ def extract_output_paths_from_notebook(nb):
 def scan_artifacts():
     """Scan known output locations for artifacts."""
     patterns = [
+        # Primary: IDD_run dirs created by persist_to_drive
+        str(OUTPUT_DIR / "IDD_run_*" / "**" / "*.html"),
+        str(OUTPUT_DIR / "IDD_run_*" / "**" / "*.pdf"),
+        str(OUTPUT_DIR / "IDD_run_*" / "**" / "*.md"),
+        str(OUTPUT_DIR / "IDD_run_*" / "**" / "*.png"),
+        # Flat in IDD_results
         str(OUTPUT_DIR / "**" / "*.html"),
         str(OUTPUT_DIR / "**" / "*.pdf"),
         str(OUTPUT_DIR / "**" / "*.md"),
         str(OUTPUT_DIR / "**" / "*.png"),
+        # Repo-root artifacts dir
         str(REPO_ROOT / "artifacts" / "**" / "*.html"),
         str(REPO_ROOT / "artifacts" / "**" / "*.pdf"),
         str(REPO_ROOT / "artifacts" / "**" / "*.md"),

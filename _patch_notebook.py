@@ -27,10 +27,14 @@ print(f"Registered df_id: {df_id}, df_name: {df_name}")
 
 # Compose the sample prompt
 sample_prompt_text = (
-    f"Please analyze the dataset named {df_name}. You have tools for accessing the data "
-    f"using the following df_id: `{df_id}`. A full analysis will be performed, followed by "
-    f"meaningful visualizations (histograms of \'value\', bar chart of \'category\' counts, scatter of \'score\' vs \'value\'), "
-    f"then a final report in PDF, Markdown, and HTML."
+    f"Please perform a complete analysis of the dataset named '{df_name}' (df_id=`{df_id}`). "
+    f"Step 1 - DATA CLEANING (data_cleaner agent): clean the data (dedup, impute, normalize, outlier flags). "
+    f"When cleaning is complete, set finished_this_task=True and return to the supervisor. "
+    f"Step 2 - ANALYSIS (analyst agent): compute statistics and correlations. "
+    f"Step 3 - VISUALIZATION (visualization agent): create histograms of 'value', "
+    f"bar chart of 'category' counts, and scatter of 'score' vs 'value' as PNG files. "
+    f"Step 4 - REPORTING (report_generator agent): write a final report in PDF, Markdown, and HTML. "
+    f"Each agent should set finished_this_task=True as soon as its stage is done."
 )
 sample_prompt_tuple = ("user", sample_prompt_text)
 print("Prompt:", sample_prompt_text[:120])
@@ -165,6 +169,33 @@ def main():
         print("✅ Cell idx 7: fixed _is_colab() false-positive on Windows")
     else:
         print("⚠️  Cell idx 7: expected _is_colab() pattern not found — skipping")
+
+    # --- Patch cell idx 72: increase recursion_limit (120 is too low; data cleaner loops) ---
+    import re as _re2
+    c72 = cells[72]
+    src72 = join_source(c72["source"])
+    new_src72 = _re2.sub(
+        r'recursion_limit\s*=\s*120\s+if\s+not\s+use_local_llm\s+else\s+300',
+        'recursion_limit=400  # increased from 120; data cleaner needs more steps',
+        src72,
+    )
+    if new_src72 != src72:
+        c72["source"] = new_src72
+        if c72.get("cell_type") == "code":
+            c72["outputs"] = []
+            c72["execution_count"] = None
+        print("✅ Cell idx 72: recursion_limit increased to 400")
+    else:
+        # Broader fallback: replace any recursion_limit=120
+        new_src72 = src72.replace("recursion_limit=120", "recursion_limit=400")
+        if new_src72 != src72:
+            c72["source"] = new_src72
+            if c72.get("cell_type") == "code":
+                c72["outputs"] = []
+                c72["execution_count"] = None
+            print("✅ Cell idx 72: recursion_limit set to 400 (broad replace)")
+        else:
+            print("⚠️  Cell idx 72: could not find recursion_limit pattern to patch")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
