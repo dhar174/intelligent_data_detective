@@ -532,3 +532,27 @@ class TestBaseFieldsRequired:
         )
         assert rr.finished_this_task is True
         assert "recovery" in rr.html_report_path
+
+    def test_initial_description_missing_base_fields_raises(self):
+        from idd_core import InitialDescription
+        with pytest.raises(ValidationError):
+            InitialDescription(
+                dataset_description="A dataset",
+                data_sample="col1,col2\n1,2",
+                notes="clean",
+                # missing base fields
+            )
+
+    def test_initial_description_recovery_object_valid(self):
+        """Exactly what _safe_initial_analysis_invoke() recovery builds."""
+        from idd_core import InitialDescription
+        recovery = InitialDescription(
+            reply_msg_to_supervisor="Initial analysis completed via recursion-limit recovery.",
+            finished_this_task=True,
+            expect_reply=False,
+            dataset_description="Dataset analysis in progress. Contains numeric and categorical columns requiring cleaning.",
+            data_sample="Recovery: sample data not available (recursion limit reached).",
+            notes="Recovery: initial analysis hit step limit. Proceeding with data cleaning.",
+        )
+        assert recovery.finished_this_task is True
+        assert "recovery" in recovery.notes.lower()
