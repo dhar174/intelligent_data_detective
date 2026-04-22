@@ -3055,6 +3055,60 @@ def main():
     if not fixq_patched:
         print("⚠️  Fix Q: State TypedDict cell not found")
 
+    # --- Fix R: Fix Optional[Annotated[...]] → Annotated[Optional[...], reducer] ---
+    # LangGraph only sees a reducer when Annotated is the OUTERMOST type wrapper.
+    # Optional[Annotated[X, r]] = Union[Annotated[X, r], None] — LangGraph cannot
+    # find the reducer inside Union, so it creates a LastValue channel → InvalidUpdateError
+    # when parallel viz_workers both write the field in the same superstep.
+    # Affected fields: final_turn_msgs_list, supervisor_to_agent_msgs
+    FIXR_GUARD = "# Fix R: Annotated outermost for concurrent-safe reducers"
+    fixr_old_ftl = (
+        "    final_turn_msgs_list: Optional[Annotated[list[Union[AIMessage,ToolMessage]], add_messages]] # these are the final message from each agent turn"
+    )
+    fixr_new_ftl = (
+        "    final_turn_msgs_list: Annotated[Optional[list[Union[AIMessage,ToolMessage]]], lambda a, b: add_messages(a or [], b or [])]  # Fix R: Annotated outermost for concurrent-safe reducers"
+    )
+    fixr_old_sam = (
+        "    supervisor_to_agent_msgs: Optional[Annotated[list[SendAgentMessage], operator.add]]"
+    )
+    fixr_new_sam = (
+        "    supervisor_to_agent_msgs: Annotated[Optional[list[SendAgentMessage]], lambda a, b: (a or []) + (b or [])]  # Fix R"
+    )
+
+    fixr_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State" not in src or "final_turn_msgs_list" not in src:
+            continue
+        if FIXR_GUARD in src:
+            print(f"ℹ️  Fix R already applied (cell {idx})")
+            fixr_patched = True
+            break
+        changed = False
+        new_src = src
+        if fixr_old_ftl in new_src:
+            new_src = new_src.replace(fixr_old_ftl, fixr_new_ftl, 1)
+            print(f"✅ Cell idx {idx}: Fix R — final_turn_msgs_list Annotated outermost")
+            changed = True
+        else:
+            print(f"⚠️  Fix R: final_turn_msgs_list pattern not found in cell {idx}")
+        if fixr_old_sam in new_src:
+            new_src = new_src.replace(fixr_old_sam, fixr_new_sam, 1)
+            print(f"✅ Cell idx {idx}: Fix R — supervisor_to_agent_msgs Annotated outermost")
+            changed = True
+        else:
+            print(f"⚠️  Fix R: supervisor_to_agent_msgs pattern not found in cell {idx}")
+        if changed:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        fixr_patched = True
+        break
+    if not fixr_patched:
+        print("⚠️  Fix R: State TypedDict cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
