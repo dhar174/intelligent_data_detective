@@ -1010,6 +1010,68 @@ def main():
         break
     if not fixAC_patched:
         print("W  Fix AC: State class target not found")
+
+    # --- Fix AD: fix route_to_writer + write_output_to_file to reach END when report is done ---
+    # route_to_writer returns "supervisor" when report_done and not report_ready, even when
+    # already_wrote=True — causing infinite supervisor↔FINISH loop after recovery.
+    # write_output_to_file also loops to supervisor when file_writer_complete=True.
+    fixAD_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def write_output_to_file" not in src or "def route_to_writer" not in src:
+            continue
+        if "# Fix AD" in src:
+            print(f"i  Cell idx {idx}: Fix AD (route_to_writer/write_output_to_file END fix) already applied")
+            fixAD_patched = True
+            break
+        new_src = src
+        # 1) Fix route_to_writer: add not already_wrote guard and END-when-done clause
+        _AD_OLD_RTW = (
+            '    if (report_done and not report_ready):\n'
+            '      return "supervisor"\n'
+            '    if (not report_done and not report_ready and not already_wrote):\n'
+            '      return "supervisor"\n'
+            '    if (report_done and report_ready and already_wrote):\n'
+            '      return "END"\n'
+            '    return "supervisor"\n'
+        )
+        _AD_NEW_RTW = (
+            '    if (report_done and not report_ready and not already_wrote):\n'
+            '      return "supervisor"  # Fix AD: added not already_wrote guard\n'
+            '    if (not report_done and not report_ready and not already_wrote):\n'
+            '      return "supervisor"\n'
+            '    if (report_done and already_wrote):  # Fix AD: END regardless of section count\n'
+            '      return "END"\n'
+            '    return "supervisor"\n'
+        )
+        if _AD_OLD_RTW in new_src:
+            new_src = new_src.replace(_AD_OLD_RTW, _AD_NEW_RTW, 1)
+            print(f"  AD-1: route_to_writer fixed")
+        else:
+            print(f"W  Fix AD: route_to_writer pattern not found in cell {idx}")
+        # 2) Fix write_output_to_file: when file_writer_complete, return Command(goto=END)
+        _AD_OLD_WOF = '    return Command(goto="supervisor")\n'
+        _AD_NEW_WOF = (
+            '    if state.get("file_writer_complete") or (state.get("report_results") and state.get("report_generator_complete")):  # Fix AD\n'
+            '        return Command(goto=END)\n'
+            '    return Command(goto="supervisor")\n'
+        )
+        if _AD_OLD_WOF in new_src:
+            new_src = new_src.replace(_AD_OLD_WOF, _AD_NEW_WOF, 1)
+            print(f"  AD-2: write_output_to_file fixed")
+        else:
+            print(f"W  Fix AD: write_output_to_file fallback pattern not found in cell {idx}")
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AD applied — routing/write functions now reach END")
+            fixAD_patched = True
+        break
+    if not fixAD_patched:
+        print("W  Fix AD: target cell not found")
 
     # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
     # Only shortcut 1: data_cleaning_complete=True → force analyst.
