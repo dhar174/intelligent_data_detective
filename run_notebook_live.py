@@ -150,8 +150,24 @@ def execute_notebook(resume: bool = False):
     if resume:
         print(f"OK  --resume mode: preserving {ckpt_file.name} for checkpoint restore")
     elif ckpt_file.exists():
-        ckpt_file.unlink()
-        print(f"OK  Deleted stale {ckpt_file.name} for clean run")
+        for _attempt in range(5):
+            try:
+                # Also delete WAL/SHM sidecar files first
+                for _sidecar in (ckpt_file.parent.glob("checkpoints.sqlite-*")):
+                    try:
+                        _sidecar.unlink()
+                    except OSError:
+                        pass
+                ckpt_file.unlink()
+                print(f"OK  Deleted stale {ckpt_file.name} for clean run")
+                break
+            except PermissionError:
+                import time as _time
+                print(f"WARN {ckpt_file.name} locked (attempt {_attempt+1}/5), retrying in 2s...")
+                _time.sleep(2)
+        else:
+            print(f"WARN Could not delete {ckpt_file.name} — another process may hold it open. "
+                  f"Kill lingering Python kernels and retry.")
 
     try:
         client.execute()

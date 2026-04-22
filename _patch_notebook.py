@@ -312,18 +312,31 @@ def main():
         # Step 2: inject params-extraction logic right before the first `try:`
         # inside query_dataframe (per LangGraph tool-writing best practice)
         EXTRACT_BLOCK = (
-            "    # Normalize: extract flat fields from nested params if LLM used nested form\n"
+            "    # Normalize: extract flat fields from nested params if LLM used nested form.\n"
+            "    # params may arrive as a Pydantic model OR a plain dict — handle both.\n"
             "    if params is not None:\n"
-            "        columns = columns or getattr(params, 'columns', None)\n"
-            "        operation = operation or getattr(params, 'operation', None)\n"
-            "        filter_column = filter_column or getattr(params, 'filter_column', None)\n"
+            "        def _pget(p, key, default=None):\n"
+            "            if isinstance(p, dict): return p.get(key, default)\n"
+            "            return getattr(p, key, default)\n"
+            "        columns = columns or _pget(params, 'columns') or []\n"
+            "        operation = operation or _pget(params, 'operation')\n"
+            "        _fc = _pget(params, 'filter_column')\n"
+            "        filter_column = filter_column or (_fc if _fc else None)\n"
             "        if filter_value is None:\n"
-            "            filter_value = getattr(params, 'filter_value', None)\n"
+            "            filter_value = _pget(params, 'filter_value')\n"
+            "        if not df_id:\n"
+            "            df_id = _pget(params, 'df_id')\n"
         )
-        # Insert before the `try:` that opens the function body
-        NEW_SIG_TRY = NEW_SIG + "\n" + EXTRACT_BLOCK + "    try:"
-        if NEW_SIG + "\n    try:" in new_src:
-            new_src = new_src.replace(NEW_SIG + "\n    try:", NEW_SIG_TRY)
+        # Insert before the `try:` that opens the function body.
+        # Jupyter source may have varying blank lines after the signature, so use regex.
+        import re as _re_qdf
+        _sig_try_pat = _re_qdf.compile(
+            _re_qdf.escape(NEW_SIG) + r'\s*try:',
+            _re_qdf.DOTALL
+        )
+        _match = _sig_try_pat.search(new_src)
+        if _match:
+            new_src = new_src[:_match.start()] + NEW_SIG + "\n" + EXTRACT_BLOCK + "    try:" + new_src[_match.end():]
 
         if new_src != src:
             cell["source"] = new_src
@@ -2394,6 +2407,119 @@ def main():
         break
     if not fixh_patched:
         print("⚠️  Fix H: graph compilation cell not found")
+
+    # --- Fix I: sandbox_filesystem — allow reads outside sandbox (only block writes) ---
+    # matplotlib reads font files from its own data directory (site-packages) which is outside
+    # the sandbox root, causing PermissionError. The sandbox should only block *writes* outside
+    # the sandbox to prevent LLM code from clobbering arbitrary files.
+    FIXI_GUARD = "# Fix I: only block writes outside sandbox"
+    FIXI_TARGET_CELL_STR = "Access outside sandbox is blocked"
+
+    fixi_old = (
+        "    def _guarded_open(file, mode=\"r\", *args, **kwargs):\n"
+        "        p = PathlibPath(file)\n"
+        "        # make relative paths relative to the sandbox root\n"
+        "        p = (root / p).resolve() if not p.is_absolute() else p.resolve()\n"
+        "        if not _inside(root, p):\n"
+        "            raise PermissionError(f\"Access outside sandbox is blocked: {p}\")\n"
+        "        if any(flag in mode for flag in (\"w\", \"a\", \"x\", \"+\")):\n"
+        "            p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        return orig_open(p, mode, *args, **kwargs)"
+    )
+    fixi_new = (
+        "    def _guarded_open(file, mode=\"r\", *args, **kwargs):\n"
+        "        p = PathlibPath(file)\n"
+        "        # make relative paths relative to the sandbox root\n"
+        "        p = (root / p).resolve() if not p.is_absolute() else p.resolve()\n"
+        "        # Fix I: only block writes outside sandbox; allow reads (e.g. matplotlib fonts)\n"
+        "        _is_write = any(flag in mode for flag in (\"w\", \"a\", \"x\", \"+\"))\n"
+        "        if not _inside(root, p) and _is_write:\n"
+        "            raise PermissionError(f\"Write outside sandbox is blocked: {p}\")\n"
+        "        if _is_write:\n"
+        "            p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        return orig_open(p, mode, *args, **kwargs)"
+    )
+
+    fixi_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if FIXI_TARGET_CELL_STR not in src:
+            continue
+        if FIXI_GUARD in src:
+            print(f"ℹ️  Fix I already applied (cell {idx})")
+            fixi_patched = True
+            break
+        if fixi_old not in src:
+            print(f"⚠️  Fix I: _guarded_open pattern not found in cell {idx} — skipping")
+            fixi_patched = True
+            break
+        new_src = src.replace(fixi_old, fixi_new, 1)
+        cell["source"] = new_src
+        if "outputs" in cell:
+            cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix I sandbox read exemption applied")
+        fixi_patched = True
+        break
+    if not fixi_patched:
+        print("⚠️  Fix I: sandbox cell not found")
+
+    # --- Fix J: inject matplotlib Agg backend + MPLCONFIGDIR inside sandbox before each REPL call ---
+    # matplotlib's first render may try to write a font cache to ~/.matplotlib (outside sandbox).
+    # Pre-setting MPLBACKEND=Agg and MPLCONFIGDIR=<sandbox_root> before the sandbox context ensures
+    # headless rendering and sandbox-safe cache writes.
+    FIXJ_GUARD = "# Fix J: matplotlib Agg + MPLCONFIGDIR"
+    FIXJ_TARGET_STR = "with sandbox_filesystem(sandbox_root, block_chdir=True):"
+
+    fixj_old = (
+        "    try:\n"
+        "        # Use Runnable-first API; respect config/tracing/ids\n"
+        "        with sandbox_filesystem(sandbox_root, block_chdir=True):\n"
+        "            result = python_repl.invoke({\"query\": code_to_run}, config=python_repl.globals[\"RUNTIME\"])"
+    )
+    fixj_new = (
+        "    try:\n"
+        "        # Fix J: matplotlib Agg + MPLCONFIGDIR — set before sandbox so matplotlib\n"
+        "        # uses headless backend and writes its font cache inside the sandbox\n"
+        "        import os as _os_fixj\n"
+        "        _os_fixj.environ.setdefault('MPLBACKEND', 'Agg')\n"
+        "        _os_fixj.environ.setdefault('MPLCONFIGDIR', str(sandbox_root))\n"
+        "        del _os_fixj\n"
+        "        # Use Runnable-first API; respect config/tracing/ids\n"
+        "        with sandbox_filesystem(sandbox_root, block_chdir=True):\n"
+        "            result = python_repl.invoke({\"query\": code_to_run}, config=python_repl.globals[\"RUNTIME\"])"
+    )
+
+    fixj_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if FIXJ_TARGET_STR not in src:
+            continue
+        if FIXJ_GUARD in src:
+            print(f"ℹ️  Fix J already applied (cell {idx})")
+            fixj_patched = True
+            break
+        if fixj_old not in src:
+            print(f"⚠️  Fix J: python_repl_tool invoke pattern not found in cell {idx} — skipping")
+            # Try a looser check
+            if "sandbox_filesystem(sandbox_root" in src:
+                print(f"   (cell {idx} contains sandbox_filesystem but pattern mismatch)")
+            fixj_patched = True
+            break
+        new_src = src.replace(fixj_old, fixj_new, 1)
+        cell["source"] = new_src
+        if "outputs" in cell:
+            cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix J matplotlib Agg/MPLCONFIGDIR injection applied")
+        fixj_patched = True
+        break
+    if not fixj_patched:
+        print("⚠️  Fix J: python_repl_tool invoke cell not found")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
