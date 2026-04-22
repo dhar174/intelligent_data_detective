@@ -2611,6 +2611,287 @@ def main():
     if not fixm_patched:
         print("⚠️  Fix M: visualization_orchestrator cell not found")
 
+    # ==========================================================================
+    # Fix O: Fix _normalize_viz_spec + visualization_orchestrator + assign_viz_workers
+    # ==========================================================================
+    # Root cause of viz=False in Run 30: normalization ALWAYS failed because:
+    #   1. MANDATORY_SPEC_KEYS used "type" instead of "viz_type"
+    #   2. ALLOWED_SPEC_KEYS filter strips required BaseNoExtrasModel fields
+    #      → VizSpec.model_validate(stripped_dict) raises ValidationError
+    #   3. spec["df_id"] / spec['type'] subscript on VizSpec → TypeError
+    #   4. assign_viz_workers returns [] if viz_specs is empty → LangGraph END
+    # ==========================================================================
+
+    # --- Fix O-1: MANDATORY_SPEC_KEYS "type" → "viz_type" ---
+    FIXO1_GUARD = '# Fix O: "type" → "viz_type"'
+    fixo1_old = 'MANDATORY_SPEC_KEYS = {"title", "type", "df_id"}'
+    fixo1_new = 'MANDATORY_SPEC_KEYS = {"title", "viz_type", "df_id"}  # Fix O: "type" → "viz_type"'
+
+    fixo1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def visualization_orchestrator" not in src and "MANDATORY_SPEC_KEYS" not in src:
+            continue
+        if FIXO1_GUARD in src:
+            print(f"ℹ️  Fix O-1 already applied (cell {idx})")
+            fixo1_patched = True
+            break
+        if fixo1_old not in src:
+            continue
+        new_src = src.replace(fixo1_old, fixo1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix O-1 MANDATORY_SPEC_KEYS 'type'→'viz_type'")
+        fixo1_patched = True
+        break
+    if not fixo1_patched:
+        print("⚠️  Fix O-1: MANDATORY_SPEC_KEYS pattern not found")
+
+    # --- Fix O-2: _normalize_viz_spec — fix setdefault(None) + return model_copy ---
+    FIXO2_GUARD = "# Fix O: use model_copy to preserve required fields"
+    fixo2_old = (
+        "    spec = raw.model_dump()\n"
+        "    spec.setdefault(\"title\", _norm_title(spec.get(\"title\") or fallback_title))\n"
+        "    spec.setdefault(\"viz_type\",  _guess_viz_type(spec.get(\"type\") or spec.get(\"title\", \"\") or \"\"))\n"
+        "    spec.setdefault(\"df_id\", default_df_id)\n"
+        "\n"
+        "    # Drop unknown keys (keep state compact / JSON-safe)\n"
+        "    spec = {k: v for k, v in spec.items() if k in ALLOWED_SPEC_KEYS}\n"
+        "\n"
+        "    # Very light validation\n"
+        "    missing = MANDATORY_SPEC_KEYS - set(spec)\n"
+        "    if missing:\n"
+        "        raise ValueError(f\"viz_spec missing required keys: {sorted(missing)}\")\n"
+        "    try:\n"
+        "      spec = VizSpec.model_validate(spec)\n"
+        "    except ValidationError as e:\n"
+        "        VizSpec(**spec)\n"
+        "    if not isinstance(spec, VizSpec):\n"
+        "        return raw\n"
+        "    return spec"
+    )
+    fixo2_new = (
+        "    spec = raw.model_dump()\n"
+        "    # Fix O: use 'if not' instead of setdefault so None values are also fixed\n"
+        "    if not spec.get(\"title\"): spec[\"title\"] = _norm_title(fallback_title)\n"
+        "    if not spec.get(\"viz_type\"): spec[\"viz_type\"] = _guess_viz_type(spec.get(\"type\") or spec.get(\"title\", \"\") or \"\")\n"
+        "    if not spec.get(\"df_id\"): spec[\"df_id\"] = default_df_id\n"
+        "\n"
+        "    # Drop unknown keys (keep state compact / JSON-safe)\n"
+        "    spec = {k: v for k, v in spec.items() if k in ALLOWED_SPEC_KEYS}\n"
+        "\n"
+        "    # Very light validation\n"
+        "    missing = MANDATORY_SPEC_KEYS - set(spec)\n"
+        "    if missing:\n"
+        "        raise ValueError(f\"viz_spec missing required keys: {sorted(missing)}\")\n"
+        "    # Fix O: use model_copy to preserve required fields (reply_msg_to_supervisor etc.)\n"
+        "    try:\n"
+        "        return raw.model_copy(update={k: v for k, v in spec.items() if v is not None})\n"
+        "    except Exception:\n"
+        "        return raw  # Fallback: original VizSpec unchanged"
+    )
+
+    fixo2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def _normalize_viz_spec" not in src:
+            continue
+        if FIXO2_GUARD in src:
+            print(f"ℹ️  Fix O-2 already applied (cell {idx})")
+            fixo2_patched = True
+            break
+        if fixo2_old not in src:
+            print(f"⚠️  Fix O-2: _normalize_viz_spec body pattern not found in cell {idx}")
+            fixo2_patched = True
+            break
+        new_src = src.replace(fixo2_old, fixo2_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix O-2 _normalize_viz_spec model_copy + setdefault→if-not")
+        fixo2_patched = True
+        break
+    if not fixo2_patched:
+        print("⚠️  Fix O-2: _normalize_viz_spec cell not found")
+
+    # --- Fix O-3: visualization_orchestrator — fix dict/VizSpec attribute access + normalization loop ---
+    FIXO3_GUARD = "# Fix O: VizSpec/dict-safe attr access"
+    fixo3_old_dfid = (
+        "    warnings = []\n"
+        "    for i, spec in enumerate(norm_specs):\n"
+        "        df_id = spec[\"df_id\"]\n"
+        "        if registry.get_dataframe(df_id) is None:\n"
+        "            warnings.append(f\"[Orchestrator] df_id '{df_id}' is not loaded; worker may need to load it from registry path.\")"
+    )
+    fixo3_new_dfid = (
+        "    warnings = []\n"
+        "    for i, spec in enumerate(norm_specs):\n"
+        "        df_id = spec.get(\"df_id\", \"\") if isinstance(spec, dict) else getattr(spec, \"df_id\", \"\")  # Fix O: VizSpec/dict-safe attr access\n"
+        "        if df_id and registry.get_dataframe(df_id) is None:\n"
+        "            warnings.append(f\"[Orchestrator] df_id '{df_id}' is not loaded; worker may need to load it from registry path.\")"
+    )
+
+    fixo3_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def visualization_orchestrator" not in src:
+            continue
+        if FIXO3_GUARD in src:
+            print(f"ℹ️  Fix O-3 already applied (cell {idx})")
+            fixo3_patched = True
+            break
+        if fixo3_old_dfid not in src:
+            print(f"⚠️  Fix O-3: df_id loop pattern not found in cell {idx}")
+            fixo3_patched = True
+            break
+        new_src = src.replace(fixo3_old_dfid, fixo3_new_dfid, 1)
+
+        # Also fix plan_preview spec['type'] → getattr
+        fixo3_planpreview_old = (
+            "    plan_preview = \"\\n\".join([f\"  - {spec['title']} ({spec['type']}) on {spec.get('df_id','?')}\" for spec in norm_specs[:5]])"
+        )
+        fixo3_planpreview_new = (
+            "    plan_preview = \"\\n\".join([f\"  - {(s.get('title','?') if isinstance(s,dict) else getattr(s,'title','?'))}"
+            " ({(s.get('viz_type','?') if isinstance(s,dict) else getattr(s,'viz_type','?'))})"
+            " on {(s.get('df_id','?') if isinstance(s,dict) else getattr(s,'df_id','?'))}\" for s in norm_specs[:5]])"
+            "  # Fix O: VizSpec/dict-safe"
+        )
+        if fixo3_planpreview_old in new_src:
+            new_src = new_src.replace(fixo3_planpreview_old, fixo3_planpreview_new, 1)
+
+        # Fix normalization loop: replace tasks.pop(i) with mark-and-sweep approach
+        fixo3_loop_old = (
+            "    # 4) Normalize/validate\n"
+            "    norm_specs: List[dict] = []\n"
+            "    for i, t in enumerate(tasks):\n"
+            "        raw_spec = specs[i] if i < len(specs) else None\n"
+            "        if not raw_spec:\n"
+            "            break\n"
+            "        try:\n"
+            "            assert isinstance(raw_spec, VizSpec)\n"
+            "            norm_specs.append(_normalize_viz_spec(\n"
+            "                raw_spec, default_df_id=(raw_spec.df_id or default_df_id or \"\"),\n"
+            "                fallback_title=(raw_spec.title or t)\n"
+            "            ))\n"
+            "        except Exception as e:\n"
+            "            # If one spec is invalid, drop the pair (or log it)\n"
+            "            msg_key = f\"viz_orch_skip_{i}_{datetime.now().strftime('%H%M%S')}\"\n"
+            "            pr = {}\n"
+            "            pr[msg_key] = f\"Skipping task {i}: {e}\"\n"
+            "            # remove the task to keep pairs aligned\n"
+            "            tasks.pop(i)\n"
+            "            continue\n"
+            "\n"
+            "    # prune skipped tasks\n"
+            "    tasks = [t for t in tasks if t is not None]\n"
+            "    # keep norm_specs aligned with tasks length\n"
+            "    norm_specs = norm_specs[:len(tasks)]"
+        )
+        fixo3_loop_new = (
+            "    # 4) Normalize/validate — Fix O: build fresh lists (no mutation during iteration)\n"
+            "    norm_specs: List[VizSpec] = []\n"
+            "    valid_tasks: List[str] = []\n"
+            "    for i, t in enumerate(tasks):\n"
+            "        raw_spec = specs[i] if i < len(specs) else None\n"
+            "        if not raw_spec:\n"
+            "            continue\n"
+            "        # Fix O: coerce dict VizSpecs from SQLite deserialization\n"
+            "        if isinstance(raw_spec, dict):\n"
+            "            try: raw_spec = VizSpec(**raw_spec)\n"
+            "            except Exception: continue\n"
+            "        if not isinstance(raw_spec, VizSpec):\n"
+            "            continue\n"
+            "        try:\n"
+            "            norm_specs.append(_normalize_viz_spec(\n"
+            "                raw_spec, default_df_id=(raw_spec.df_id or default_df_id or \"\"),\n"
+            "                fallback_title=(raw_spec.title or t)\n"
+            "            ))\n"
+            "            valid_tasks.append(t)\n"
+            "        except Exception as e:\n"
+            "            msg_key = f\"viz_orch_skip_{i}_{datetime.now().strftime('%H%M%S')}\"\n"
+            "            print(f\"[viz_orchestrator] Skipping task {i}: {e}\")\n"
+            "    tasks = valid_tasks"
+        )
+        if fixo3_loop_old in new_src:
+            new_src = new_src.replace(fixo3_loop_old, fixo3_loop_new, 1)
+        else:
+            print(f"  ⚠️  Fix O-3: normalization loop pattern not found in cell {idx} — skipping loop fix")
+
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix O-3 viz_orchestrator dict/VizSpec attr + loop mutation fixed")
+        fixo3_patched = True
+        break
+    if not fixo3_patched:
+        print("⚠️  Fix O-3: visualization_orchestrator cell not found")
+
+    # --- Fix O-4: assign_viz_workers — dict coercion + empty viz_specs routing ---
+    FIXO4_GUARD = "# Fix O: convert dict VizSpecs from SQLite checkpoint"
+    fixo4_old = (
+        "def assign_viz_workers(state: State):\n"
+        "    tasks = state.get(\"viz_tasks\", []) or []\n"
+        "    viz_specs = state.get(\"viz_specs\", []) or []\n"
+        "    if not tasks:\n"
+        "        return Send(\"report_orchestrator\", {\"messages\": AIMessage(content=\"No viz tasks to assign. If this doesn't sound right, inform Supervisor agent or visualization agent\")})\n"
+        "    for sp in viz_specs:\n"
+        "        if not sp.viz_id:\n"
+        "            sp.viz_id = uuid.uuid4().hex\n"
+        "    return [Send(\"viz_worker\", {\"individual_viz_task\": t, \"viz_spec\": viz_specs[i]}) for i, t in enumerate(tasks) if i < len(viz_specs)]"
+    )
+    fixo4_new = (
+        "def assign_viz_workers(state: State):\n"
+        "    tasks = state.get(\"viz_tasks\", []) or []\n"
+        "    viz_specs = state.get(\"viz_specs\", []) or []\n"
+        "    # Fix O: convert dict VizSpecs from SQLite checkpoint deserialization\n"
+        "    _safe_specs = []\n"
+        "    for sp in viz_specs:\n"
+        "        if isinstance(sp, dict):\n"
+        "            try: _safe_specs.append(VizSpec(**sp))\n"
+        "            except Exception: pass\n"
+        "        elif isinstance(sp, VizSpec):\n"
+        "            _safe_specs.append(sp)\n"
+        "    viz_specs = _safe_specs\n"
+        "    if not tasks or not viz_specs:\n"
+        "        return Send(\"report_orchestrator\", {\"messages\": AIMessage(content=\"No viz tasks or specs to assign. Proceeding to report generation.\")})\n"
+        "    for sp in viz_specs:\n"
+        "        if not getattr(sp, 'viz_id', None):\n"
+        "            sp.viz_id = uuid.uuid4().hex\n"
+        "    return [Send(\"viz_worker\", {\"individual_viz_task\": t, \"viz_spec\": viz_specs[i]}) for i, t in enumerate(tasks) if i < len(viz_specs)]"
+    )
+
+    fixo4_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def assign_viz_workers" not in src:
+            continue
+        if FIXO4_GUARD in src:
+            print(f"ℹ️  Fix O-4 already applied (cell {idx})")
+            fixo4_patched = True
+            break
+        if fixo4_old not in src:
+            print(f"⚠️  Fix O-4: assign_viz_workers pattern not found in cell {idx}")
+            fixo4_patched = True
+            break
+        new_src = src.replace(fixo4_old, fixo4_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix O-4 assign_viz_workers dict coercion + empty-specs routing")
+        fixo4_patched = True
+        break
+    if not fixo4_patched:
+        print("⚠️  Fix O-4: assign_viz_workers cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
