@@ -2892,6 +2892,93 @@ def main():
     if not fixo4_patched:
         print("⚠️  Fix O-4: assign_viz_workers cell not found")
 
+    # ==========================================================================
+    # Fix P: viz_worker crash — unhashable VizSpec in set literal + None viz_instructions
+    # ==========================================================================
+    # Root cause of Run 31 failure:
+    #   1. `task = state.get("individual_viz_task",{state.get("viz_spec", None)})`
+    #      Python eagerly evaluates the default arg `{VizSpec(...)}` as a SET LITERAL.
+    #      VizSpec is not hashable → TypeError: unhashable type: 'VizSpec'
+    #      This crashes viz_worker before it even starts executing.
+    #   2. `spec.viz_instructions.strip()` in the task_vizid lookup loop
+    #      crashes with AttributeError if viz_instructions is None.
+    # ==========================================================================
+
+    # --- Fix P-1: viz_worker unhashable set literal crash ---
+    FIXP1_GUARD = "# Fix P: avoid unhashable set literal"
+    fixp1_old = (
+        '    task = state.get("individual_viz_task",{state.get("viz_spec", None)})'
+    )
+    fixp1_new = (
+        '    task = state.get("individual_viz_task") or state.get("viz_spec")  # Fix P: avoid unhashable set literal'
+    )
+
+    fixp1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_worker" not in src:
+            continue
+        if FIXP1_GUARD in src:
+            print(f"ℹ️  Fix P-1 already applied (cell {idx})")
+            fixp1_patched = True
+            break
+        if fixp1_old not in src:
+            print(f"⚠️  Fix P-1: viz_worker task getter pattern not found in cell {idx}")
+            fixp1_patched = True
+            break
+        new_src = src.replace(fixp1_old, fixp1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix P-1 viz_worker unhashable set literal → safe fallback")
+        fixp1_patched = True
+        break
+    if not fixp1_patched:
+        print("⚠️  Fix P-1: viz_worker cell not found")
+
+    # --- Fix P-2: viz_worker spec.viz_instructions.strip() None guard ---
+    FIXP2_GUARD = "# Fix P: guard None viz_instructions"
+    fixp2_old = (
+        "        for spec in specs:\n"
+        "            if (spec.viz_instructions.strip() in task.strip() or task.strip() in spec.viz_instructions.strip() or spec.viz_instructions.strip() == task.strip())  and spec.viz_id:\n"
+        "                task_vizid = spec.viz_id\n"
+        "                break"
+    )
+    fixp2_new = (
+        "        for spec in specs:\n"
+        "            _instr = (getattr(spec, 'viz_instructions', '') or '').strip()  # Fix P: guard None viz_instructions\n"
+        "            if _instr and (_instr in task.strip() or task.strip() in _instr or _instr == task.strip()) and getattr(spec, 'viz_id', None):\n"
+        "                task_vizid = spec.viz_id\n"
+        "                break"
+    )
+
+    fixp2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_worker" not in src:
+            continue
+        if FIXP2_GUARD in src:
+            print(f"ℹ️  Fix P-2 already applied (cell {idx})")
+            fixp2_patched = True
+            break
+        if fixp2_old not in src:
+            print(f"⚠️  Fix P-2: viz_worker spec.viz_instructions pattern not found in cell {idx}")
+            fixp2_patched = True
+            break
+        new_src = src.replace(fixp2_old, fixp2_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix P-2 viz_worker spec.viz_instructions None guard")
+        fixp2_patched = True
+        break
+    if not fixp2_patched:
+        print("⚠️  Fix P-2: viz_worker cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
