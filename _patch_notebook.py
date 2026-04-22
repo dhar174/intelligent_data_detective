@@ -3599,41 +3599,53 @@ def main():
         "            print(f'WARNING report_orchestrator hit error ({_ronm}: {str(_roexc)[:120]}) -- building recovery ReportOutline')\n"
         "            try: _log_recovery('report_orchestrator', 0)\n"
         "            except Exception: pass\n"
-        "            _ro_sec1 = SectionOutline(\n"
-        "                section_num=1, name='Executive Summary',\n"
-        "                description='High-level summary of the dataset and key findings.',\n"
-        "                goals=['Summarize dataset', 'Present key metrics'],\n"
-        "                word_target=200, data_signals_needed={}, data_signals_available=[],\n"
-        "                expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
-        "                finished_this_task=True,\n"
-        "            )\n"
-        "            _ro_sec2 = SectionOutline(\n"
-        "                section_num=2, name='Data Analysis',\n"
-        "                description='Statistical analysis and pattern findings.',\n"
-        "                goals=['Present statistics', 'Highlight patterns'],\n"
-        "                word_target=300, data_signals_needed={}, data_signals_available=[],\n"
-        "                expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
-        "                finished_this_task=True,\n"
-        "            )\n"
-        "            _ro_sec3 = SectionOutline(\n"
-        "                section_num=3, name='Conclusions',\n"
-        "                description='Conclusions and recommendations based on the analysis.',\n"
-        "                goals=['Conclude findings', 'Recommend actions'],\n"
-        "                word_target=200, data_signals_needed={}, data_signals_available=[],\n"
-        "                expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
-        "                finished_this_task=True,\n"
-        "            )\n"
-        "            _ro_recovery = ReportOutline(\n"
-        "                title='Analysis Report (Recovery)',\n"
-        "                description='Auto-generated outline (API error recovery).',\n"
-        "                goals=['Summarize findings', 'Present analysis', 'Conclude'],\n"
-        "                sections=[_ro_sec1, _ro_sec2, _ro_sec3],\n"
-        "                expect_reply=False,\n"
-        "                reply_msg_to_supervisor='Report outline generated (recovery mode).',\n"
-        "                finished_this_task=True,\n"
-        "            )\n"
-        "            _ro_rmsg = _ROAIM(content='Report outline generated (API error recovery).', name='report_orchestrator')\n"
-        "            return {'messages': [_ro_rmsg], 'structured_response': _ro_recovery}\n"
+        "            try:\n"
+        "                _ro_sec1 = SectionOutline(\n"
+        "                    section_num=1, name='Executive Summary',\n"
+        "                    description='High-level summary of the dataset and key findings.',\n"
+        "                    goals=['Summarize dataset', 'Present key metrics'],\n"
+        "                    word_target=200, data_signals_needed={}, data_signals_available=[],\n"
+        "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
+        "                    finished_this_task=True,\n"
+        "                )\n"
+        "                _ro_sec2 = SectionOutline(\n"
+        "                    section_num=2, name='Data Analysis',\n"
+        "                    description='Statistical analysis and pattern findings.',\n"
+        "                    goals=['Present statistics', 'Highlight patterns'],\n"
+        "                    word_target=300, data_signals_needed={}, data_signals_available=[],\n"
+        "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
+        "                    finished_this_task=True,\n"
+        "                )\n"
+        "                _ro_sec3 = SectionOutline(\n"
+        "                    section_num=3, name='Conclusions',\n"
+        "                    description='Conclusions and recommendations based on the analysis.',\n"
+        "                    goals=['Conclude findings', 'Recommend actions'],\n"
+        "                    word_target=200, data_signals_needed={}, data_signals_available=[],\n"
+        "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
+        "                    finished_this_task=True,\n"
+        "                )\n"
+        # ReportOutline inherits SectionOutline — must supply ALL required inherited fields
+        "                _ro_recovery = ReportOutline(\n"
+        "                    title='Analysis Report (Recovery)',\n"
+        "                    name='Analysis Report',\n"
+        "                    section_num=0,\n"
+        "                    description='Auto-generated outline (API error recovery).',\n"
+        "                    goals=['Summarize findings', 'Present analysis', 'Conclude'],\n"
+        "                    data_signals_needed={},\n"
+        "                    data_signals_available=[],\n"
+        "                    expected_figures=[],\n"
+        "                    word_target=700,\n"
+        "                    sections=[_ro_sec1, _ro_sec2, _ro_sec3],\n"
+        "                    expect_reply=False,\n"
+        "                    reply_msg_to_supervisor='Report outline generated (recovery mode).',\n"
+        "                    finished_this_task=True,\n"
+        "                )\n"
+        "                _ro_rmsg = _ROAIM(content='Report outline generated (API error recovery).', name='report_orchestrator')\n"
+        "                return {'messages': [_ro_rmsg], 'structured_response': _ro_recovery}\n"
+        "            except Exception as _ro_inner_exc:\n"
+        "                print(f'CRITICAL report_orchestrator recovery also failed ({type(_ro_inner_exc).__name__}: {str(_ro_inner_exc)[:80]})')\n"
+        "                _ro_fallback_msg = _ROAIM(content='report_orchestrator recovery failed; pipeline may not complete.', name='report_orchestrator')\n"
+        "                return {'messages': [_ro_fallback_msg], 'structured_response': None}\n"
         "# --- end patched report_orchestrator helper ---\n\n"
     )
     fixw3_patched = False
@@ -3699,6 +3711,201 @@ def main():
         break
     if not fixw3_patched:
         print("W  Fix W3: report_orchestrator target cell not found")
+
+    # --- Fix X1: report_outline use-last reducer in State TypedDict ---
+    # Prevents InvalidUpdateError when two nodes write report_outline in same superstep
+    fixX1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "report_outline:" not in src:
+            continue
+        if "# Fix X1" in src:
+            print(f"i  Cell idx {idx}: Fix X1 (report_outline reducer) already applied")
+            fixX1_patched = True
+            break
+        if "report_outline: Optional[ReportOutline]" in src:
+            new_src = src.replace(
+                "report_outline: Optional[ReportOutline]",
+                "report_outline: Annotated[Optional[ReportOutline], lambda a, b: b if b is not None else a]  # Fix X1: use-last reducer prevents InvalidUpdateError on concurrent dispatches",
+                1,
+            )
+            if new_src != src:
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"OK Cell idx {idx}: Fix X1 applied — report_outline use-last reducer added")
+                fixX1_patched = True
+            else:
+                print(f"W  Fix X1: report_outline pattern not replaced in cell {idx}")
+            break
+    if not fixX1_patched:
+        print("W  Fix X1: report_outline target not found")
+
+    # --- Fix X2: Expand _in_report_round to block premature SHORTCUT3 ---
+    # Prevents SHORTCUT3 from firing when supervisor co-runs with viz pipeline nodes
+    fixX2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "_in_report_round" not in src or "SHORTCUT3" not in src:
+            continue
+        if "# Fix X2" in src:
+            print(f"i  Cell idx {idx}: Fix X2 (_in_report_round expansion) already applied")
+            fixX2_patched = True
+            break
+        old_x2 = (
+            "_in_report_round = _last_agent_id_sc3 in (\n"
+            "            'report_orchestrator', 'report_section_worker', 'report_join',\n"
+            "            'report_packager', 'file_writer', 'viz_evaluator',\n"
+            "        )"
+        )
+        new_x2 = (
+            "_in_report_round = _last_agent_id_sc3 in (\n"
+            "            'report_orchestrator', 'report_section_worker', 'report_join',\n"
+            "            'report_packager', 'file_writer', 'viz_evaluator',\n"
+            "            'viz_join', 'viz_worker', 'visualization_orchestrator',  # Fix X2: block premature SHORTCUT3\n"
+            "        )"
+        )
+        if old_x2 in src:
+            new_src = src.replace(old_x2, new_x2, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix X2 applied — _in_report_round expanded with viz pipeline nodes")
+            fixX2_patched = True
+        else:
+            print(f"W  Fix X2: _in_report_round pattern not found in cell {idx}")
+        break
+    if not fixX2_patched:
+        print("W  Fix X2: supervisor SHORTCUT3 target not found")
+
+    # --- Fix X3: Fix state["_config"] → state.get("_config") in update_memory_with_kind ---
+    # Prevents KeyError if _config not in state when report_orchestrator runs via SHORTCUT3
+    fixX3_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(" not in src:
+            continue
+        if "# Fix X3" in src:
+            print(f"i  Cell idx {idx}: Fix X3 (state[_config] in update_memory_with_kind) already applied")
+            fixX3_patched = True
+            break
+        old_x3 = 'update_memory_with_kind(state, state["_config"], "reports",'
+        new_x3 = 'update_memory_with_kind(state, state.get("_config"), "reports",  # Fix X3'
+        if old_x3 in src:
+            new_src = src.replace(old_x3, new_x3, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix X3 applied — state[_config] -> state.get(_config) in update_memory_with_kind")
+            fixX3_patched = True
+        else:
+            print(f"W  Fix X3: update_memory_with_kind(state, state[\"_config\"]) pattern not found in cell {idx}")
+        break
+    if not fixX3_patched:
+        print("W  Fix X3: report_orchestrator update_memory_with_kind target not found")
+
+    # --- Fix X3-rg: Add cleaning_metadata and missing template vars to rg_vars in report_orchestrator ---
+    # Root cause of Run 39 crash: KeyError: 'cleaning_metadata' in format_messages
+    # rg_vars was built without cleaning_metadata but prompt template has {cleaning_metadata}
+    fixX3rg_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(" not in src:
+            continue
+        if "# Fix X3-rg" in src:
+            print(f"i  Cell idx {idx}: Fix X3-rg (rg_vars template vars) already applied")
+            fixX3rg_patched = True
+            break
+        # Unique anchor: the cleaning_metadata = cm line inside report_orchestrator
+        # identified by the preceding context with name="report_orchestrator"
+        old_x3rg = (
+            'name="report_orchestrator")],\n'
+            '                "last_agent_finished_this_task": False\n'
+            '\n'
+            '\n'
+            '            },\n'
+            '        )\n'
+            '    cleaning_metadata = cm  # type: ignore\n'
+        )
+        new_x3rg = (
+            'name="report_orchestrator")],\n'
+            '                "last_agent_finished_this_task": False\n'
+            '\n'
+            '\n'
+            '            },\n'
+            '        )\n'
+            '    cleaning_metadata = cm  # type: ignore\n'
+            '    rg_vars["cleaning_metadata"] = str(cleaning_metadata) if cleaning_metadata is not None else ""  # Fix X3-rg\n'
+            '    rg_vars.setdefault("analysis_config", str(state.get("analysis_config") or ""))\n'
+            '    rg_vars.setdefault("completed_tasks", str(state.get("completed_tasks") or ""))\n'
+            '    rg_vars.setdefault("data_sample", str(state.get("data_sample") or ""))\n'
+            '    rg_vars.setdefault("dataset_description", str(state.get("cleaned_dataset_description") or ""))\n'
+            '    rg_vars.setdefault("file_name", str(state.get("file_name") or ""))\n'
+            '    rg_vars.setdefault("file_type", str(state.get("file_type") or ""))\n'
+            '    rg_vars.setdefault("past_steps", str(state.get("past_steps") or ""))\n'
+            '    rg_vars.setdefault("plan_steps", str(state.get("plan_steps") or ""))\n'
+            '    rg_vars.setdefault("plan_summary", str(state.get("plan_summary") or ""))\n'
+            '    rg_vars.setdefault("visualization_results", str(state.get("viz_results") or ""))\n'
+            '    rg_vars.setdefault("visualization_task", str(state.get("visualization_task") or ""))\n'
+        )
+        if old_x3rg in src:
+            new_src = src.replace(old_x3rg, new_x3rg, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix X3-rg applied — cleaning_metadata and all missing template vars added to rg_vars")
+            fixX3rg_patched = True
+        else:
+            print(f"W  Fix X3-rg: unique report_orchestrator anchor not found in cell {idx}, trying fallback")
+            # Fallback: find report_orchestrator function scope and patch within it
+            import re as _rex3rg
+            ro_start = src.find("def report_orchestrator(")
+            if ro_start >= 0:
+                ro_end_m = _rex3rg.search(r'\ndef \w', src[ro_start + 50:])
+                ro_end = (ro_start + 50 + ro_end_m.start()) if ro_end_m else len(src)
+                ro_body = src[ro_start:ro_end]
+                # Find the LAST occurrence of cleaning_metadata = cm within report_orchestrator
+                cm_positions = [m.start() for m in _rex3rg.finditer(r'    cleaning_metadata = cm  # type: ignore\n', ro_body)]
+                if cm_positions:
+                    cm_rel = cm_positions[-1]  # last occurrence in report_orchestrator
+                    abs_cm = ro_start + cm_rel
+                    old_line = "    cleaning_metadata = cm  # type: ignore\n"
+                    new_lines = (
+                        "    cleaning_metadata = cm  # type: ignore\n"
+                        "    rg_vars[\"cleaning_metadata\"] = str(cleaning_metadata) if cleaning_metadata is not None else \"\"  # Fix X3-rg\n"
+                        "    rg_vars.setdefault(\"analysis_config\", str(state.get(\"analysis_config\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"completed_tasks\", str(state.get(\"completed_tasks\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"data_sample\", str(state.get(\"data_sample\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"dataset_description\", str(state.get(\"cleaned_dataset_description\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"file_name\", str(state.get(\"file_name\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"file_type\", str(state.get(\"file_type\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"past_steps\", str(state.get(\"past_steps\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"plan_steps\", str(state.get(\"plan_steps\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"plan_summary\", str(state.get(\"plan_summary\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"visualization_results\", str(state.get(\"viz_results\") or \"\"))\n"
+                        "    rg_vars.setdefault(\"visualization_task\", str(state.get(\"visualization_task\") or \"\"))\n"
+                    )
+                    new_src = src[:abs_cm] + new_lines + src[abs_cm + len(old_line):]
+                    cell["source"] = new_src
+                    cell["outputs"] = []
+                    cell["execution_count"] = None
+                    print(f"OK Cell idx {idx}: Fix X3-rg applied via fallback — cleaning_metadata added to rg_vars")
+                    fixX3rg_patched = True
+                else:
+                    print(f"W  Fix X3-rg: cleaning_metadata = cm not found in report_orchestrator scope")
+            else:
+                print(f"W  Fix X3-rg: def report_orchestrator( not found in cell {idx}")
+        break
+    if not fixX3rg_patched:
+        print("W  Fix X3-rg: report_orchestrator rg_vars target not found")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
