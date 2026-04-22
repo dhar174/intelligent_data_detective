@@ -142,6 +142,12 @@ def execute_notebook():
     _tail_thread.start()
     print(f"OK  Log tail started → {_log_file}")
 
+    # Clean stale checkpoints so graph starts fresh (grows unboundedly across runs)
+    ckpt_file = REPO_ROOT / "checkpoints.sqlite"
+    if ckpt_file.exists():
+        ckpt_file.unlink()
+        print(f"OK  Deleted stale {ckpt_file.name} for clean run")
+
     try:
         client.execute()
         elapsed = (datetime.now() - start).total_seconds()

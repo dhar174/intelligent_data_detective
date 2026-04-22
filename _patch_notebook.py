@@ -905,6 +905,135 @@ def main():
     if not sup_patched:
         print("⚠️  supervisor_node patch: target cell not found (no cell has both supervisor_node and make_supervisor_node)")
 
+    # --- Patch supervisor_node: protect routing_llm.invoke() with retry (Run 22 fix) ---
+    # Run 21 failure: routing_llm.invoke() at supervisor LLM call (~5.5 min in) threw OpenAI 500.
+    # Zero error handling → exception propagated through LangGraph stream → graph crash.
+    # Rubber duck confirmed: 4 routing_llm.invoke calls in supervisor_node — ALL must be wrapped.
+    SAFE_SUPERVISOR_ROUTING_HELPER = (
+        "# --- patched: safe routing LLM invoke for supervisor_node ---\n"
+        "def _safe_supervisor_routing_invoke(llm, *args, **kwargs):\n"
+        "    \"\"\"Retry wrapper for supervisor routing LLM calls; prevents OpenAI 5xx from crashing.\"\"\"\n"
+        "    import time as _srt\n"
+        "    _sr_backoffs = [2, 4, 8]\n"
+        "    _sr_last_exc = None\n"
+        "    for _sr_attempt in range(len(_sr_backoffs) + 1):\n"
+        "        try:\n"
+        "            return llm.invoke(*args, **kwargs)\n"
+        "        except (KeyboardInterrupt, SystemExit):\n"
+        "            raise\n"
+        "        except Exception as _sr_exc:\n"
+        "            _sr_last_exc = _sr_exc\n"
+        "            _sr_msg = str(_sr_exc).lower()\n"
+        "            _sr_transient = any(x in _sr_msg for x in [\n"
+        "                '500', '503', '502', '429', 'rate limit', 'internal server',\n"
+        "                'overloaded', 'timeout', 'server error', 'bad gateway',\n"
+        "            ])\n"
+        "            if _sr_transient and _sr_attempt < len(_sr_backoffs):\n"
+        "                _sr_wait = _sr_backoffs[_sr_attempt]\n"
+        "                print(f'WARNING supervisor routing retry {_sr_attempt+1}/{len(_sr_backoffs)}: '\n"
+        "                      f'{type(_sr_exc).__name__}: {str(_sr_exc)[:80]} -- retrying in {_sr_wait}s')\n"
+        "                try: _pl_logger.warning(f'SUPERVISOR ROUTING RETRY {_sr_attempt+1}: {type(_sr_exc).__name__}: {str(_sr_exc)[:80]}')\n"
+        "                except Exception: pass\n"
+        "                _srt.sleep(_sr_wait)\n"
+        "            else:\n"
+        "                break\n"
+        "    print(f'ERROR supervisor routing failed after all retries: {type(_sr_last_exc).__name__}: {str(_sr_last_exc)[:200]}')\n"
+        "    try: _pl_logger.error(f'SUPERVISOR ROUTING FAILED: {type(_sr_last_exc).__name__}: {str(_sr_last_exc)[:200]}')\n"
+        "    except Exception: pass\n"
+        "    raise _sr_last_exc\n"
+        "# --- end patched supervisor routing helper ---\n\n"
+    )
+
+    sv_routing_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if "_safe_supervisor_routing_invoke" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor_node already has routing-invoke patch")
+            sv_routing_patched = True
+            break
+        new_src = src
+        import re as _re_sv
+        sv_match = _re_sv.search(r'^([ \t]*)def supervisor_node\(state: State', new_src, _re_sv.MULTILINE)
+        if sv_match:
+            fn_indent = sv_match.group(1)
+            # Indent helper to match supervisor_node nesting level inside make_supervisor_node
+            indented_helper = '\n'.join(
+                fn_indent + line if line else ''
+                for line in SAFE_SUPERVISOR_ROUTING_HELPER.split('\n')
+            )
+            new_src = new_src.replace(
+                fn_indent + "def supervisor_node(state: State,",
+                indented_helper + fn_indent + "def supervisor_node(state: State,",
+                1,
+            )
+        else:
+            print(f"⚠️  Cell idx {idx}: could not find supervisor_node def for routing patch")
+            break
+        old_routing_call = "routing_llm.invoke(routing_state_vars,"
+        new_routing_call = "_safe_supervisor_routing_invoke(routing_llm, routing_state_vars,"
+        call_count = new_src.count(old_routing_call)
+        new_src = new_src.replace(old_routing_call, new_routing_call)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: supervisor routing protected — {call_count} routing_llm.invoke calls wrapped with retry")
+            sv_routing_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: supervisor routing patch — no replacements made")
+        break
+    if not sv_routing_patched:
+        print("⚠️  supervisor routing patch: target cell not found")
+
+    # --- Patch supervisor shortcut: add diagnostic logging (v2 upgrade) ---
+    # Adds [SHORTCUT] print/log after _dc_done so we can diagnose why shortcut evaluates False.
+    sv_diag_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "_dc_done = bool(state.get('data_cleaning_complete'))" not in src:
+            continue
+        if "[SHORTCUT]" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor shortcut already has diagnostic logging")
+            sv_diag_patched = True
+            break
+        import re as _re_diag
+        m = _re_diag.search(r'^([ \t]*)_dc_done = bool', src, _re_diag.MULTILINE)
+        if not m:
+            print(f"⚠️  supervisor diag patch: could not detect _dc_done indentation")
+            break
+        _di = m.group(1)
+        OLD_DC_LINE = (
+            f"{_di}_dc_done = bool(state.get('data_cleaning_complete')) or (state.get('cleaning_metadata') is not None)\n"
+        )
+        NEW_DC_LINE = (
+            f"{_di}_dc_done = bool(state.get('data_cleaning_complete')) or (state.get('cleaning_metadata') is not None)\n"
+            f"{_di}_sc_dc = state.get('data_cleaning_complete')\n"
+            f"{_di}_sc_cm = 'y' if state.get('cleaning_metadata') else 'n'\n"
+            f"{_di}_sc_ac = state.get('analyst_complete')\n"
+            f"{_di}print(f'[SHORTCUT] dc_done={{_dc_done}} dc={{_sc_dc}} cm={{_sc_cm}} ac={{_sc_ac}}')\n"
+            f"{_di}try: _pl_logger.info(f'SHORTCUT dc_done={{_dc_done}} dc={{_sc_dc}} cm={{_sc_cm}} ac={{_sc_ac}}')\n"
+            f"{_di}except Exception: pass\n"
+        )
+        if OLD_DC_LINE in src:
+            new_src = src.replace(OLD_DC_LINE, NEW_DC_LINE, 1)
+            if new_src != src:
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"✅ Cell idx {idx}: supervisor shortcut diagnostic logging added")
+                sv_diag_patched = True
+        else:
+            print(f"⚠️  supervisor diag patch: exact _dc_done pattern not found in cell {idx}")
+        break
+    if not sv_diag_patched:
+        print("⚠️  supervisor shortcut diagnostic patch: not applied (shortcut may not exist yet)")
+
     # --- Patch viz_worker: cap sub-agent recursion + recovery DataVisualization ---
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
