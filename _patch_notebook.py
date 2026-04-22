@@ -982,6 +982,35 @@ def main():
     if not fixAB_patched:
         print("W  Fix AB: report_packager_node target not found")
 
+    # --- Fix AC: add use-last reducer to report_draft in State class (parallel update fix) ---
+    # report_join and report_packager_node both update report_draft in overlapping steps.
+    # Without a reducer LangGraph raises InvalidUpdateError.
+    fixAC_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State" not in src or "report_draft" not in src:
+            continue
+        if "# Fix AC" in src:
+            print(f"i  Cell idx {idx}: Fix AC (report_draft use-last reducer) already applied")
+            fixAC_patched = True
+            break
+        _AC_OLD = "    report_draft: Optional[str]\n"
+        _AC_NEW = "    report_draft: Annotated[Optional[str], lambda a, b: b if b is not None else a]  # Fix AC: use-last prevents parallel update error\n"
+        if _AC_OLD in src:
+            new_src = src.replace(_AC_OLD, _AC_NEW, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AC applied — report_draft gets use-last reducer")
+            fixAC_patched = True
+        else:
+            print(f"W  Fix AC: report_draft field not found in cell {idx}")
+        break
+    if not fixAC_patched:
+        print("W  Fix AC: State class target not found")
+
     # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
     # Only shortcut 1: data_cleaning_complete=True → force analyst.
     # NOTE: Shortcut 2 (analyst_complete → report_packager) was REMOVED.
