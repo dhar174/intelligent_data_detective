@@ -4173,6 +4173,46 @@ def main():
     if not fixZ_patched:
         print("W  Fix Z: supervisor_node target not found")
 
+    # --- Fix AA: section_worker receives dict from dispatch_sections, needs SectionOutline conversion ---
+    # dispatch_sections does s.model_dump() before Send() → section is a dict in section_worker
+    # section_worker tries section.name which fails on dict → AttributeError
+    fixAA_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(" not in src:
+            continue
+        if "# Fix AA" in src:
+            print(f"i  Cell idx {idx}: Fix AA (section dict→SectionOutline) already applied")
+            fixAA_patched = True
+            break
+        _AA_OLD = (
+            '    section: SectionOutline = state["section"]\n'
+            '    if not section:\n'
+        )
+        _AA_NEW = (
+            '    section: SectionOutline = state["section"]\n'
+            '    if isinstance(section, dict):  # Fix AA: dispatch_sections passes model_dump() dict\n'
+            '        try:\n'
+            '            section = SectionOutline.model_validate(section)\n'
+            '        except Exception as _sv_dict_exc:\n'
+            '            print(f\'WARNING section_worker: could not validate section dict: {_sv_dict_exc}\')\n'
+            '    if not section:\n'
+        )
+        if _AA_OLD in src:
+            new_src = src.replace(_AA_OLD, _AA_NEW, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AA applied — section dict→SectionOutline conversion")
+            fixAA_patched = True
+        else:
+            print(f"W  Fix AA: section_worker pattern not found in cell {idx}")
+        break
+    if not fixAA_patched:
+        print("W  Fix AA: section_worker target not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
