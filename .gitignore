@@ -119,3 +119,7 @@ Thumbs.db
 *_executed.ipynb
 IDD_results/executed_*.ipynb
 checkpoints.sqlite
+checkpoints.sqlite-shm
+checkpoints.sqlite-wal
+current_run_thread_id.txt
+_idd_resume.flag
