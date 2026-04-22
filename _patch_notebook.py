@@ -1834,6 +1834,72 @@ def main():
     if not ve_patched:
         print("⚠️  viz_evaluator_node patch: target cell not found")
 
+    # --- Fix T: viz_evaluator_node no-tasks Command → plain dict ---
+    # When there are no viz_tasks, viz_evaluator_node returns Command(goto="visualization_orchestrator",...)
+    # This raises InvalidUpdateError: Ambiguous update, specify as_node because Command routing is
+    # ambiguous in this graph context (viz_evaluator is in data_analysis_team_builder subgraph).
+    # Fix: replace the Command return with a plain dict that sets viz_grade="acceptable" so
+    # route_viz() routes to "Accepted" and the pipeline advances to the report stage.
+    FIX_T_OLD = (
+        "    if not tasks:\n"
+        "        return Command(\n"
+        "            goto=\"visualization_orchestrator\",\n"
+        "            update={\n"
+        "                \"messages\": [AIMessage(content=\"No viz tasks assigned. If this doesn't sound right, inform Supervisor agent or visualization agent\")],\n"
+        "            },\n"
+        "        )\n"
+    )
+    FIX_T_NEW = (
+        "    if not tasks:  # _FIX_T_NO_TASKS_DICT\n"
+        "        _notasks_msg = AIMessage(content='No viz tasks assigned — skipping visualization evaluation.', name='viz_evaluator')\n"
+        "        return {\n"
+        "            'viz_grade': 'acceptable',\n"
+        "            'viz_feedback': 'No viz tasks assigned — skipping visualization evaluation.',\n"
+        "            'messages': [_notasks_msg],\n"
+        "            'last_agent_message': _notasks_msg,\n"
+        "            'last_agent_id': 'viz_evaluator',\n"
+        "            'current_turn_agent_id': 'supervisor',\n"
+        "            'last_agent_expects_reply': False,\n"
+        "            'last_agent_finished_this_task': True,\n"
+        "            'last_agent_reply_msg': '',\n"
+        "            'last_created_obj': None,\n"
+        "        }\n"
+    )
+    fixt_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_evaluator_node" not in src:
+            continue
+        if "_FIX_T_NO_TASKS_DICT" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix T (no-tasks Command→dict) already applied")
+            fixt_patched = True
+            break
+        if FIX_T_OLD in src:
+            new_src = src.replace(FIX_T_OLD, FIX_T_NEW, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix T applied — viz_evaluator no-tasks Command→dict")
+            fixt_patched = True
+        else:
+            # Fallback: handle any variant of the no-tasks Command return
+            import re as _re
+            _pat = r'    if not tasks:\s+return Command\([^)]+goto=["\']visualization_orchestrator["\'][^)]*\)\s*\n'
+            if _re.search(_pat, src, _re.DOTALL):
+                new_src = _re.sub(_pat, FIX_T_NEW, src, count=1, flags=_re.DOTALL)
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"✅ Cell idx {idx}: Fix T applied (fallback regex) — viz_evaluator no-tasks Command→dict")
+                fixt_patched = True
+            else:
+                print(f"⚠️  Cell idx {idx}: Fix T — pattern not found in viz_evaluator_node cell")
+        break
+    if not fixt_patched:
+        print("⚠️  Fix T: viz_evaluator_node no-tasks patch target not found")
+
     # --- Fix E: viz_worker returns None — fix dict.update() chaining ---
     # save_viz_for_state(...).update({...}) always returns None because dict.update() returns None.
     # The return statement therefore evaluates to `return None`.
