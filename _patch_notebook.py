@@ -2979,6 +2979,82 @@ def main():
     if not fixp2_patched:
         print("⚠️  Fix P-2: viz_worker cell not found")
 
+    # --- Fix Q: Add 'lambda a,b:b' reducers to last_agent_* State fields ---
+    # Parallel viz_workers both return these fields in the same superstep,
+    # causing InvalidUpdateError. A trivial "use-last" reducer prevents the panic
+    # while keeping normal sequential "last-write-wins" semantics.
+    # NOTE: Fix B1 inserts _viz_retry_count between last_agent_id and current_turn_agent_id,
+    # so we match both variants (with and without that line).
+    FIXQ_GUARD = "# Fix Q: use-last reducers for parallel viz_workers"
+    # Variant A: Fix B1 already ran (includes _viz_retry_count line)
+    fixq_old_a = (
+        "    last_agent_id: Optional[AgentId]\n"
+        "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
+        "    current_turn_agent_id: Optional[AgentId]\n"
+        "    last_agent_message: Optional[Union[AIMessage,ToolMessage]]\n"
+        "    last_agent_expects_reply: Optional[bool]\n"
+        "    last_agent_reply_msg: Optional[str]\n"
+        "    last_agent_finished_this_task: Optional[bool]"
+    )
+    fixq_new_a = (
+        "    last_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q: use-last reducers for parallel viz_workers\n"
+        "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
+        "    current_turn_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_message: Annotated[Optional[Union[AIMessage,ToolMessage]], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_expects_reply: Annotated[Optional[bool], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_reply_msg: Annotated[Optional[str], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_finished_this_task: Annotated[Optional[bool], lambda a, b: b]  # Fix Q"
+    )
+    # Variant B: Fix B1 not yet applied (original notebook, no _viz_retry_count)
+    fixq_old_b = (
+        "    last_agent_id: Optional[AgentId]\n"
+        "    current_turn_agent_id: Optional[AgentId]\n"
+        "    last_agent_message: Optional[Union[AIMessage,ToolMessage]]\n"
+        "    last_agent_expects_reply: Optional[bool]\n"
+        "    last_agent_reply_msg: Optional[str]\n"
+        "    last_agent_finished_this_task: Optional[bool]"
+    )
+    fixq_new_b = (
+        "    last_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q: use-last reducers for parallel viz_workers\n"
+        "    current_turn_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_message: Annotated[Optional[Union[AIMessage,ToolMessage]], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_expects_reply: Annotated[Optional[bool], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_reply_msg: Annotated[Optional[str], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_finished_this_task: Annotated[Optional[bool], lambda a, b: b]  # Fix Q"
+    )
+
+    fixq_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State" not in src or "last_agent_expects_reply" not in src:
+            continue
+        if FIXQ_GUARD in src:
+            print(f"ℹ️  Fix Q already applied (cell {idx})")
+            fixq_patched = True
+            break
+        if fixq_old_a in src:
+            new_src = src.replace(fixq_old_a, fixq_new_a, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix Q — last_agent_* fields now have use-last reducers (variant A)")
+            fixq_patched = True
+        elif fixq_old_b in src:
+            new_src = src.replace(fixq_old_b, fixq_new_b, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix Q — last_agent_* fields now have use-last reducers (variant B)")
+            fixq_patched = True
+        else:
+            print(f"⚠️  Fix Q: last_agent_* field pattern not found in cell {idx}")
+            fixq_patched = True
+        break
+    if not fixq_patched:
+        print("⚠️  Fix Q: State TypedDict cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
