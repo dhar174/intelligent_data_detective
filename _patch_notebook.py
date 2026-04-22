@@ -905,6 +905,65 @@ def main():
     if not sup_patched:
         print("⚠️  supervisor_node patch: target cell not found (no cell has both supervisor_node and make_supervisor_node)")
 
+    # --- Patch supervisor_node: shortcut 0 (initial_analysis → data_cleaner, bypasses first LLM call) ---
+    # Run 23 failure: very first routing_llm.invoke() (initial→data_cleaner) hit OpenAI 500 after retries.
+    # Shortcut 0 fires if initial_analysis_complete=True and data_cleaning_complete is not yet set,
+    # routing deterministically to data_cleaner before any LLM call is made.
+    # Together with shortcuts 1+2+3, ALL 4 supervisor LLM calls are now bypassed.
+    sv0_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- PATCH: force analyst routing after data cleaning ---" not in src:
+            continue
+        if "PATCH: force data_cleaner routing" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has shortcut 0 (data_cleaner routing)")
+            sv0_patched = True
+            break
+        import re as _re_sv0
+        m0 = _re_sv0.search(r'^([ \t]*)# --- PATCH: force analyst routing after data cleaning ---', src, _re_sv0.MULTILINE)
+        if not m0:
+            print(f"⚠️  supervisor shortcut 0: anchor marker not found in cell {idx}")
+            break
+        _di0 = m0.group(1)
+        shortcut_0 = (
+            f"{_di0}# --- PATCH: force data_cleaner routing after initial analysis ---\n"
+            f"{_di0}_ia_done = bool(state.get('initial_analysis_complete'))\n"
+            f"{_di0}_sc0_ia = state.get('initial_analysis_complete')\n"
+            f"{_di0}_sc0_dc = state.get('data_cleaning_complete')\n"
+            f"{_di0}_sc0_cm = 'y' if state.get('cleaning_metadata') else 'n'\n"
+            f"{_di0}print(f'[SHORTCUT0] ia_done={{_ia_done}} ia={{_sc0_ia}} dc={{_sc0_dc}} cm={{_sc0_cm}}')\n"
+            f"{_di0}try: _pl_logger.info(f'SHORTCUT0 ia_done={{_ia_done}} ia={{_sc0_ia}} dc={{_sc0_dc}} cm={{_sc0_cm}}')\n"
+            f"{_di0}except Exception: pass\n"
+            f"{_di0}if _ia_done and not state.get('data_cleaning_complete') and state.get('cleaning_metadata') is None:\n"
+            f"{_di0}    _sc0 = int(state.get('_count_', 0)) + 1\n"
+            f"{_di0}    return Command(goto='data_cleaner', update={{\n"
+            f"{_di0}        '_count_': _sc0,\n"
+            f"{_di0}        'next': 'data_cleaner',\n"
+            f"{_di0}        'initial_analysis_complete': True,\n"
+            f"{_di0}        'next_agent_prompt': (\n"
+            f"{_di0}            'Please clean the dataset. Handle missing values, remove duplicates, '\n"
+            f"{_di0}            'fix data types, and return a CleaningMetadata object when done.'\n"
+            f"{_di0}        ),\n"
+            f"{_di0}        'next_agent_metadata': None,\n"
+            f"{_di0}    }})\n"
+            f"{_di0}# --- END PATCH: force data_cleaner routing ---\n"
+        )
+        ANCHOR = f"{_di0}# --- PATCH: force analyst routing after data cleaning ---\n"
+        new_src = src.replace(ANCHOR, shortcut_0 + ANCHOR, 1)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: supervisor shortcut 0 added (initial_analysis→data_cleaner)")
+            sv0_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: supervisor shortcut 0 — replacement failed")
+        break
+    if not sv0_patched:
+        print("⚠️  supervisor shortcut 0: not applied (shortcut 1 anchor not found)")
+
     # --- Patch supervisor_node: protect routing_llm.invoke() with retry (Run 22 fix) ---
     # Run 21 failure: routing_llm.invoke() at supervisor LLM call (~5.5 min in) threw OpenAI 500.
     # Zero error handling → exception propagated through LangGraph stream → graph crash.
