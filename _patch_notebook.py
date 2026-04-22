@@ -966,12 +966,38 @@ def main():
 
     # --- Patch supervisor_node: protect routing_llm.invoke() with retry (Run 22 fix) ---
     # Run 21 failure: routing_llm.invoke() at supervisor LLM call (~5.5 min in) threw OpenAI 500.
-    # Zero error handling → exception propagated through LangGraph stream → graph crash.
-    # Rubber duck confirmed: 4 routing_llm.invoke calls in supervisor_node — ALL must be wrapped.
+    # Zero error handling -> exception propagated through LangGraph stream -> graph crash.
+    # Rubber duck confirmed: 4 routing_llm.invoke calls in supervisor_node -- ALL must be wrapped.
+    # P1-G/H update: added _routing_parse_fallback; changed raise to return None so callers
+    # can use _routing_parse_fallback for graceful degradation instead of crashing the graph.
     SAFE_SUPERVISOR_ROUTING_HELPER = (
-        "# --- patched: safe routing LLM invoke for supervisor_node ---\n"
+        "# --- patched: routing fallback + safe routing LLM invoke for supervisor_node ---\n"
+        "def _routing_parse_fallback(state, raw=None):\n"
+        "    \"\"\"Return a safe Router using pipeline-state shortcut logic when LLM parse fails.\"\"\"\n"
+        "    _ia = bool(state.get('initial_analysis_complete'))\n"
+        "    _dc = bool(state.get('data_cleaning_complete')) or (state.get('cleaning_metadata') is not None)\n"
+        "    _ac = bool(state.get('analyst_complete'))\n"
+        "    _vc = bool(state.get('visualization_complete'))\n"
+        "    _rg = bool(state.get('report_generator_complete'))\n"
+        "    if not _ia: _fb_next = 'initial_analysis'\n"
+        "    elif not _dc: _fb_next = 'data_cleaner'\n"
+        "    elif not _ac: _fb_next = 'analyst'\n"
+        "    elif not _vc: _fb_next = 'visualization'\n"
+        "    elif not _rg: _fb_next = 'report_orchestrator'\n"
+        "    else: _fb_next = 'FINISH'\n"
+        "    try: _pl_logger.warning(f'ROUTING FALLBACK: {type(raw).__name__} -> {_fb_next}')\n"
+        "    except Exception: pass\n"
+        "    print(f'[ROUTING FALLBACK] {type(raw).__name__} -> {_fb_next}')\n"
+        "    return Router(\n"
+        "        next=_fb_next,\n"
+        "        next_agent_prompt='Continue the pipeline.',\n"
+        "        next_agent_metadata=None,\n"
+        "        reply_msg_to_supervisor='',\n"
+        "        finished_this_task=True,\n"
+        "        expect_reply=False,\n"
+        "    )\n\n"
         "def _safe_supervisor_routing_invoke(llm, *args, **kwargs):\n"
-        "    \"\"\"Retry wrapper for supervisor routing LLM calls; prevents OpenAI 5xx from crashing.\"\"\"\n"
+        "    \"\"\"Retry wrapper for supervisor routing LLM calls; returns None on exhausted retries.\"\"\"\n"
         "    import time as _srt\n"
         "    _sr_backoffs = [2, 4, 8]\n"
         "    _sr_last_exc = None\n"
@@ -999,8 +1025,8 @@ def main():
         "    print(f'ERROR supervisor routing failed after all retries: {type(_sr_last_exc).__name__}: {str(_sr_last_exc)[:200]}')\n"
         "    try: _pl_logger.error(f'SUPERVISOR ROUTING FAILED: {type(_sr_last_exc).__name__}: {str(_sr_last_exc)[:200]}')\n"
         "    except Exception: pass\n"
-        "    raise _sr_last_exc\n"
-        "# --- end patched supervisor routing helper ---\n\n"
+        "    return None  # caller handles None via _routing_parse_fallback\n"
+        "# --- end patched supervisor routing helpers ---\n\n"
     )
 
     sv_routing_patched = False
@@ -1171,7 +1197,236 @@ def main():
     if not sv2_patched:
         print("⚠️  supervisor shortcut 2+3: not applied (shortcut 1 end marker not found)")
 
-    # --- Patch viz_worker: cap sub-agent recursion + recovery DataVisualization ---
+    # --- Patch supervisor_node: P1-E fix state["_config"] → state.get("_config", config) ---
+    # config=state["_config"] raises KeyError if _config key is absent from state. This happens
+    # BEFORE _safe_supervisor_routing_invoke can catch it. Fix: use the node's own config param
+    # as fallback, which is always populated by LangGraph.
+    sv_cfg_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if 'state.get("_config", config), prompt_cache_key' in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-E config-guard patch")
+            sv_cfg_patched = True
+            break
+        old_cfg = 'config=state["_config"], prompt_cache_key'
+        new_cfg = 'config=state.get("_config", config), prompt_cache_key'
+        count = src.count(old_cfg)
+        new_src = src.replace(old_cfg, new_cfg)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-E supervisor config guard patched ({count} sites)")
+            sv_cfg_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P1-E config guard — no replacements (pattern not found)")
+        break
+    if not sv_cfg_patched:
+        print("⚠️  P1-E config guard: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-B remove stop=["\\r\\r\\n"] from first routing call ---
+    # This stop sequence was on the very first routing_llm.invoke() call only. With strict=True
+    # JSON schema mode, a stop sequence can truncate JSON mid-generation -> parse failure.
+    sv_stop_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if 'PATCH: P1-B stop removed' in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-B stop-removal patch")
+            sv_stop_patched = True
+            break
+        # After sv_routing_patched + P1-E, the call looks like:
+        # _safe_supervisor_routing_invoke(routing_llm, routing_state_vars,
+        #     config=state.get("_config", config), prompt_cache_key = "routing_prompt",stop=["\\r\\r\\n"])
+        old_stop = ',stop=["\\r\\r\\n"]'
+        new_stop = '  # PATCH: P1-B stop removed'
+        count = src.count(old_stop)
+        if count > 0:
+            new_src = src.replace(old_stop, new_stop)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-B stop sequence removed ({count} occurrence(s))")
+            sv_stop_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P1-B stop removal — pattern ',stop=[\"\\\\r\\\\r\\\\n\"]' not found")
+            sv_stop_patched = True  # not a blocker; pattern may not be present
+        break
+    if not sv_stop_patched:
+        print("⚠️  P1-B stop removal: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-C fix routing["messages"] -> routing.get("messages", []) ---
+    # routing["messages"] raises KeyError when structured_output returns a dict without "messages"
+    # key (e.g., when using json_schema method with some model versions). Same for conv_resp.
+    sv_msgs_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if 'routing.get("messages", [])' in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-C messages-guard patch")
+            sv_msgs_patched = True
+            break
+        new_src = src
+        n1 = new_src.count('routing["messages"]')
+        n2 = new_src.count('conv_resp["messages"]')
+        new_src = new_src.replace('routing["messages"]', 'routing.get("messages", [])')
+        new_src = new_src.replace('conv_resp["messages"]', 'conv_resp.get("messages", [])')
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-C messages guard patched ({n1} routing + {n2} conv_resp)")
+            sv_msgs_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P1-C messages guard — no replacements made")
+        break
+    if not sv_msgs_patched:
+        print("⚠️  P1-C messages guard: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-D fix Router.model_validate(**routing) -> Router.model_validate(routing) ---
+    # Pydantic v2 model_validate() takes a dict positionally, not via ** unpacking.
+    # Two call sites use **routing (wrong); one already uses routing (correct).
+    sv_mv_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if 'PATCH: P1-D model_validate' in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-D model_validate patch")
+            sv_mv_patched = True
+            break
+        old_mv = "Router.model_validate(**routing)"
+        new_mv = "Router.model_validate(routing)  # PATCH: P1-D fixed ** unpacking (Pydantic v2)"
+        count = src.count(old_mv)
+        new_src = src.replace(old_mv, new_mv)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-D Router.model_validate fixed ({count} sites)")
+            sv_mv_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P1-D model_validate — pattern not found (may already be correct)")
+            sv_mv_patched = True  # not a blocker
+        break
+    if not sv_mv_patched:
+        print("⚠️  P1-D model_validate: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-G replace assert isinstance with _routing_parse_fallback ---
+    # assert isinstance(routing, Router) crashes the graph on any parse failure (no fallback).
+    # Replace with: if not isinstance, call _routing_parse_fallback which uses shortcut logic.
+    # Three distinct indentation levels: 8-space (sites 1 and 4), 28-space (site 2), 28-space conv.
+    sv_assert_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if '_routing_parse_fallback(state, routing)' in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-G assert-fallback patch")
+            sv_assert_patched = True
+            break
+        new_src = src
+
+        # Three assert sites confirmed in cell 46:
+        #   Site 1 (8sp  srcline ~1549): top-level router call result
+        #   Site 2 (28sp srcline ~2345): reply-loop router result
+        #   Site 3 (12sp srcline ~2482): conv/fallback path router result
+        #   Conv site (28sp): conv_resp assert after conv_routing_llm call
+        #
+        # IMPORTANT: The 28sp and 12sp strings both CONTAIN the 8sp string as a substring.
+        # So replacements MUST go from MOST indented to LEAST to avoid substring contamination.
+        # Counts are computed BEFORE any replacement for accurate reporting.
+
+        # Site 2: 28-space assert isinstance(routing, Router)
+        old_assert_28 = (
+            '                            assert isinstance(routing, Router), "Failed to parse routing result"'
+        )
+        new_assert_28 = (
+            '                            if not isinstance(routing, Router):  # PATCH: P1-G fallback\n'
+            '                                try: _pl_logger.error(f\'ROUTING FALLBACK: {type(routing).__name__}\')\n'
+            '                                except Exception: pass\n'
+            '                                routing = _routing_parse_fallback(state, routing)'
+        )
+
+        # Conv resp site: 28-space assert isinstance(conv_resp, ConversationalResponse)
+        old_conv_assert = (
+            '                            assert isinstance(conv_resp, ConversationalResponse), "Failed to parse routing result"'
+        )
+        new_conv_assert = (
+            '                            if not isinstance(conv_resp, ConversationalResponse):  # PATCH: P1-G conv fallback\n'
+            '                                try: _pl_logger.warning(f\'CONV ROUTING FALLBACK: {type(conv_resp).__name__}\')\n'
+            '                                except Exception: pass\n'
+            '                                conv_resp = ConversationalResponse(response=\'Continue.\', finished_this_task=True, expect_reply=False, reply_msg_to_supervisor=\'\')'
+        )
+
+        # Site 3: 12-space assert isinstance(routing, Router) (conv/fallback path)
+        old_assert_12 = (
+            '            assert isinstance(routing, Router), "Failed to parse routing result"'
+        )
+        new_assert_12 = (
+            '            if not isinstance(routing, Router):  # PATCH: P1-G fallback\n'
+            '                try: _pl_logger.error(f\'ROUTING FALLBACK 12sp: {type(routing).__name__}\')\n'
+            '                except Exception: pass\n'
+            '                routing = _routing_parse_fallback(state, routing)'
+        )
+
+        # Site 1: 8-space assert isinstance(routing, Router)
+        old_assert_8 = (
+            '        assert isinstance(routing, Router), "Failed to parse routing result"'
+        )
+        new_assert_8 = (
+            '        if not isinstance(routing, Router):  # PATCH: P1-G fallback on parse fail\n'
+            '            try: _pl_logger.error(f\'ROUTING FALLBACK 8sp: {type(routing).__name__}\')\n'
+            '            except Exception: pass\n'
+            '            routing = _routing_parse_fallback(state, routing)'
+        )
+
+        # Count all occurrences BEFORE any replacement (for accurate per-site reporting).
+        # Note: count_8 will be inflated by embedded matches inside 28sp/12sp strings;
+        # that is expected and harmless since we replace 28sp/12sp first.
+        count_28 = new_src.count(old_assert_28)
+        count_conv = new_src.count(old_conv_assert)
+        count_12 = new_src.count(old_assert_12)
+        count_8 = new_src.count(old_assert_8)
+
+        # Apply replacements from MOST indented to LEAST (28sp → 12sp → 8sp)
+        # so the shorter patterns don't corrupt the longer ones first.
+        new_src = new_src.replace(old_assert_28, new_assert_28)
+        new_src = new_src.replace(old_conv_assert, new_conv_assert)
+        new_src = new_src.replace(old_assert_12, new_assert_12)
+        new_src = new_src.replace(old_assert_8, new_assert_8)
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-G assert fallback patched "
+                  f"(8sp:{count_8} 28sp:{count_28} 12sp:{count_12} conv:{count_conv})")
+            sv_assert_patched = True
+        else:
+            found_any = count_8 or count_28 or count_12 or count_conv
+            if not found_any:
+                print(f"⚠️  Cell idx {idx}: P1-G assert fallback — no assert patterns found")
+            sv_assert_patched = True  # not a blocker; asserts may have different indentation
+        break
+    if not sv_assert_patched:
+        print("⚠️  P1-G assert fallback: supervisor cell not found")
+
+
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
     # Fix: cap at 60 steps; on GraphRecursionError return a recovery DataVisualization.
@@ -1558,6 +1813,226 @@ def main():
         break
     if not fs_patched:
         print("⚠️  final-state patch: target cell not found")
+
+    # --- Patch Cell 5 (MyChatOpenai): P1-A filter prompt_cache_key from OpenAI payload ---
+    # MyChatOpenai._get_request_payload_mod does payload = {**self._default_params, **kwargs}.
+    # Any extra kwargs (e.g., prompt_cache_key="routing_prompt") get forwarded to OpenAI API.
+    # OpenAI does not accept prompt_cache_key -> potential 400/500 errors. Low priority but clean.
+    mychat_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "_get_request_payload_mod" not in src or "MyChatOpenai" not in src:
+            continue
+        if "_INTERNAL_KWARGS" in src:
+            print(f"ℹ️  Cell idx {idx}: MyChatOpenai already has P1-A internal-kwargs filter")
+            mychat_patched = True
+            break
+        old_payload = "        payload = {**self._default_params, **kwargs}"
+        new_payload = (
+            "        _INTERNAL_KWARGS = frozenset({'prompt_cache_key'})  # PATCH: P1-A filter\n"
+            "        payload = {k: v for k, v in {**self._default_params, **kwargs}.items()\n"
+            "                   if k not in _INTERNAL_KWARGS}"
+        )
+        if old_payload in src:
+            new_src = src.replace(old_payload, new_payload, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-A MyChatOpenai prompt_cache_key filter added")
+            mychat_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P1-A — payload pattern not found in MyChatOpenai cell")
+            mychat_patched = True  # not a blocker
+        break
+    if not mychat_patched:
+        print("⚠️  P1-A: MyChatOpenai cell not found")
+
+    # --- Patch main graph compile: P2-A replace MemorySaver with SqliteSaver ---
+    # MemorySaver is in-memory only -- state is lost on any crash/restart.
+    # SqliteSaver persists every node's state update to disk, enabling mid-run resume.
+    # The main graph MemorySaver is immediately after `data_analysis_team_builder = StateGraph(State)`.
+    # Subgraph InMemorySavers are left as-is (they don't need persistence).
+    p2a_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "data_analysis_team_builder = StateGraph(State)" not in src:
+            continue
+        if "PATCH: P2-A SqliteSaver" in src:
+            print(f"ℹ️  Cell idx {idx}: main graph already has P2-A SqliteSaver patch")
+            p2a_patched = True
+            break
+        old_cp = "data_analysis_team_builder = StateGraph(State)\ncheckpointer = MemorySaver()"
+        new_cp = (
+            "data_analysis_team_builder = StateGraph(State)\n"
+            "# PATCH: P2-A SqliteSaver for persistent checkpointing + resume capability\n"
+            "import sqlite3 as _cp_sqlite3\n"
+            "from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver\n"
+            "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False)\n"
+            "checkpointer = _SqliteSaver(_cp_conn)"
+        )
+        if old_cp in src:
+            new_src = src.replace(old_cp, new_cp, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P2-A SqliteSaver checkpointer injected")
+            p2a_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P2-A — MemorySaver pattern not found after StateGraph(State)")
+        break
+    if not p2a_patched:
+        print("⚠️  P2-A SqliteSaver: target cell not found")
+
+    # --- Patch thread_id cell: P2-B save thread_id + P2-C/E resume support ---
+    # P2-B: After thread_id is generated, save it to current_run_thread_id.txt for resume.
+    # P2-C/E: Before calling stream_graph_output, check for _idd_resume.flag file.
+    #   If present, read the saved thread_id, update run_config, and pass initial_state=None
+    #   (None input = LangGraph resumes from last checkpoint for that thread_id).
+    p2bce_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if 'thread_id = f"thread-{uuid.uuid4()}"' not in src:
+            continue
+        if "PATCH: P2-B thread_id save" in src:
+            print(f"ℹ️  Cell idx {idx}: thread_id cell already has P2-B/C/E patches")
+            p2bce_patched = True
+            break
+        new_src = src
+
+        # P2-B: save thread_id to file after generation
+        old_tid = 'thread_id = f"thread-{uuid.uuid4()}"'
+        new_tid = (
+            'thread_id = f"thread-{uuid.uuid4()}"\n'
+            '# PATCH: P2-B thread_id save for checkpoint resume\n'
+            'with open("current_run_thread_id.txt", "w", encoding="utf-8") as _tid_f:\n'
+            '    _tid_f.write(thread_id)\n'
+            'print(f"[CHECKPOINT] thread_id saved: {thread_id}")'
+        )
+        new_src = new_src.replace(old_tid, new_tid, 1)
+
+        # P2-C/E: inject resume check before stream_graph_output call
+        # The call site is: stream_graph_output(\n    data_detective_graph,\n    initial_state,
+        old_stream_call = (
+            "stream_graph_output(\n"
+            "    data_detective_graph,\n"
+            "    initial_state,\n"
+            "    run_config,\n"
+            "    thread_id=run_id,\n"
+            "    first_step=0\n"
+            ")"
+        )
+        new_stream_call = (
+            "# PATCH: P2-C/E resume from checkpoint if _idd_resume.flag exists\n"
+            "import os as _resume_os\n"
+            "_resume_flag = _resume_os.path.join(_resume_os.getcwd(), '_idd_resume.flag')\n"
+            "_stream_initial_state = initial_state\n"
+            "if _resume_os.path.exists(_resume_flag):\n"
+            "    with open(_resume_flag, 'r', encoding='utf-8') as _rf:\n"
+            "        _resume_tid = _rf.read().strip()\n"
+            "    if _resume_tid:\n"
+            "        thread_id = _resume_tid\n"
+            "        run_config['configurable']['thread_id'] = thread_id\n"
+            "        _stream_initial_state = None  # None = resume from last checkpoint\n"
+            "        print(f'[CHECKPOINT] RESUMING from thread_id={thread_id}')\n"
+            "        try: _pl_logger.info(f'RESUMING thread_id={thread_id}')\n"
+            "        except Exception: pass\n"
+            "    else:\n"
+            "        print('[CHECKPOINT] _idd_resume.flag empty -- starting fresh')\n"
+            "stream_graph_output(\n"
+            "    data_detective_graph,\n"
+            "    _stream_initial_state,\n"
+            "    run_config,\n"
+            "    thread_id=run_id,\n"
+            "    first_step=0\n"
+            ")"
+        )
+        if old_stream_call in new_src:
+            new_src = new_src.replace(old_stream_call, new_stream_call, 1)
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            patched_parts = []
+            if new_tid in new_src:
+                patched_parts.append("P2-B(thread_id save)")
+            if "_stream_initial_state" in new_src:
+                patched_parts.append("P2-C/E(resume call)")
+            print(f"✅ Cell idx {idx}: {', '.join(patched_parts)} patched")
+            p2bce_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P2-B/C/E — no replacements made")
+        break
+    if not p2bce_patched:
+        print("⚠️  P2-B/C/E: thread_id cell not found")
+
+    # --- Patch stream cell (cell 75): P2-C/E resume support before stream_graph_output call ---
+    # stream_graph_output call is in the same cell as the definition (cell 75), NOT in the
+    # thread_id cell (cell 72). Check for _idd_resume.flag and pass None initial_state to resume.
+    p2ce_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def stream_graph_output(" not in src:
+            continue
+        if "_stream_initial_state" in src or "PATCH: P2-C/E" in src:
+            print(f"ℹ️  Cell idx {idx}: stream cell already has P2-C/E resume patch")
+            p2ce_patched = True
+            break
+        old_stream_call = (
+            "stream_graph_output(\n"
+            "    data_detective_graph,\n"
+            "    initial_state,\n"
+            "    run_config,\n"
+            "    thread_id=run_id,\n"
+            "    first_step=0\n"
+            ")"
+        )
+        new_stream_call = (
+            "# PATCH: P2-C/E resume from checkpoint if _idd_resume.flag exists\n"
+            "import os as _resume_os\n"
+            "_resume_flag = _resume_os.path.join(_resume_os.getcwd(), '_idd_resume.flag')\n"
+            "_stream_initial_state = initial_state\n"
+            "if _resume_os.path.exists(_resume_flag):\n"
+            "    with open(_resume_flag, 'r', encoding='utf-8') as _rf:\n"
+            "        _resume_tid = _rf.read().strip()\n"
+            "    if _resume_tid:\n"
+            "        run_id = _resume_tid\n"
+            "        run_config['configurable']['thread_id'] = run_id\n"
+            "        _stream_initial_state = None  # None = resume from last checkpoint\n"
+            "        print(f'[CHECKPOINT] RESUMING from thread_id={run_id}')\n"
+            "        try: _pl_logger.info(f'RESUMING thread_id={run_id}')\n"
+            "        except Exception: pass\n"
+            "    else:\n"
+            "        print('[CHECKPOINT] _idd_resume.flag empty -- starting fresh')\n"
+            "stream_graph_output(\n"
+            "    data_detective_graph,\n"
+            "    _stream_initial_state,\n"
+            "    run_config,\n"
+            "    thread_id=run_id,\n"
+            "    first_step=0\n"
+            ")"
+        )
+        if old_stream_call in src:
+            new_src = src.replace(old_stream_call, new_stream_call, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P2-C/E stream resume patch applied")
+            p2ce_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: P2-C/E — stream_graph_output call pattern not found")
+            p2ce_patched = True  # not a blocker
+        break
+    if not p2ce_patched:
+        print("⚠️  P2-C/E: stream_graph_output definition cell not found")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re

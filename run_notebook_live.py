@@ -2,13 +2,15 @@
 run_notebook_live.py -- Headless execution of IntelligentDataDetective_beta_v5_patched.ipynb
 
 Usage:
-    python run_notebook_live.py
+    python run_notebook_live.py           # fresh run (deletes checkpoints.sqlite)
+    python run_notebook_live.py --resume  # resume from last checkpoint
 
 Requirements:
     pip install nbclient nbformat jupyter_client ipykernel
 
 NEVER cancel this script -- the notebook takes 6-25 minutes to complete.
 """
+import argparse
 import os
 import sys
 import glob
@@ -63,7 +65,7 @@ def check_nbclient():
         return False
 
 
-def execute_notebook():
+def execute_notebook(resume: bool = False):
     import asyncio
     import nbformat
     from nbclient import NotebookClient
@@ -142,9 +144,12 @@ def execute_notebook():
     _tail_thread.start()
     print(f"OK  Log tail started → {_log_file}")
 
-    # Clean stale checkpoints so graph starts fresh (grows unboundedly across runs)
+    # Clean stale checkpoints so graph starts fresh (grows unboundedly across runs).
+    # Skip deletion when --resume so the kernel can restore from the prior checkpoint.
     ckpt_file = REPO_ROOT / "checkpoints.sqlite"
-    if ckpt_file.exists():
+    if resume:
+        print(f"OK  --resume mode: preserving {ckpt_file.name} for checkpoint restore")
+    elif ckpt_file.exists():
         ckpt_file.unlink()
         print(f"OK  Deleted stale {ckpt_file.name} for clean run")
 
@@ -270,15 +275,56 @@ def print_artifact_summary(artifacts_by_ext, notebook_paths):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run IDD v5 notebook headlessly")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume from last SQLite checkpoint. Reads thread_id from current_run_thread_id.txt, "
+            "writes _idd_resume.flag so the notebook kernel picks it up, and skips "
+            "checkpoints.sqlite deletion."
+        ),
+    )
+    args = parser.parse_args()
+
+    resume_flag_path = REPO_ROOT / "_idd_resume.flag"
+    tid_path = REPO_ROOT / "current_run_thread_id.txt"
+
+    if args.resume:
+        if not tid_path.exists():
+            print("ERR --resume: current_run_thread_id.txt not found — no prior run to resume")
+            sys.exit(1)
+        saved_tid = tid_path.read_text(encoding="utf-8").strip()
+        if not saved_tid:
+            print("ERR --resume: current_run_thread_id.txt is empty")
+            sys.exit(1)
+        ckpt = REPO_ROOT / "checkpoints.sqlite"
+        if not ckpt.exists():
+            print("ERR --resume: checkpoints.sqlite not found — cannot resume without checkpoint")
+            sys.exit(1)
+        # Write resume flag; notebook kernel reads this file to activate resume mode
+        resume_flag_path.write_text(saved_tid, encoding="utf-8")
+        print(f"OK  --resume: will resume thread_id={saved_tid}")
+        print(f"OK  --resume: _idd_resume.flag written, checkpoints.sqlite preserved")
+    else:
+        # Fresh run: remove resume flag so notebook doesn't accidentally resume
+        if resume_flag_path.exists():
+            resume_flag_path.unlink()
+        print("OK  Fresh run (resume flag cleared)")
+
     load_api_key()
 
     if not check_nbclient():
         sys.exit(1)
 
-    nb, cell_errors, executed_nb_path = execute_notebook()
+    nb, cell_errors, executed_nb_path = execute_notebook(resume=args.resume)
     notebook_paths = extract_output_paths_from_notebook(nb)
     artifacts = scan_artifacts()
     success = print_artifact_summary(artifacts, notebook_paths)
+
+    # Clean up resume flag after run completes (success or failure)
+    if resume_flag_path.exists():
+        resume_flag_path.unlink()
 
     if cell_errors:
         print(f"\nERR {len(cell_errors)} cell error(s) occurred during execution:")
