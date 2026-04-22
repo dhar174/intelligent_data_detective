@@ -2284,6 +2284,117 @@ def main():
     if not p2ce_patched:
         print("⚠️  P2-C/E: stream_graph_output definition cell not found")
 
+    # --- Fix G: Remove conflicting edges in graph compilation cell ---
+    # Root cause: viz_worker, viz_join, viz_evaluator, report_orchestrator, etc. are in the
+    # `for src in [...]` loop that adds edges to supervisor. They ALSO have their own proper
+    # downstream edges (viz_worker→viz_join→viz_evaluator→report_orchestrator via route_viz).
+    # This creates a fan-out race: viz_worker fires BOTH viz_join AND supervisor simultaneously.
+    # Supervisor sees vc=False (viz_join hasn't run yet) and makes a stale routing decision.
+    # Also: supervisor is in the route_to_writer loop, causing it to fan-out to itself.
+    fixg_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "data_analysis_team_builder = StateGraph(State)" not in src:
+            continue
+        if "# Fix G:" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix G conflicting edges already patched")
+            fixg_patched = True
+            break
+        # Fix G-1: Remove viz/report nodes from the → supervisor loop
+        old_supervisor_loop = (
+            '# Workers \u2192 always report back to the supervisor when done\n'
+            'for src in [\n'
+            '    "initial_analysis", "data_cleaner", "analyst",\n'
+            '    "viz_worker", "viz_join", "viz_evaluator",\n'
+            '    "report_orchestrator", "report_section_worker", "report_join",\n'
+            '\n'
+            ']:\n'
+            '    data_analysis_team_builder.add_edge(src, "supervisor")'
+        )
+        new_supervisor_loop = (
+            '# Workers \u2192 always report back to the supervisor when done\n'
+            '# Fix G: Only pipeline-entry nodes go back to supervisor;\n'
+            '# viz/report nodes have their own proper downstream edges defined below.\n'
+            'for src in [\n'
+            '    "initial_analysis", "data_cleaner", "analyst",\n'
+            ']:\n'
+            '    data_analysis_team_builder.add_edge(src, "supervisor")'
+        )
+        if old_supervisor_loop in src:
+            src = src.replace(old_supervisor_loop, new_supervisor_loop, 1)
+            print(f"✅ Cell idx {idx}: Fix G-1 supervisor loop cleaned (removed viz/report nodes)")
+        else:
+            print(f"⚠️  Cell idx {idx}: Fix G-1 — supervisor loop pattern not found (may already be patched or different whitespace)")
+
+        # Fix G-2: Remove supervisor from route_to_writer loop
+        old_writer_loop = 'for src in ["file_writer","supervisor","report_packager"]:'
+        new_writer_loop = (
+            '# Fix G: supervisor has route_from_supervisor already; removing it from\n'
+            '# route_to_writer loop prevents a fan-out where supervisor routes to itself.\n'
+            'for src in ["file_writer","report_packager"]:'
+        )
+        if old_writer_loop in src:
+            src = src.replace(old_writer_loop, new_writer_loop, 1)
+            print(f"✅ Cell idx {idx}: Fix G-2 supervisor removed from route_to_writer loop")
+        else:
+            print(f"⚠️  Cell idx {idx}: Fix G-2 — route_to_writer loop pattern not found")
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        fixg_patched = True
+        break
+    if not fixg_patched:
+        print("⚠️  Fix G: graph compilation cell not found")
+
+    # --- Fix H: Expand assign_viz_workers path_map to include report_orchestrator ---
+    # assign_viz_workers can return Send("report_orchestrator", ...) when viz_tasks is empty.
+    # The conditional edge path_map only allowed ["viz_worker"] → LangGraph KeyError on empty tasks.
+    # visualization_orchestrator always creates fallback tasks, so empty tasks shouldn't happen
+    # in practice. But this is a safety fix so LangGraph doesn't crash.
+    fixh_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "data_analysis_team_builder = StateGraph(State)" not in src:
+            continue
+        if "# Fix H:" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix H assign_viz_workers path_map already patched")
+            fixh_patched = True
+            break
+        old_pathmap = (
+            'data_analysis_team_builder.add_conditional_edges(\n'
+            '    "visualization",\n'
+            '    assign_viz_workers,         # returns List[Send("viz_worker", {...}), ...]\n'
+            '    ["viz_worker"],\n'
+            ')'
+        )
+        new_pathmap = (
+            '# Fix H: include report_orchestrator in path_map so assign_viz_workers can skip\n'
+            '# to reports when viz_tasks is empty (e.g., when no df available).\n'
+            'data_analysis_team_builder.add_conditional_edges(\n'
+            '    "visualization",\n'
+            '    assign_viz_workers,         # returns List[Send("viz_worker", {...}), ...]\n'
+            '    ["viz_worker", "report_orchestrator"],\n'
+            ')'
+        )
+        if old_pathmap in src:
+            src = src.replace(old_pathmap, new_pathmap, 1)
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix H assign_viz_workers path_map expanded")
+            fixh_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: Fix H — assign_viz_workers conditional edge pattern not found")
+            fixh_patched = True  # not a blocker
+        break
+    if not fixh_patched:
+        print("⚠️  Fix H: graph compilation cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
