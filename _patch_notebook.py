@@ -1900,6 +1900,64 @@ def main():
     if not fixt_patched:
         print("⚠️  Fix T: viz_evaluator_node no-tasks patch target not found")
 
+    # --- Fix U: migrate_thread last_writer=None → InvalidUpdateError: Ambiguous update ---
+    # Cell 95 (migration cell) calls dst_graph.update_state(cfg, snap.values, as_node=last_writer)
+    # When snap.metadata["writes"] is empty, last_writer=None → LangGraph raises
+    # InvalidUpdateError: Ambiguous update, specify as_node.
+    # Fix: skip snapshots where last_writer is None, and wrap the migration in try/except
+    # so post-processing failures don't crash the notebook after a successful pipeline run.
+    FIX_U_OLD = (
+        "      for snap in seq:\n"
+        "          # choose the last writer for correct \"what runs next\"\n"
+        "          writes = (snap.metadata or {}).get(\"writes\") or {}\n"
+        "          last_writer = list(writes.keys())[-1] if writes else None\n"
+        "          dst_graph.update_state(cfg, snap.values, as_node=last_writer)\n"
+    )
+    FIX_U_NEW = (
+        "      for snap in seq:\n"
+        "          # choose the last writer for correct \"what runs next\"\n"
+        "          writes = (snap.metadata or {}).get(\"writes\") or {}\n"
+        "          last_writer = list(writes.keys())[-1] if writes else None\n"
+        "          if last_writer is None:  # _FIX_U_SKIP_NONE_WRITER\n"
+        "              continue  # skip ambiguous snapshots — no writer to attribute update to\n"
+        "          try:\n"
+        "              dst_graph.update_state(cfg, snap.values, as_node=last_writer)\n"
+        "          except Exception as _mig_err:\n"
+        "              print(f'WARNING migrate_thread: update_state failed for snap ({last_writer}): {_mig_err}')\n"
+    )
+    fixu_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "migrate_thread" not in src or "update_state" not in src:
+            continue
+        if "_FIX_U_SKIP_NONE_WRITER" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix U (migrate_thread None guard) already applied")
+            fixu_patched = True
+            break
+        if FIX_U_OLD in src:
+            new_src = src.replace(FIX_U_OLD, FIX_U_NEW, 1)
+            # Also wrap the outer migrate_thread call in try/except
+            new_src = new_src.replace(
+                "  migrate_thread(thread_id, full_history=True)  # preserves time-travel history",
+                "  try:\n"
+                "      migrate_thread(thread_id, full_history=True)  # preserves time-travel history\n"
+                "  except Exception as _mig_outer_err:\n"
+                "      print(f'WARNING migrate_thread outer error: {_mig_outer_err}')",
+                1,
+            )
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix U applied — migrate_thread None-writer guard + outer try/except")
+            fixu_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: Fix U — migrate_thread pattern not found")
+        break
+    if not fixu_patched:
+        print("⚠️  Fix U: migrate_thread patch target not found")
+
     # --- Fix E: viz_worker returns None — fix dict.update() chaining ---
     # save_viz_for_state(...).update({...}) always returns None because dict.update() returns None.
     # The return statement therefore evaluates to `return None`.
