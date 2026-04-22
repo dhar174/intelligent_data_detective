@@ -1034,6 +1034,84 @@ def main():
     if not sv_diag_patched:
         print("⚠️  supervisor shortcut diagnostic patch: not applied (shortcut may not exist yet)")
 
+    # --- Patch supervisor_node: shortcuts 2 (analyst→viz) + 3 (viz→report_orchestrator) ---
+    # Run 22: after analyst_complete=True the supervisor LLM was called and threw KeyError:'content'.
+    # These shortcuts eliminate all remaining supervisor LLM calls after dc→analyst:
+    #   shortcut 2: analyst_complete + not viz_complete → goto 'visualization'
+    #   shortcut 3: viz_complete + not report_done → goto 'report_orchestrator'
+    # Node names confirmed by rubber duck: 'visualization' (line 16874) and 'report_orchestrator'.
+    sv2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- END PATCH: force analyst routing ---" not in src:
+            continue
+        if "PATCH: force viz routing" in src:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has viz+report shortcuts")
+            sv2_patched = True
+            break
+        import re as _re_sv2
+        m2 = _re_sv2.search(r'^([ \t]*)# --- END PATCH: force analyst routing ---', src, _re_sv2.MULTILINE)
+        if not m2:
+            print(f"⚠️  supervisor shortcut 2+3: END PATCH marker not found")
+            break
+        _di2 = m2.group(1)
+        shortcuts_2_3 = (
+            f"{_di2}# --- PATCH: force viz routing after analyst ---\n"
+            f"{_di2}_ac_done = bool(state.get('analyst_complete'))\n"
+            f"{_di2}_sc2_ac = state.get('analyst_complete')\n"
+            f"{_di2}_sc2_vc = state.get('visualization_complete')\n"
+            f"{_di2}print(f'[SHORTCUT2] ac_done={{_ac_done}} ac={{_sc2_ac}} vc={{_sc2_vc}}')\n"
+            f"{_di2}try: _pl_logger.info(f'SHORTCUT2 ac_done={{_ac_done}} ac={{_sc2_ac}} vc={{_sc2_vc}}')\n"
+            f"{_di2}except Exception: pass\n"
+            f"{_di2}if _dc_done and _ac_done and not state.get('visualization_complete'):\n"
+            f"{_di2}    _sc2 = int(state.get('_count_', 0)) + 1\n"
+            f"{_di2}    return Command(goto='visualization', update={{\n"
+            f"{_di2}        '_count_': _sc2,\n"
+            f"{_di2}        'next': 'visualization',\n"
+            f"{_di2}        'analyst_complete': True,\n"
+            f"{_di2}        'next_agent_prompt': (\n"
+            f"{_di2}            'Please generate all requested visualizations for the cleaned dataset. '\n"
+            f"{_di2}            'Create histograms, bar charts, and scatter plots as PNG files.'\n"
+            f"{_di2}        ),\n"
+            f"{_di2}        'next_agent_metadata': None,\n"
+            f"{_di2}    }})\n"
+            f"{_di2}# --- END PATCH: force viz routing ---\n"
+            f"{_di2}# --- PATCH: force report routing after viz ---\n"
+            f"{_di2}_vc_done = bool(state.get('visualization_complete'))\n"
+            f"{_di2}_sc3_vc = state.get('visualization_complete')\n"
+            f"{_di2}_sc3_rg = state.get('report_generator_complete')\n"
+            f"{_di2}print(f'[SHORTCUT3] vc_done={{_vc_done}} vc={{_sc3_vc}} rg={{_sc3_rg}}')\n"
+            f"{_di2}try: _pl_logger.info(f'SHORTCUT3 vc_done={{_vc_done}} vc={{_sc3_vc}} rg={{_sc3_rg}}')\n"
+            f"{_di2}except Exception: pass\n"
+            f"{_di2}if _vc_done and not state.get('report_generator_complete'):\n"
+            f"{_di2}    _sc3 = int(state.get('_count_', 0)) + 1\n"
+            f"{_di2}    return Command(goto='report_orchestrator', update={{\n"
+            f"{_di2}        '_count_': _sc3,\n"
+            f"{_di2}        'next': 'report_orchestrator',\n"
+            f"{_di2}        'visualization_complete': True,\n"
+            f"{_di2}        'next_agent_prompt': (\n"
+            f"{_di2}            'Please generate a comprehensive data analysis report in PDF, Markdown, and HTML formats.'\n"
+            f"{_di2}        ),\n"
+            f"{_di2}        'next_agent_metadata': None,\n"
+            f"{_di2}    }})\n"
+            f"{_di2}# --- END PATCH: force report routing ---\n"
+        )
+        END_SC1 = f"{_di2}# --- END PATCH: force analyst routing ---\n"
+        new_src = src.replace(END_SC1, END_SC1 + shortcuts_2_3, 1)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: supervisor shortcuts 2+3 added (analyst→visualization, viz→report_orchestrator)")
+            sv2_patched = True
+        else:
+            print(f"⚠️  Cell idx {idx}: supervisor shortcut 2+3 — replacement failed")
+        break
+    if not sv2_patched:
+        print("⚠️  supervisor shortcut 2+3: not applied (shortcut 1 end marker not found)")
+
     # --- Patch viz_worker: cap sub-agent recursion + recovery DataVisualization ---
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
