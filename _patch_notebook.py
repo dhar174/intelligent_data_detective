@@ -3907,6 +3907,53 @@ def main():
     if not fixX3rg_patched:
         print("W  Fix X3-rg: report_orchestrator rg_vars target not found")
 
+    # --- Fix Y: wrap supervisor planning_supervisor_llm.invoke() calls in try-except ---
+    # Prevents APIConnectionError / network errors from crashing the entire stream
+    # supervisor_node makes LLM calls that have NO error handling — if they throw,
+    # the exception propagates all the way up and terminates graph streaming
+    fixY_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node(" not in src or "planning_supervisor_llm.invoke(" not in src:
+            continue
+        if "# Fix Y" in src:
+            print(f"i  Cell idx {idx}: Fix Y (supervisor LLM try-except) already applied")
+            fixY_patched = True
+            break
+        # Find and wrap the bare planning_supervisor_llm.invoke call
+        # The target is:
+        #   new_plan = planning_supervisor_llm.invoke(replan_vars, config=..., prompt_cache_key = ...)
+        # Pattern: "        new_plan = planning_supervisor_llm.invoke("
+        import re as _rey
+        # Find all occurrences of "new_plan = planning_supervisor_llm.invoke(" in supervisor context
+        patched_y_count = 0
+        new_src = src
+        for _m in _rey.finditer(r'( {8,12})(new_plan) = (planning_supervisor_llm\.invoke\([^\n]+\n)', src):
+            indent = _m.group(1)
+            old_invoke = _m.group(0)
+            safe_invoke = (
+                f"{indent}try:  # Fix Y: handle supervisor LLM connection errors\n"
+                f"{indent}    {_m.group(2)} = {_m.group(3)}"
+                f"{indent}except Exception as _svplanexc:\n"
+                f"{indent}    print(f'WARNING supervisor planning LLM error ({{type(_svplanexc).__name__}}: {{str(_svplanexc)[:80]}}) -- using fallback plan')\n"
+                f"{indent}    {_m.group(2)} = curr_plan if (curr_plan and isinstance(curr_plan, Plan)) else Plan(plan_title='', plan_summary='Fallback plan', plan_steps=[], finished_this_task=False, reply_msg_to_supervisor='', expect_reply=False, plan_version=0)\n"
+            )
+            new_src = new_src.replace(old_invoke, safe_invoke, 1)
+            patched_y_count += 1
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix Y applied — {patched_y_count} supervisor LLM invoke(s) wrapped in try-except")
+            fixY_patched = True
+        else:
+            print(f"W  Fix Y: planning_supervisor_llm.invoke pattern not found/replaced in cell {idx}")
+        break
+    if not fixY_patched:
+        print("W  Fix Y: supervisor_node target not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
