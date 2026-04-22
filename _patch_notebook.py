@@ -3954,6 +3954,225 @@ def main():
     if not fixY_patched:
         print("W  Fix Y: supervisor_node target not found")
 
+    # --- Fix Z: wrap ALL remaining unprotected LLM invoke calls in supervisor_node ---
+    # Covers: progress_llm, todo_llm (x2), reply_llm, progress_llm_b, progress_llm_conv,
+    #         planning_supervisor_llm (deep-indent x2), todo_llm conv (x2)
+    # Patterns are matched AFTER P1-E (state["_config"]→state.get("_config", config))
+    # and after Fix Y (which only wrapped 8-12 indent new_plan calls).
+    fixZ_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node(" not in src:
+            continue
+        if "# Fix Z" in src:
+            print(f"i  Cell idx {idx}: Fix Z (supervisor remaining LLM try-excepts) already applied")
+            fixZ_patched = True
+            break
+
+        new_src = src
+        applied = []
+
+        # --- Z1: progress_result (indent=12, uses 'config' not state.get) ---
+        _Z1_OLD = (
+            '            progress_result: CompletedStepsAndTasks = progress_llm.invoke('
+            'progress_vars, config=config, prompt_cache_key = "progress_prompt")\n'
+        )
+        _Z1_NEW = (
+            '            try:  # Fix Z1\n'
+            '                progress_result: CompletedStepsAndTasks = progress_llm.invoke('
+            'progress_vars, config=config, prompt_cache_key = "progress_prompt")\n'
+            '            except Exception as _zexc:\n'
+            '                print(f\'WARNING progress_llm error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                progress_result = CompletedStepsAndTasks(completed_steps=[], finished_tasks=[], '
+            'progress_report=ProgressReport(latest_progress=\'Connection error.\', reply_msg_to_supervisor=\'\', '
+            'finished_this_task=False, expect_reply=False), reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z1_OLD in new_src:
+            new_src = new_src.replace(_Z1_OLD, _Z1_NEW, 1)
+            applied.append("Z1")
+        else:
+            print(f"W  Fix Z1: progress_result pattern not found in cell {idx}")
+
+        # --- Z2: first todo_results (indent=8, multi-line) ---
+        _Z2_OLD = (
+            '        todo_results = todo_llm.invoke(\n'
+            '            todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '        )\n'
+        )
+        _Z2_NEW = (
+            '        try:  # Fix Z2\n'
+            '            todo_results = todo_llm.invoke(\n'
+            '                todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '            )\n'
+            '        except Exception as _zexc:\n'
+            '            print(f\'WARNING todo_llm error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '            todo_results = ToDoList(to_do_list=[], reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z2_OLD in new_src:
+            new_src = new_src.replace(_Z2_OLD, _Z2_NEW, 1)
+            applied.append("Z2")
+        else:
+            print(f"W  Fix Z2: first todo_results pattern not found in cell {idx}")
+
+        # --- Z3: reply_result (indent=12) ---
+        _Z3_OLD = (
+            '            reply_result = replying_supervisor_llm.invoke(routing_state_vars, '
+            'config=state.get("_config", config), prompt_cache_key = "reply_prompt")\n'
+        )
+        _Z3_NEW = (
+            '            try:  # Fix Z3\n'
+            '                reply_result = replying_supervisor_llm.invoke(routing_state_vars, '
+            'config=state.get("_config", config), prompt_cache_key = "reply_prompt")\n'
+            '            except Exception as _zexc:\n'
+            '                print(f\'WARNING replying_supervisor_llm error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                reply_result = MessagesToAgentsList(messages_to_agents=[], reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z3_OLD in new_src:
+            new_src = new_src.replace(_Z3_OLD, _Z3_NEW, 1)
+            applied.append("Z3")
+        else:
+            print(f"W  Fix Z3: reply_result pattern not found in cell {idx}")
+
+        # --- Z4: progress_resultb (indent=28) ---
+        _Z4_OLD = (
+            '                            progress_resultb: CompletedStepsAndTasks = progress_llm_b.invoke('
+            'progress_varsb, config=state.get("_config", config), prompt_cache_key = "progress_prompt")\n'
+        )
+        _Z4_NEW = (
+            '                            try:  # Fix Z4\n'
+            '                                progress_resultb: CompletedStepsAndTasks = progress_llm_b.invoke('
+            'progress_varsb, config=state.get("_config", config), prompt_cache_key = "progress_prompt")\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING progress_llm_b error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                progress_resultb = CompletedStepsAndTasks(completed_steps=[], finished_tasks=[], '
+            'progress_report=ProgressReport(latest_progress=\'Connection error.\', reply_msg_to_supervisor=\'\', '
+            'finished_this_task=False, expect_reply=False), reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z4_OLD in new_src:
+            new_src = new_src.replace(_Z4_OLD, _Z4_NEW, 1)
+            applied.append("Z4")
+        else:
+            print(f"W  Fix Z4: progress_resultb pattern not found in cell {idx}")
+
+        # --- Z5: progress_result_conv (indent=28) ---
+        _Z5_OLD = (
+            '                            progress_result_conv = progress_llm_conv.invoke('
+            'progress_varsc, config=state.get("_config", config), prompt_cache_key = "progress_conv_prompt")\n'
+        )
+        _Z5_NEW = (
+            '                            try:  # Fix Z5\n'
+            '                                progress_result_conv = progress_llm_conv.invoke('
+            'progress_varsc, config=state.get("_config", config), prompt_cache_key = "progress_conv_prompt")\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING progress_llm_conv error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                progress_result_conv = CompletedStepsAndTasks(completed_steps=[], finished_tasks=[], '
+            'progress_report=ProgressReport(latest_progress=\'Connection error.\', reply_msg_to_supervisor=\'\', '
+            'finished_this_task=False, expect_reply=False), reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z5_OLD in new_src:
+            new_src = new_src.replace(_Z5_OLD, _Z5_NEW, 1)
+            applied.append("Z5")
+        else:
+            print(f"W  Fix Z5: progress_result_conv pattern not found in cell {idx}")
+
+        # --- Z6: new_plan deep-indent (indent=28, second/deep occurrence not covered by Fix Y) ---
+        _Z6_OLD = (
+            '                            new_plan = planning_supervisor_llm.invoke('
+            'replan_vars, config=state.get("_config", config), prompt_cache_key = plan_prompt_key)\n'
+        )
+        _Z6_NEW = (
+            '                            try:  # Fix Z6\n'
+            '                                new_plan = planning_supervisor_llm.invoke('
+            'replan_vars, config=state.get("_config", config), prompt_cache_key = plan_prompt_key)\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING planning_supervisor_llm error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                new_plan = curr_plan if (curr_plan and isinstance(curr_plan, Plan)) else Plan('
+            'plan_title=\'\', plan_summary=\'Fallback plan\', plan_steps=[], finished_this_task=False, '
+            'reply_msg_to_supervisor=\'\', expect_reply=False, plan_version=0)\n'
+        )
+        if _Z6_OLD in new_src:
+            new_src = new_src.replace(_Z6_OLD, _Z6_NEW, 1)
+            applied.append("Z6")
+        else:
+            print(f"W  Fix Z6: new_plan deep pattern not found in cell {idx}")
+
+        # --- Z7: conversation_result = planning_supervisor_llm (indent=28) ---
+        _Z7_OLD = (
+            '                            conversation_result = planning_supervisor_llm.invoke('
+            'replan_vars, config=state.get("_config", config), prompt_cache_key = plan_prompt_key)\n'
+        )
+        _Z7_NEW = (
+            '                            try:  # Fix Z7\n'
+            '                                conversation_result = planning_supervisor_llm.invoke('
+            'replan_vars, config=state.get("_config", config), prompt_cache_key = plan_prompt_key)\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING planning_supervisor_llm(conv) error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                conversation_result = curr_plan if (curr_plan and isinstance(curr_plan, Plan)) else Plan('
+            'plan_title=\'\', plan_summary=\'Fallback plan\', plan_steps=[], finished_this_task=False, '
+            'reply_msg_to_supervisor=\'\', expect_reply=False, plan_version=0)\n'
+        )
+        if _Z7_OLD in new_src:
+            new_src = new_src.replace(_Z7_OLD, _Z7_NEW, 1)
+            applied.append("Z7")
+        else:
+            print(f"W  Fix Z7: conversation_result=planning_supervisor_llm pattern not found in cell {idx}")
+
+        # --- Z8: second todo_results (indent=28, multi-line) ---
+        _Z8_OLD = (
+            '                            todo_results = todo_llm.invoke(\n'
+            '                                todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '                            )\n'
+        )
+        _Z8_NEW = (
+            '                            try:  # Fix Z8\n'
+            '                                todo_results = todo_llm.invoke(\n'
+            '                                    todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '                                )\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING todo_llm(2) error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                todo_results = ToDoList(to_do_list=[], reply_msg_to_supervisor=\'\', finished_this_task=False, expect_reply=False)\n'
+        )
+        if _Z8_OLD in new_src:
+            new_src = new_src.replace(_Z8_OLD, _Z8_NEW, 1)
+            applied.append("Z8")
+        else:
+            print(f"W  Fix Z8: second todo_results pattern not found in cell {idx}")
+
+        # --- Z9: conversation_result = todo_llm (indent=28, multi-line) ---
+        _Z9_OLD = (
+            '                            conversation_result = todo_llm.invoke(\n'
+            '                                todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '                            )\n'
+        )
+        _Z9_NEW = (
+            '                            try:  # Fix Z9\n'
+            '                                conversation_result = todo_llm.invoke(\n'
+            '                                    todo_vars, config=state.get("_config", config), prompt_cache_key = "todo_prompt"\n'
+            '                                )\n'
+            '                            except Exception as _zexc:\n'
+            '                                print(f\'WARNING todo_llm(conv) error ({type(_zexc).__name__}: {str(_zexc)[:80]}) -- fallback\')\n'
+            '                                conversation_result = ConversationalResponse(response=\'Continue.\', reply_msg_to_supervisor=\'\', finished_this_task=True, expect_reply=False)\n'
+        )
+        if _Z9_OLD in new_src:
+            new_src = new_src.replace(_Z9_OLD, _Z9_NEW, 1)
+            applied.append("Z9")
+        else:
+            print(f"W  Fix Z9: conversation_result=todo_llm pattern not found in cell {idx}")
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix Z applied — {', '.join(applied)}")
+            fixZ_patched = True
+        else:
+            print(f"W  Fix Z: no changes applied to cell {idx}")
+        break
+    if not fixZ_patched:
+        print("W  Fix Z: supervisor_node target not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
