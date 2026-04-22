@@ -354,9 +354,13 @@ def main():
     SAFE_IA_HELPER = (
         "# --- patched: safe invoke wrapper for initial_analysis_node ---\n"
         "def _safe_initial_analysis_invoke(agent, inputs, config=None):\n"
-        "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 160  # cap=160\n"
-        "    from langchain_core.messages import AIMessage as _IAIM\n"
+        "    _outer_cfg = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_cfg.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
+        "    from langchain_core.messages import AIMessage as _IAIM, ToolMessage as _TM_IA\n"
+        "    _raw_ia = list(inputs.get('messages') or [])\n"
+        "    _valid_ia = {tc.get('id','') for m in _raw_ia for tc in (getattr(m,'tool_calls',None) or [])}\n"
+        "    inputs = {**inputs, 'messages': [m for m in _raw_ia if not isinstance(m, _TM_IA) or getattr(m,'tool_call_id','') in _valid_ia]}\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
         "    except Exception as _iaexc:\n"
@@ -364,7 +368,7 @@ def main():
         "            raise\n"
         "        _nm = type(_iaexc).__name__\n"
         "        print(f'WARNING initial_analysis hit error ({_nm}: {str(_iaexc)[:120]}) -- building recovery InitialDescription')\n"
-        "        try: _log_recovery('initial_analysis', 160)\n"
+        "        try: _log_recovery('initial_analysis', 300)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -451,10 +455,14 @@ def main():
     SAFE_INVOKE_HELPER = (
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
         "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
-        "    cfg = dict(kwargs.get('config', {}))\n"
-        "    cfg['recursion_limit'] = 160  # cap=160\n"
+        "    _outer_dc = dict(kwargs.get('config', {}))\n"
+        "    cfg = {'configurable': _outer_dc.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
-        "    from langchain_core.messages import AIMessage as _DLAIM\n"
+        "    from langchain_core.messages import AIMessage as _DLAIM, ToolMessage as _TM_DC\n"
+        "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
+        "    _raw_dc = list(inputs.get('messages') or [])\n"
+        "    _valid_dc = {tc.get('id','') for m in _raw_dc for tc in (getattr(m,'tool_calls',None) or [])}\n"
+        "    inputs = {**inputs, 'messages': [m for m in _raw_dc if not isinstance(m, _TM_DC) or getattr(m,'tool_call_id','') in _valid_dc]}\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
         "    except Exception as _exc:\n"
@@ -462,7 +470,7 @@ def main():
         "            raise\n"
         "        _nm = type(_exc).__name__\n"
         "        print(f'WARNING data_cleaner hit error ({_nm}: {str(_exc)[:120]}) -- building recovery CleaningMetadata')\n"
-        "        try: _log_recovery('data_cleaner', 160)\n"
+        "        try: _log_recovery('data_cleaner', 300)\n"
         "        except Exception: pass\n"
         "        _msgs = list(inputs.get('messages') or [])\n"
         "        _msgs.append(_DLAIM(content='Data cleaning completed (recursion recovery).', name='data_cleaner'))\n"
@@ -621,9 +629,13 @@ def main():
     SAFE_ANALYST_HELPER = (
         "# --- patched: safe invoke wrapper for analyst_node ---\n"
         "def _safe_analyst_invoke(agent, inputs, config=None):\n"
-        "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 160  # cap=160\n"
-        "    from langchain_core.messages import AIMessage as _AAIM\n"
+        "    _outer_an = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_an.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    from langchain_core.messages import AIMessage as _AAIM, ToolMessage as _TM_AN\n"
+        "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
+        "    _raw_an = list(inputs.get('messages') or [])\n"
+        "    _valid_an = {tc.get('id','') for m in _raw_an for tc in (getattr(m,'tool_calls',None) or [])}\n"
+        "    inputs = {**inputs, 'messages': [m for m in _raw_an if not isinstance(m, _TM_AN) or getattr(m,'tool_call_id','') in _valid_an]}\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
         "    except Exception as _aexc:\n"
@@ -631,7 +643,7 @@ def main():
         "            raise\n"
         "        _nm = type(_aexc).__name__\n"
         "        print(f'WARNING analyst hit error ({_nm}: {str(_aexc)[:120]}) -- building recovery AnalysisInsights')\n"
-        "        try: _log_recovery('analyst', 160)\n"
+        "        try: _log_recovery('analyst', 300)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -783,10 +795,14 @@ def main():
     SAFE_REPORT_PACKAGER_HELPER = (
         "# --- patched: safe invoke wrapper for report_packager_node ---\n"
         "def _safe_report_packager_invoke(agent, inputs, config=None):\n"
-        "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 160  # cap=160\n"
-        "    from langchain_core.messages import AIMessage as _RAIM\n"
+        "    _outer_rp = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    from langchain_core.messages import AIMessage as _RAIM, ToolMessage as _TM_RP\n"
         "    import html as _html_lib\n"
+        "    # Fix N: strip orphaned ToolMessages\n"
+        "    _raw_rp = list(inputs.get('messages') or [])\n"
+        "    _valid_rp = {tc.get('id','') for m in _raw_rp for tc in (getattr(m,'tool_calls',None) or [])}\n"
+        "    inputs = {**inputs, 'messages': [m for m in _raw_rp if not isinstance(m, _TM_RP) or getattr(m,'tool_call_id','') in _valid_rp]}\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
         "    except Exception as _rexc:\n"
@@ -794,7 +810,7 @@ def main():
         "            raise\n"
         "        _nm = type(_rexc).__name__\n"
         "        print(f'WARNING report_packager hit error ({_nm}: {str(_rexc)[:120]}) -- building recovery ReportResults')\n"
-        "        try: _log_recovery('report_packager', 160)\n"
+        "        try: _log_recovery('report_packager', 300)\n"
         "        except Exception: pass\n"
         "        _reports = str(inputs.get('reports_path') or (WORKING_DIRECTORY / 'reports'))\n"
         "        import os as _os2\n"
@@ -1600,9 +1616,13 @@ def main():
     SAFE_VIZ_HELPER = (
         "# --- patched: safe invoke wrapper for viz_worker ---\n"
         "def _safe_visualization_invoke(agent, inputs, config=None):\n"
-        "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 160  # cap=160\n"
-        "    from langchain_core.messages import AIMessage as _VAIM\n"
+        "    _outer_vz = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_vz.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    from langchain_core.messages import AIMessage as _VAIM, ToolMessage as _TM_VZ\n"
+        "    # Fix N: strip orphaned ToolMessages\n"
+        "    _raw_vz = list(inputs.get('messages') or [])\n"
+        "    _valid_vz = {tc.get('id','') for m in _raw_vz for tc in (getattr(m,'tool_calls',None) or [])}\n"
+        "    inputs = {**inputs, 'messages': [m for m in _raw_vz if not isinstance(m, _TM_VZ) or getattr(m,'tool_call_id','') in _valid_vz]}\n"
         "    import time as _vwtime\n"
         "    _vwretries = 0\n"
         "    while True:\n"
@@ -1620,7 +1640,7 @@ def main():
         "                _vwtime.sleep(_vwwait)\n"
         "                continue\n"
         "            print(f'WARNING visualization_agent hit error ({_nm}: {str(_vexc)[:120]}) -- building recovery DataVisualization')\n"
-        "            try: _log_recovery('visualization', 160)\n"
+        "            try: _log_recovery('visualization', 300)\n"
         "            except Exception: pass\n"
         "            import uuid as _vuuid\n"
         "            _recovery_dv = DataVisualization(\n"
@@ -2520,6 +2540,76 @@ def main():
         break
     if not fixj_patched:
         print("⚠️  Fix J: python_repl_tool invoke cell not found")
+
+    # --- Fix M: visualization_orchestrator List[VizSpec] iteration ---
+    # Bug: `for name, desc in recs:` tries to unpack each VizSpec as (name, desc).
+    # VizSpec is a Pydantic model with many fields; this raises ValueError("too many values to unpack")
+    # → tasks stays empty → falls back to hardcoded Amazon review VizSpecs → wrong columns → viz=False.
+    # Fix: iterate recs as List[VizSpec] directly.
+    FIXM_GUARD = "# Fix M: recommended_visualizations is List[VizSpec]"
+    fixm_old = (
+        "            recs = insights.recommended_visualizations  # Dict[name -> description]\n"
+        "            # Convert the dict into (task, spec) pairs\n"
+        "            for name, desc in recs:\n"
+        "                tasks.append(f\"Create a { _guess_viz_type(name) } for: {name}. {desc}\")\n"
+        "                specs.append({\n"
+        "                    \"title\": name,\n"
+        "                    \"viz_type\":  _guess_viz_type(name),\n"
+        "                    \"description\": desc,\n"
+        "                })"
+    )
+    fixm_new = (
+        "            recs = insights.recommended_visualizations  # List[VizSpec]\n"
+        "            # Fix M: recommended_visualizations is List[VizSpec]\n"
+        "            for _vs in recs:\n"
+        "                if hasattr(_vs, 'title') and hasattr(_vs, 'viz_type'):\n"
+        "                    tasks.append(f\"Create a {_vs.viz_type} for: {_vs.title}. {getattr(_vs, 'description', '')}\")\n"
+        "                    specs.append(_vs)"
+    )
+    fixm_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def visualization_orchestrator" not in src:
+            continue
+        if FIXM_GUARD in src:
+            print(f"ℹ️  Fix M already applied (cell {idx})")
+            fixm_patched = True
+            break
+        if fixm_old not in src:
+            print(f"⚠️  Fix M: 'for name, desc in recs' pattern not found in cell {idx} — trying loose match")
+            if "for name, desc in recs" in src:
+                import re as _rem
+                # Capture leading whitespace to preserve indentation
+                _m = _rem.search(r'^([ \t]*)for name, desc in recs:', src, _rem.MULTILINE)
+                _ind = _m.group(1) if _m else "            "
+                _ind2 = _ind + "    "  # inner indent
+                src2 = _rem.sub(
+                    r'for name, desc in recs:.*?(?=\n[ \t]*\n|\n[ \t]*#[ \t]*[0-9A-Z]|\Z)',
+                    ("# Fix M: recommended_visualizations is List[VizSpec]\n"
+                     + _ind + "for _vs in recs:\n"
+                     + _ind2 + "if hasattr(_vs, 'title') and hasattr(_vs, 'viz_type'):\n"
+                     + _ind2 + "    tasks.append(f\"Create a {_vs.viz_type} for: {_vs.title}. {getattr(_vs, 'description', '')}\")\n"
+                     + _ind2 + "    specs.append(_vs)"),
+                    src, count=1, flags=_rem.DOTALL
+                )
+                if src2 != src:
+                    cell["source"] = src2
+                    cell["outputs"] = []
+                    cell["execution_count"] = None
+                    print(f"✅ Cell idx {idx}: Fix M viz_orchestrator applied (loose match)")
+                    fixm_patched = True
+            break
+        new_src = src.replace(fixm_old, fixm_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix M viz_orchestrator: List[VizSpec] iteration fixed")
+        fixm_patched = True
+        break
+    if not fixm_patched:
+        print("⚠️  Fix M: visualization_orchestrator cell not found")
 
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
