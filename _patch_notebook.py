@@ -230,6 +230,36 @@ def main():
         else:
             print("⚠️  Cell idx 72: could not find recursion_limit pattern to patch")
 
+    # --- Fix B1: Add _viz_retry_count field to State class ---
+    fixb1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State(AgentState, TypedDict, total=False):" not in src:
+            continue
+        if "_viz_retry_count" in src:
+            print(f"ℹ️  Cell idx {idx}: State._viz_retry_count already present")
+            fixb1_patched = True
+            break
+        old_field = "    last_agent_id: Optional[AgentId]"
+        new_field = (
+            "    last_agent_id: Optional[AgentId]\n"
+            "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries"
+        )
+        if old_field in src:
+            new_src = src.replace(old_field, new_field, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix B1 — State._viz_retry_count field added")
+            fixb1_patched = True
+        else:
+            print(f"⚠️  Fix B1: 'last_agent_id: Optional[AgentId]' not found in State class cell {idx}")
+        break
+    if not fixb1_patched:
+        print("⚠️  Fix B1: State class cell not found")
+
     # --- Patch query_dataframe: align flat-arg function with nested args_schema ---
     # QueryDataframeInput uses params: DataQueryParams (nested), but the function
     # expects flat columns/operation/etc. LangChain calls query_dataframe(params=..., df_id=...)
@@ -312,7 +342,7 @@ def main():
         "# --- patched: safe invoke wrapper for initial_analysis_node ---\n"
         "def _safe_initial_analysis_invoke(agent, inputs, config=None):\n"
         "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 80  # cap initial_analysis to prevent runaway loop\n"
+        "    cfg['recursion_limit'] = 160  # cap=160\n"
         "    from langchain_core.messages import AIMessage as _IAIM\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
@@ -321,7 +351,7 @@ def main():
         "            raise\n"
         "        _nm = type(_iaexc).__name__\n"
         "        print(f'WARNING initial_analysis hit error ({_nm}: {str(_iaexc)[:120]}) -- building recovery InitialDescription')\n"
-        "        try: _log_recovery('initial_analysis', 80)\n"
+        "        try: _log_recovery('initial_analysis', 160)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -409,7 +439,7 @@ def main():
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
         "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
         "    cfg = dict(kwargs.get('config', {}))\n"
-        "    cfg['recursion_limit'] = 50  # always cap (reduced for faster recovery)\n"
+        "    cfg['recursion_limit'] = 160  # cap=160\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
         "    from langchain_core.messages import AIMessage as _DLAIM\n"
         "    try:\n"
@@ -419,7 +449,7 @@ def main():
         "            raise\n"
         "        _nm = type(_exc).__name__\n"
         "        print(f'WARNING data_cleaner hit error ({_nm}: {str(_exc)[:120]}) -- building recovery CleaningMetadata')\n"
-        "        try: _log_recovery('data_cleaner', 50)\n"
+        "        try: _log_recovery('data_cleaner', 160)\n"
         "        except Exception: pass\n"
         "        _msgs = list(inputs.get('messages') or [])\n"
         "        _msgs.append(_DLAIM(content='Data cleaning completed (recursion recovery).', name='data_cleaner'))\n"
@@ -579,7 +609,7 @@ def main():
         "# --- patched: safe invoke wrapper for analyst_node ---\n"
         "def _safe_analyst_invoke(agent, inputs, config=None):\n"
         "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 50  # cap analyst to prevent runaway loop\n"
+        "    cfg['recursion_limit'] = 160  # cap=160\n"
         "    from langchain_core.messages import AIMessage as _AAIM\n"
         "    try:\n"
         "        return agent.invoke(inputs, config=cfg)\n"
@@ -588,7 +618,7 @@ def main():
         "            raise\n"
         "        _nm = type(_aexc).__name__\n"
         "        print(f'WARNING analyst hit error ({_nm}: {str(_aexc)[:120]}) -- building recovery AnalysisInsights')\n"
-        "        try: _log_recovery('analyst', 50)\n"
+        "        try: _log_recovery('analyst', 160)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -741,7 +771,7 @@ def main():
         "# --- patched: safe invoke wrapper for report_packager_node ---\n"
         "def _safe_report_packager_invoke(agent, inputs, config=None):\n"
         "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 120  # cap report_packager to prevent runaway loop\n"
+        "    cfg['recursion_limit'] = 160  # cap=160\n"
         "    from langchain_core.messages import AIMessage as _RAIM\n"
         "    import html as _html_lib\n"
         "    try:\n"
@@ -751,7 +781,7 @@ def main():
         "            raise\n"
         "        _nm = type(_rexc).__name__\n"
         "        print(f'WARNING report_packager hit error ({_nm}: {str(_rexc)[:120]}) -- building recovery ReportResults')\n"
-        "        try: _log_recovery('report_packager', 120)\n"
+        "        try: _log_recovery('report_packager', 160)\n"
         "        except Exception: pass\n"
         "        _reports = str(inputs.get('reports_path') or (WORKING_DIRECTORY / 'reports'))\n"
         "        import os as _os2\n"
@@ -1197,7 +1227,128 @@ def main():
     if not sv2_patched:
         print("⚠️  supervisor shortcut 2+3: not applied (shortcut 1 end marker not found)")
 
-    # --- Patch supervisor_node: P1-E fix state["_config"] → state.get("_config", config) ---
+    # --- Fix D: SHORTCUT2 race gate — guard against re-entering visualization mid-round ---
+    # Problem: after viz completes the first pass but visualization_complete hasn't been set yet
+    # (race between last_agent_id still being 'viz_worker' and the shortcut condition),
+    # SHORTCUT2 fires again sending the system back to visualization for a redundant second round.
+    # Fix: check last_agent_id; if we're already in the viz round, don't shortcut.
+    import re as _re_fixd
+    fixd_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- PATCH: force viz routing after analyst ---" not in src:
+            continue
+        if "_in_viz_round" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix D (_in_viz_round guard) already applied")
+            fixd_patched = True
+            break
+        m_fixd = _re_fixd.search(
+            r"^([ \t]*)if _dc_done and _ac_done and not state\.get\('visualization_complete'\):",
+            src, _re_fixd.MULTILINE
+        )
+        if not m_fixd:
+            print(f"⚠️  Fix D: 'if _dc_done and _ac_done' pattern not found in cell {idx}")
+            break
+        _dd = m_fixd.group(1)
+        OLD_D = f"{_dd}if _dc_done and _ac_done and not state.get('visualization_complete'):"
+        NEW_D = (
+            f"{_dd}_last_agent_id_sc2 = state.get('last_agent_id') or ''\n"
+            f"{_dd}_in_viz_round = _last_agent_id_sc2 in (\n"
+            f"{_dd}    'viz_worker', 'viz_evaluator', 'assign_viz_workers',\n"
+            f"{_dd}    'visualization_orchestrator', 'viz_join',\n"
+            f"{_dd})\n"
+            f"{_dd}if _dc_done and _ac_done and not state.get('visualization_complete') and not _in_viz_round:"
+        )
+        END_VIZ_MARKER = f"{_dd}# --- END PATCH: force viz routing ---"
+        FALLTHROUGH_COMMENT = f"{_dd}# if _in_viz_round=True: fall through to LLM routing\n"
+        new_src = src.replace(OLD_D, NEW_D, 1)
+        new_src = new_src.replace(END_VIZ_MARKER, FALLTHROUGH_COMMENT + END_VIZ_MARKER, 1)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix D applied — SHORTCUT2 _in_viz_round race gate added")
+            fixd_patched = True
+        else:
+            print(f"⚠️  Fix D: replacement failed in cell {idx}")
+        break
+    if not fixd_patched:
+        print("⚠️  Fix D: target cell not found")
+
+    # --- Fix B2: escape hatch — bail out of viz loop after 4 retries ---
+    # If the viz agent keeps failing and SHORTCUT2 keeps firing, _viz_retry_count eventually
+    # reaches 4 and the supervisor is rerouted directly to report_orchestrator, breaking the loop.
+    import re as _re_fixb2
+    fixb2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- PATCH: force viz routing after analyst ---" not in src:
+            continue
+        if "_viz_retry_count" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix B2 (escape hatch) already applied")
+            fixb2_patched = True
+            break
+        m_b2 = _re_fixb2.search(
+            r"^([ \t]*)_sc2 = int\(state\.get\('_count_', 0\)\) \+ 1",
+            src, _re_fixb2.MULTILINE
+        )
+        if not m_b2:
+            print(f"⚠️  Fix B2: '_sc2 = int(state.get...)' pattern not found in cell {idx}")
+            break
+        _dd2 = m_b2.group(1)
+        OLD_B2 = (
+            f"{_dd2}_sc2 = int(state.get('_count_', 0)) + 1\n"
+            f"{_dd2}return Command(goto='visualization', update={{\n"
+            f"{_dd2}    '_count_': _sc2,\n"
+            f"{_dd2}    'next': 'visualization',\n"
+            f"{_dd2}    'analyst_complete': True,\n"
+            f"{_dd2}    'next_agent_prompt': (\n"
+            f"{_dd2}        'Please generate all requested visualizations for the cleaned dataset. '\n"
+            f"{_dd2}        'Create histograms, bar charts, and scatter plots as PNG files.'\n"
+            f"{_dd2}    ),\n"
+            f"{_dd2}    'next_agent_metadata': None,\n"
+            f"{_dd2}}})"
+        )
+        NEW_B2 = (
+            f"{_dd2}_sc2 = int(state.get('_count_', 0)) + 1\n"
+            f"{_dd2}_viz_retries_b2 = int(state.get('_viz_retry_count') or 0)\n"
+            f"{_dd2}if _viz_retries_b2 >= 4:\n"
+            f"{_dd2}    return Command(goto='report_orchestrator', update={{\n"
+            f"{_dd2}        '_count_': _sc2,\n"
+            f"{_dd2}        'next': 'report_orchestrator',\n"
+            f"{_dd2}        'visualization_complete': True,\n"
+            f"{_dd2}        '_viz_retry_count': _viz_retries_b2,\n"
+            f"{_dd2}        'next_agent_prompt': 'Please generate a comprehensive data analysis report.',\n"
+            f"{_dd2}        'next_agent_metadata': None,\n"
+            f"{_dd2}    }})\n"
+            f"{_dd2}return Command(goto='visualization', update={{\n"
+            f"{_dd2}    '_count_': _sc2,\n"
+            f"{_dd2}    'next': 'visualization',\n"
+            f"{_dd2}    'analyst_complete': True,\n"
+            f"{_dd2}    '_viz_retry_count': _viz_retries_b2 + 1,\n"
+            f"{_dd2}    'next_agent_prompt': (\n"
+            f"{_dd2}        'Please generate all requested visualizations for the cleaned dataset. '\n"
+            f"{_dd2}        'Create histograms, bar charts, and scatter plots as PNG files.'\n"
+            f"{_dd2}    ),\n"
+            f"{_dd2}    'next_agent_metadata': None,\n"
+            f"{_dd2}}})"
+        )
+        if OLD_B2 in src:
+            new_src = src.replace(OLD_B2, NEW_B2, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix B2 applied — viz escape hatch after 4 retries")
+            fixb2_patched = True
+        else:
+            print(f"⚠️  Fix B2: target pattern not found in cell {idx}")
+        break
+    if not fixb2_patched:
+        print("⚠️  Fix B2: target cell not found")
     # config=state["_config"] raises KeyError if _config key is absent from state. This happens
     # BEFORE _safe_supervisor_routing_invoke can catch it. Fix: use the node's own config param
     # as fallback, which is always populated by LangGraph.
@@ -1437,7 +1588,7 @@ def main():
         "# --- patched: safe invoke wrapper for viz_worker ---\n"
         "def _safe_visualization_invoke(agent, inputs, config=None):\n"
         "    cfg = dict(config or {})\n"
-        "    cfg['recursion_limit'] = 60  # cap viz_worker to prevent runaway loop\n"
+        "    cfg['recursion_limit'] = 160  # cap=160\n"
         "    from langchain_core.messages import AIMessage as _VAIM\n"
         "    import time as _vwtime\n"
         "    _vwretries = 0\n"
@@ -1456,7 +1607,7 @@ def main():
         "                _vwtime.sleep(_vwwait)\n"
         "                continue\n"
         "            print(f'WARNING visualization_agent hit error ({_nm}: {str(_vexc)[:120]}) -- building recovery DataVisualization')\n"
-        "            try: _log_recovery('visualization', 60)\n"
+        "            try: _log_recovery('visualization', 160)\n"
         "            except Exception: pass\n"
         "            import uuid as _vuuid\n"
         "            _recovery_dv = DataVisualization(\n"
@@ -1650,7 +1801,81 @@ def main():
     if not ve_patched:
         print("⚠️  viz_evaluator_node patch: target cell not found")
 
-    # --- Patch stream_graph_output cell: inject PipelineLogger + stage-transition logging ---
+    # --- Fix E: viz_worker returns None — fix dict.update() chaining ---
+    # save_viz_for_state(...).update({...}) always returns None because dict.update() returns None.
+    # The return statement therefore evaluates to `return None`.
+    # Fix: store save_viz_for_state result in _viz_state_update, call .update() separately, return it.
+    fixe_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_worker(" not in src:
+            continue
+        if "_viz_state_update" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix E (_viz_state_update) already applied")
+            fixe_patched = True
+            break
+        if 'save_viz_for_state(state, sr, copy_mode="copy", make_relative=True).update({' not in src:
+            print(f"⚠️  Fix E: chained .update() pattern not found in cell {idx}")
+            break
+        import re as _re_fixe
+        # Match the entire return statement from 'return save_viz_for_state' to end of block
+        OLD_E_PAT = r'([ \t]*)return save_viz_for_state\(state, sr, copy_mode="copy", make_relative=True\)\.update\(\{'
+        m_fixe = _re_fixe.search(OLD_E_PAT, src)
+        if not m_fixe:
+            print(f"⚠️  Fix E: regex pattern not found in cell {idx}")
+            break
+        _de = m_fixe.group(1)
+        # Find the full return...}) block
+        OLD_E_FULL = (
+            f'{_de}return save_viz_for_state(state, sr, copy_mode="copy", make_relative=True).update({{"messages": result["messages"], "last_agent_message": result["messages"][-1], "last_agent_expects_reply": expects_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task,\n'
+            f'{_de}                                                                                   "last_created_obj": "visualization_results" if sr.finished_this_task else None,\n'
+            f'{_de}                                                                                   }})'
+        )
+        NEW_E_FULL = (
+            f'{_de}_viz_state_update = save_viz_for_state(state, sr, copy_mode="copy", make_relative=True)\n'
+            f'{_de}_viz_state_update.update({{"messages": result["messages"], "last_agent_message": result["messages"][-1], "last_agent_expects_reply": expects_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task,\n'
+            f'{_de}                          "last_created_obj": "visualization_results" if sr.finished_this_task else None,\n'
+            f'{_de}                          }})\n'
+            f'{_de}return _viz_state_update'
+        )
+        if OLD_E_FULL in src:
+            new_src = src.replace(OLD_E_FULL, NEW_E_FULL, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix E applied — viz_worker returns dict (not None)")
+            fixe_patched = True
+        else:
+            # Fallback: use regex for loose matching (whitespace may differ)
+            loose_pat = (
+                r'([ \t]*)return save_viz_for_state\(state, sr, copy_mode="copy", make_relative=True\)'
+                r'\.update\(\{.*?\}\)'
+            )
+            m_loose = _re_fixe.search(loose_pat, src, _re_fixe.DOTALL)
+            if m_loose:
+                _de2 = m_loose.group(1)
+                full_match = m_loose.group(0)
+                # Extract the update dict content
+                dict_start = full_match.index('.update({') + len('.update({')
+                dict_content = full_match[dict_start:-2]  # strip trailing })
+                replacement = (
+                    f'{_de2}_viz_state_update = save_viz_for_state(state, sr, copy_mode="copy", make_relative=True)\n'
+                    f'{_de2}_viz_state_update.update({{{dict_content}}})\n'
+                    f'{_de2}return _viz_state_update'
+                )
+                new_src = src[:m_loose.start()] + replacement + src[m_loose.end():]
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"✅ Cell idx {idx}: Fix E applied (regex fallback) — viz_worker returns dict")
+                fixe_patched = True
+            else:
+                print(f"⚠️  Fix E: could not fix viz_worker return in cell {idx}")
+        break
+    if not fixe_patched:
+        print("⚠️  Fix E: viz_worker cell not found")
     # PipelineLogger runs inside the Jupyter kernel; os.getcwd() = REPO_ROOT (nbclient resources).
     # Writes timestamped entries to notebook_run_log.txt; also emits to stdout for nbclient capture.
     # Stage logging: parse "updates" events (already in stream_mode) to detect node entry/exit.
@@ -1861,8 +2086,30 @@ def main():
         src = join_source(cell["source"])
         if "data_analysis_team_builder = StateGraph(State)" not in src:
             continue
-        if "PATCH: P2-A SqliteSaver" in src:
-            print(f"ℹ️  Cell idx {idx}: main graph already has P2-A SqliteSaver patch")
+        if "busy_timeout" in src:
+            print(f"ℹ️  Cell idx {idx}: main graph already has P2-A SqliteSaver+WAL patch")
+            p2a_patched = True
+            break
+        if "PATCH: P2-A SqliteSaver" in src and "busy_timeout" not in src:
+            # Upgrade old P2-A (no WAL) to WAL+timeout version
+            old_cp_upgrade = (
+                "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False)\n"
+                "checkpointer = _SqliteSaver(_cp_conn)"
+            )
+            new_cp_upgrade = (
+                "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False, timeout=30)\n"
+                "_cp_conn.execute(\"PRAGMA journal_mode=WAL\")\n"
+                "_cp_conn.execute(\"PRAGMA synchronous=NORMAL\")\n"
+                "_cp_conn.execute(\"PRAGMA busy_timeout=10000\")\n"
+                "checkpointer = _SqliteSaver(_cp_conn)"
+            )
+            if old_cp_upgrade in src:
+                cell["source"] = src.replace(old_cp_upgrade, new_cp_upgrade, 1)
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"✅ Cell idx {idx}: P2-A SqliteSaver upgraded to WAL+timeout")
+            else:
+                print(f"ℹ️  Cell idx {idx}: P2-A already patched (version unknown)")
             p2a_patched = True
             break
         old_cp = "data_analysis_team_builder = StateGraph(State)\ncheckpointer = MemorySaver()"
@@ -1871,7 +2118,10 @@ def main():
             "# PATCH: P2-A SqliteSaver for persistent checkpointing + resume capability\n"
             "import sqlite3 as _cp_sqlite3\n"
             "from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver\n"
-            "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False)\n"
+            "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False, timeout=30)\n"
+            "_cp_conn.execute(\"PRAGMA journal_mode=WAL\")\n"
+            "_cp_conn.execute(\"PRAGMA synchronous=NORMAL\")\n"
+            "_cp_conn.execute(\"PRAGMA busy_timeout=10000\")\n"
             "checkpointer = _SqliteSaver(_cp_conn)"
         )
         if old_cp in src:
