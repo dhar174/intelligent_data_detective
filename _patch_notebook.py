@@ -260,6 +260,46 @@ def main():
     if not fixb1_patched:
         print("⚠️  Fix B1: State class cell not found")
 
+    # --- Fix V1: Add _report_dispatched field to State class ---
+    # This flag is set by SHORTCUT3 when it dispatches report_orchestrator, preventing
+    # re-entry from supervisor after each report-pipeline node fires back to supervisor.
+    fixv1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State(AgentState, TypedDict, total=False):" not in src:
+            continue
+        if "_report_dispatched" in src:
+            print(f"ℹ️  Cell idx {idx}: State._report_dispatched already present")
+            fixv1_patched = True
+            break
+        # Insert after _viz_retry_count if present, else after last_agent_id
+        if "_viz_retry_count: Optional[int]  # PATCH Fix-B:" in src:
+            old_field = "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries"
+            new_field = (
+                "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
+                "    _report_dispatched: Annotated[Optional[bool], bool_or]  # PATCH Fix-V: set True when report_orchestrator dispatched"
+            )
+        else:
+            old_field = "    last_agent_id: Optional[AgentId]"
+            new_field = (
+                "    last_agent_id: Optional[AgentId]\n"
+                "    _report_dispatched: Annotated[Optional[bool], bool_or]  # PATCH Fix-V: set True when report_orchestrator dispatched"
+            )
+        if old_field in src:
+            new_src = src.replace(old_field, new_field, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix V1 — State._report_dispatched field added")
+            fixv1_patched = True
+        else:
+            print(f"⚠️  Fix V1: anchor field not found in State class cell {idx}")
+        break
+    if not fixv1_patched:
+        print("⚠️  Fix V1: State class cell not found")
+
     # --- Patch query_dataframe: align flat-arg function with nested args_schema ---
     # QueryDataframeInput uses params: DataQueryParams (nested), but the function
     # expects flat columns/operation/etc. LangChain calls query_dataframe(params=..., df_id=...)
@@ -1378,6 +1418,93 @@ def main():
         break
     if not fixb2_patched:
         print("⚠️  Fix B2: target cell not found")
+
+    # --- Fix V2: SHORTCUT3 race gate — guard against re-entering report pipeline mid-round ---
+    # Problem: after SHORTCUT3 fires (supervisor → report_orchestrator), every report-pipeline
+    # node (report_orchestrator, report_section_worker, report_join) routes BACK to supervisor
+    # (via the add_edge loop in graph construction). At that point report_generator_complete is
+    # still None, so SHORTCUT3 fires AGAIN — dispatching another concurrent report_orchestrator.
+    # This exponential fan-out hits the outer recursion limit before report_packager ever runs.
+    #
+    # Also: viz_evaluator's conditional edge (route_viz="Accepted") dispatches report_orchestrator
+    # concurrently with supervisor (via the same add_edge loop). If supervisor fires SHORTCUT3
+    # at that same moment (last_agent_id='viz_evaluator'), it creates a SECOND concurrent
+    # report_orchestrator, doubling the fan-out.
+    #
+    # Fix: check last_agent_id; if we're already in the report round OR viz_evaluator just ran
+    # (which already dispatched report_orchestrator via conditional edge), skip SHORTCUT3.
+    # Also set _report_dispatched=True in the SHORTCUT3 update so subsequent calls skip it.
+    import re as _re_fixv2
+    fixv2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- PATCH: force report routing after viz ---" not in src:
+            continue
+        if "_in_report_round" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix V2 (_in_report_round guard) already applied")
+            fixv2_patched = True
+            break
+        m_fixv2 = _re_fixv2.search(
+            r"^([ \t]*)if _vc_done and not state\.get\('report_generator_complete'\):",
+            src, _re_fixv2.MULTILINE
+        )
+        if not m_fixv2:
+            print(f"⚠️  Fix V2: 'if _vc_done and not state.get(report_generator_complete)' pattern not found in cell {idx}")
+            break
+        _dv = m_fixv2.group(1)
+        OLD_V2 = f"{_dv}if _vc_done and not state.get('report_generator_complete'):"
+        NEW_V2 = (
+            f"{_dv}_last_agent_id_sc3 = state.get('last_agent_id') or ''\n"
+            f"{_dv}_in_report_round = _last_agent_id_sc3 in (\n"
+            f"{_dv}    'report_orchestrator', 'report_section_worker', 'report_join',\n"
+            f"{_dv}    'report_packager', 'file_writer', 'viz_evaluator',\n"
+            f"{_dv})\n"
+            f"{_dv}_report_already_dispatched = bool(state.get('_report_dispatched'))\n"
+            f"{_dv}if _vc_done and not state.get('report_generator_complete') and not _in_report_round and not _report_already_dispatched:"
+        )
+        # Also add _report_dispatched=True to the SHORTCUT3 update dict
+        OLD_SC3_UPDATE = (
+            f"{_dv}    return Command(goto='report_orchestrator', update={{\n"
+            f"{_dv}        '_count_': _sc3,\n"
+            f"{_dv}        'next': 'report_orchestrator',\n"
+            f"{_dv}        'visualization_complete': True,\n"
+            f"{_dv}        'next_agent_prompt': (\n"
+            f"{_dv}            'Please generate a comprehensive data analysis report in PDF, Markdown, and HTML formats.'\n"
+            f"{_dv}        ),\n"
+            f"{_dv}        'next_agent_metadata': None,\n"
+            f"{_dv}    }})"
+        )
+        NEW_SC3_UPDATE = (
+            f"{_dv}    return Command(goto='report_orchestrator', update={{\n"
+            f"{_dv}        '_count_': _sc3,\n"
+            f"{_dv}        'next': 'report_orchestrator',\n"
+            f"{_dv}        'visualization_complete': True,\n"
+            f"{_dv}        '_report_dispatched': True,\n"
+            f"{_dv}        'next_agent_prompt': (\n"
+            f"{_dv}            'Please generate a comprehensive data analysis report in PDF, Markdown, and HTML formats.'\n"
+            f"{_dv}        ),\n"
+            f"{_dv}        'next_agent_metadata': None,\n"
+            f"{_dv}    }})"
+        )
+        END_REPORT_MARKER = f"{_dv}# --- END PATCH: force report routing ---"
+        FALLTHROUGH_COMMENT_V2 = f"{_dv}# if _in_report_round or _report_already_dispatched: fall through to LLM routing\n"
+        new_src = src.replace(OLD_V2, NEW_V2, 1)
+        new_src = new_src.replace(OLD_SC3_UPDATE, NEW_SC3_UPDATE, 1)
+        new_src = new_src.replace(END_REPORT_MARKER, FALLTHROUGH_COMMENT_V2 + END_REPORT_MARKER, 1)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix V2 applied — SHORTCUT3 _in_report_round race gate added")
+            fixv2_patched = True
+        else:
+            print(f"⚠️  Fix V2: replacement failed in cell {idx}")
+        break
+    if not fixv2_patched:
+        print("⚠️  Fix V2: target cell not found")
+
     # config=state["_config"] raises KeyError if _config key is absent from state. This happens
     # BEFORE _safe_supervisor_routing_invoke can catch it. Fix: use the node's own config param
     # as fallback, which is always populated by LangGraph.
@@ -3110,8 +3237,29 @@ def main():
     # NOTE: Fix B1 inserts _viz_retry_count between last_agent_id and current_turn_agent_id,
     # so we match both variants (with and without that line).
     FIXQ_GUARD = "# Fix Q: use-last reducers for parallel viz_workers"
-    # Variant A: Fix B1 already ran (includes _viz_retry_count line)
+    # Variant A: Fix B1+V1 already ran (includes _viz_retry_count AND _report_dispatched)
     fixq_old_a = (
+        "    last_agent_id: Optional[AgentId]\n"
+        "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
+        "    _report_dispatched: Annotated[Optional[bool], bool_or]  # PATCH Fix-V: set True when report_orchestrator dispatched\n"
+        "    current_turn_agent_id: Optional[AgentId]\n"
+        "    last_agent_message: Optional[Union[AIMessage,ToolMessage]]\n"
+        "    last_agent_expects_reply: Optional[bool]\n"
+        "    last_agent_reply_msg: Optional[str]\n"
+        "    last_agent_finished_this_task: Optional[bool]"
+    )
+    fixq_new_a = (
+        "    last_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q: use-last reducers for parallel viz_workers\n"
+        "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
+        "    _report_dispatched: Annotated[Optional[bool], bool_or]  # PATCH Fix-V: set True when report_orchestrator dispatched\n"
+        "    current_turn_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_message: Annotated[Optional[Union[AIMessage,ToolMessage]], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_expects_reply: Annotated[Optional[bool], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_reply_msg: Annotated[Optional[str], lambda a, b: b]  # Fix Q\n"
+        "    last_agent_finished_this_task: Annotated[Optional[bool], lambda a, b: b]  # Fix Q"
+    )
+    # Variant A_old: Fix B1 ran but NOT V1 (includes _viz_retry_count but no _report_dispatched)
+    fixq_old_a_old = (
         "    last_agent_id: Optional[AgentId]\n"
         "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
         "    current_turn_agent_id: Optional[AgentId]\n"
@@ -3120,7 +3268,7 @@ def main():
         "    last_agent_reply_msg: Optional[str]\n"
         "    last_agent_finished_this_task: Optional[bool]"
     )
-    fixq_new_a = (
+    fixq_new_a_old = (
         "    last_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q: use-last reducers for parallel viz_workers\n"
         "    _viz_retry_count: Optional[int]  # PATCH Fix-B: escape hatch counter for viz retries\n"
         "    current_turn_agent_id: Annotated[Optional[AgentId], lambda a, b: b]  # Fix Q\n"
@@ -3163,7 +3311,14 @@ def main():
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"✅ Cell idx {idx}: Fix Q — last_agent_* fields now have use-last reducers (variant A)")
+            print(f"✅ Cell idx {idx}: Fix Q — last_agent_* fields now have use-last reducers (variant A with _report_dispatched)")
+            fixq_patched = True
+        elif fixq_old_a_old in src:
+            new_src = src.replace(fixq_old_a_old, fixq_new_a_old, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix Q — last_agent_* fields now have use-last reducers (variant A_old with _viz_retry_count only)")
             fixq_patched = True
         elif fixq_old_b in src:
             new_src = src.replace(fixq_old_b, fixq_new_b, 1)
