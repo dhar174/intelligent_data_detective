@@ -936,6 +936,52 @@ def main():
     if not rp_patched:
         print("⚠️  report_packager_node patch: target cell not found")
 
+    # --- Fix AB: add missing rg_vars keys (cleaning_metadata, visualization_results) in report_packager_node ---
+    # report_generator_prompt_template uses {cleaning_metadata} and {visualization_results}
+    # but report_packager_node's rg_vars dict only provides viz_results (wrong key) and no cleaning_metadata.
+    fixAB_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node" not in src:
+            continue
+        if "# Fix AB" in src:
+            print(f"i  Cell idx {idx}: Fix AB (report_packager rg_vars keys) already applied")
+            fixAB_patched = True
+            break
+        _AB_OLD = (
+            '    rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : ReportResults.model_json_schema(), "user_prompt": user_prompt,\n'
+            '               "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", None),"cleaned_dataset_description": state.get("cleaned_dataset_description", None), "viz_results": state.get("viz_results", None),\n'
+            '               "report_task": default_instruction}\n'
+            '    # 1) Merge sections into a draft\n'
+        )
+        _AB_NEW = (
+            '    rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : ReportResults.model_json_schema(), "user_prompt": user_prompt,\n'
+            '               "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", None),"cleaned_dataset_description": state.get("cleaned_dataset_description", None), "viz_results": state.get("viz_results", None),\n'
+            '               "report_task": default_instruction}\n'
+            '    rg_vars["cleaning_metadata"] = str(state.get("cleaning_metadata") or "")  # Fix AB\n'
+            '    rg_vars["visualization_results"] = str(state.get("viz_results") or "")  # Fix AB: template uses {visualization_results}\n'
+            '    rg_vars.setdefault("past_steps", str(state.get("past_steps") or ""))\n'
+            '    rg_vars.setdefault("plan_steps", str(state.get("plan_steps") or ""))\n'
+            '    rg_vars.setdefault("file_name", str(state.get("file_name") or ""))\n'
+            '    rg_vars.setdefault("file_type", str(state.get("file_type") or ""))\n'
+            '    rg_vars.setdefault("dataset_description", str(state.get("cleaned_dataset_description") or ""))\n'
+            '    # 1) Merge sections into a draft\n'
+        )
+        if _AB_OLD in src:
+            new_src = src.replace(_AB_OLD, _AB_NEW, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AB applied — report_packager rg_vars gets cleaning_metadata + visualization_results")
+            fixAB_patched = True
+        else:
+            print(f"W  Fix AB: report_packager rg_vars pattern not found in cell {idx}")
+        break
+    if not fixAB_patched:
+        print("W  Fix AB: report_packager_node target not found")
+
     # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
     # Only shortcut 1: data_cleaning_complete=True → force analyst.
     # NOTE: Shortcut 2 (analyst_complete → report_packager) was REMOVED.
