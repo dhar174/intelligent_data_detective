@@ -3109,6 +3109,63 @@ def main():
     if not fixr_patched:
         print("⚠️  Fix R: State TypedDict cell not found")
 
+    # --- Fix S: add use-last reducers for remaining fields written by parallel viz_workers ---
+    # After Fix Q/R, the next crash is `InvalidUpdateError: At key 'last_created_obj'`.
+    # Both viz_workers write last_created_obj, visualization_results, and run_id in the
+    # same LangGraph superstep (fan-out Send).  None of these had reducers, so LangGraph's
+    # LastValue channel raises InvalidUpdateError on concurrent writes.
+    #
+    # Affected fields (all Optional, no Annotated wrapper):
+    #   last_created_obj           Optional[str]
+    #   visualization_results      Optional[VisualizationResults]
+    #   run_id                     Optional[str]
+    #
+    # Fix: wrap with Annotated[..., use-last λ].  For run_id we prefer keep-non-None so a
+    # valid id is never overwritten by None from a worker that short-circuits.
+    FIXS_GUARD = "# Fix S: use-last reducer"
+    _fixs_replacements = [
+        (
+            "    last_created_obj: Optional[str]",
+            "    last_created_obj: Annotated[Optional[str], lambda a, b: b]  # Fix S: use-last reducer",
+        ),
+        (
+            "    visualization_results: Optional[VisualizationResults]",
+            "    visualization_results: Annotated[Optional[VisualizationResults], lambda a, b: b]  # Fix S: use-last reducer",
+        ),
+        (
+            "    run_id: Optional[str]",
+            "    run_id: Annotated[Optional[str], lambda a, b: b if b is not None else a]  # Fix S: keep non-None",
+        ),
+    ]
+    fixs_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State" not in src or "last_created_obj" not in src:
+            continue
+        if FIXS_GUARD in src:
+            print(f"i  Fix S already applied (cell {idx})")
+            fixs_patched = True
+            break
+        new_src = src
+        changed = False
+        for old, new in _fixs_replacements:
+            if old in new_src:
+                new_src = new_src.replace(old, new, 1)
+                print(f"OK Cell idx {idx}: Fix S - patched {old.strip()[:40]}")
+                changed = True
+            else:
+                print(f"W  Fix S: pattern not found: {old.strip()[:60]}")
+        if changed:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        fixs_patched = True
+        break
+    if not fixs_patched:
+        print("W  Fix S: State TypedDict cell not found")
+
     # --- Patch all cells: replace input() calls that block headless execution ---
     import re as _re
     input_pattern = _re.compile(r'\binput\s*\([^)]*\)', _re.DOTALL)
