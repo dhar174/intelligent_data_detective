@@ -3791,12 +3791,12 @@ def main():
         src = join_source(cell["source"])
         if "def report_orchestrator(" not in src:
             continue
-        if "# Fix X3" in src:
+        if 'update_memory_with_kind(state, state["_config"], "reports",' not in src:
             print(f"i  Cell idx {idx}: Fix X3 (state[_config] in update_memory_with_kind) already applied")
             fixX3_patched = True
             break
         old_x3 = 'update_memory_with_kind(state, state["_config"], "reports",'
-        new_x3 = 'update_memory_with_kind(state, state.get("_config"), "reports",  # Fix X3'
+        new_x3 = 'update_memory_with_kind(state, state.get("_config"), "reports",'  # Fix X3: use .get() to avoid KeyError
         if old_x3 in src:
             new_src = src.replace(old_x3, new_x3, 1)
             cell["source"] = new_src
