@@ -1,0 +1,191 @@
+
+LineNumber Line
+---------- ----
+       194 from langchain.agents import AgentState
+       988     immediate_emergency_reroute_to_recipient: bool = Field(..., description="Whether to immediately reroute the message to the recipient agent. Only used if is_message_critical is True, only set True in the
+           case of a critical change, such as a new DataFrame being added, or if an important context artifact or state object instance needs to be recreated to prevent loss of context or solve blocking issues for
+           downstream agents.")
+      1308 class State(AgentState, TypedDict, total=False):
+      1328     emergency_reroute: Optional[AgentId]
+      1346     viz_results: Annotated[List[dict], operator.add]       # each viz worker appends one dict. Each dict must have the following keys/values: path: str - visualization_id: str - visualization_type: str -
+           visualization_description: str - visualization_style: str - visualization_title: str - visualization_complete: Optional[bool]
+      1359     written_sections: Annotated[List[str], operator.add]   # each section worker appends text
+      1422 class VizWorkerState(TypedDict):
+      1424     viz_results: Annotated[List[dict], operator.add]
+      1428 #     written_sections: Annotated[List[str], operator.add]
+      2308 To write the content of the files, use your tools and for each section, use each numbered section either from 'sections' state key to read them as Section class files, or from 'written_sections' for a list of
+           formatted strings. Use these to write the content to the three files in order of the sections and in a sensible, accessible way.
+      2359    - Else use 'written_sections' list (formatted strings).
+      8109     """Prefer state.visualization_results; else viz_results/viz_paths; else empty."""
+      8120     for d in state.get("viz_results", []) or []:
+      8181       2) state.viz_results (each worker appends)
+     10723 data_cleaning_tools.append(report_intermediate_progress)
+     10727     init_analyst_tools.append(report_intermediate_progress)
+     10730 analyst_tools.append(report_intermediate_progress)
+     10733 report_generator_tools.append(report_intermediate_progress)
+     10736 file_writer_tools.append(report_intermediate_progress)
+     10739 visualization_tools.append(report_intermediate_progress)
+     11782 def create_report_generator_agent(df_ids: List[str] = [], rg_agent_task : Literal["outline","section","package"] = "outline"):
+     11785     output_format_map = {"outline" : {"output_format" : ReportOutline, "report_task": "generate a report outline", "name": "report_orchestrator","llm": report_orchestrator_llm},
+     11788     output_format = output_format_map[rg_agent_task]
+     11803         output_format_map[rg_agent_task]["llm"],
+     11811         name=output_format_map[rg_agent_task]["name"],
+     11911 The various report agents generate the final report, specifically report_orchestrator divides tasks between report_section_worker instances, each of which provides written_sections and sections state key
+           objects to be joined into the final report with the visualizations included by the report_packager agent, which is reported in the form of the 'ReportResults' class found keyed as 'report_results', which
+           contains three paths to the final report files, one as a pdf, one as an html, and one as a markdown file. Note that the ReportResults in report_results only holds those paths and is not the final report
+           itself.
+     12001 The various report agents generate the final report, specifically report_orchestrator divides tasks between report_section_worker instances, each of which provides written_sections and sections state key
+           objects to be joined into the final report with the visualizations included by the report_packager agent,
+     12846         last_known = [ob for ob in ["report_results", "report_outline", "written_sections", "sections", "report_draft", "visualization_results", "analysis_insights", "cleaning_metadata",
+           "initial_analysis","initial_description"] if ob in state][0] if state.get("last_created_obj") is None else state.get("last_created_obj")
+     13260             last_known = [ob for ob in ["report_results", "report_outline", "written_sections", "sections", "report_draft", "visualization_results", "analysis_insights", "cleaning_metadata",
+           "initial_analysis","initial_description"] if ob in state][0] if state.get("last_created_obj") is None else state.get("last_created_obj")
+     13472 is_message_critical, and immediate_emergency_reroute_to_recipient fields of each SendAgentMessage in MessagesToAgentsList corresponding to this agent.
+     13476 Finally, immediate_emergency_reroute_to_recipient will indicate this message needs to immediately be delivered to the recipient without delay and the next workflow step should be routed to {namethree} next
+           instead of {nextroutedagentwo}.
+     13515 The various report agents generate the final report, specifically report_orchestrator divides tasks between report_section_worker instances, each of which provides written_sections and sections state key
+           objects to be joined into the final report with the visualizations included by the report_packager agent, which is reported in the form of the 'ReportResults' class found keyed as 'report_results', which
+           contains three paths to the final report files, one as a pdf, one as an html, and one as a markdown file. Note that the ReportResults in report_results only holds those paths and is not the final report
+           itself.
+     13635             reply_msgs = {} #
+           {reply_msg.recipent:{"reply_obj":reply_obj,"reply_msg":AIMessage(...),"critical":reply_msg.is_message_critical,"emergency_reroute":(reply_msg.emergency_reroute,reply_msg.recipent), output_needs_recreated:
+           reply_obj.agent_obj_needs_recreated_bool}
+     13641                     reply_msgs[reply_obj_[0].recipient] = {"reply_obj": reply_obj_[0], "reply_msg": HumanMessage(content=reply_obj_[0].message, name="user"), "orig_msg": reply_obj_[1],"critical":
+           reply_obj_[0].is_message_critical, "emergency_reroute": (reply_obj_[0].immediate_emergency_reroute_to_recipient, reply_obj_[0].recipient), "output_needs_recreated":
+           reply_obj_[0].agent_obj_needs_recreated_bool}
+     13644                     reply_msgs[reply_obj_[0].recipient] = {"reply_obj": reply_obj_[0], "reply_msg": AIMessage(content=reply_obj_[0].message, name="supervisor"),"orig_msg": reply_obj_[1], "critical":
+           reply_obj_[0].is_message_critical, "emergency_reroute": (reply_obj_[0].immediate_emergency_reroute_to_recipient, reply_obj_[0].recipient), "output_needs_recreated":
+           reply_obj_[0].agent_obj_needs_recreated_bool}
+     13670                     if supervisor_replies[key]["emergency_reroute"][0]:
+     13684                 if (supervisor_replies[key]["reply_obj"].is_message_critical or supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient or
+           supervisor_replies[key]["reply_obj"].agent_obj_needs_recreated_bool):
+     13783                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     13844                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     13990                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     14056                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     14089                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     14175                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     14204                                 supervisor_replies[key]["reply_obj"].immediate_emergency_reroute_to_recipient = False
+     14214             True in the 'immediate_emergency_reroute_to_recipient', 'is_message_critical' and 'agent_obj_needs_recreated_bool' fields.
+     14217             The following agents had their SendAgentMessage replies marked with True in the 'immediate_emergency_reroute_to_recipient', 'is_message_critical' and 'agent_obj_needs_recreated_bool' fields and
+           have not yet been responded to:
+     14220             The following agents had their SendAgentMessage replies marked with True in both 'immediate_emergency_reroute_to_recipient':
+     14233             emergency_flags = [k for k,v in supervisor_replies.items() if v["reply_obj"].immediate_emergency_reroute_to_recipient]
+     14235             all_flags = [k for k,v in supervisor_replies.items() if
+           all([v["reply_obj"].immediate_emergency_reroute_to_recipient,v["reply_obj"].is_message_critical,v["reply_obj"].agent_obj_needs_recreated_bool])]
+     14412 report_generator_agent = create_report_generator_agent(df_ids=[df_id], rg_agent_task="outline")
+     14413 report_section_agent = create_report_generator_agent(df_ids=[df_id], rg_agent_task="section")
+     14414 report_packager_agent = create_report_generator_agent(df_ids=[df_id], rg_agent_task="package")
+     14696     viz_results: VisualizationResults | Dict[str, Any] | list[dict] | list[DataVisualization] | DataVisualization,
+     14708       • appends a dict snapshot to `viz_results` (your per-worker aggregation),
+     14723     if isinstance(viz_results, dict):
+     14724         viz_list_as_dict = [viz_results]
+     14727         assert isinstance(viz_results, dict), "Failed to parse viz_results into a dict"
+     14728         if not viz_results.get("visualization_id"):
+     14729             viz_results["visualization_id"] = uuid.uuid4().hex
+     14731             viz_results = [DataVisualization(**{ALIASES.get(k, k): v for k, v in viz_results.items()})]
+     14733             viz_results = [DataVisualization.model_validate(x or {}) for x in viz_results]
+     14734         first_data_viz = viz_results[0]
+     14736             viz_results = [DataVisualization.model_validate(x or {}) for x in viz_results]
+     14737     if isinstance(viz_results, DataVisualization):
+     14738         first_data_viz = viz_results
+     14739         viz_list_as_dict = [viz_results]
+     14741         viz_results = [viz_results]
+     14743     if isinstance(viz_results, VisualizationResults):
+     14744         viz_results = viz_results.visualizations
+     14745         first_data_viz = viz_results[0]
+     14746         num_viz = len(viz_results)
+     14747         viz_list_as_dict = [v.model_dump() for v in viz_results]
+     14748     if isinstance(viz_results, list):
+     14749         num_viz = len(viz_results)
+     14750         if all(isinstance(x, dict) for x in viz_results):
+     14751             for vd in viz_results:
+     14754                         assert isinstance(vd, dict), "Failed to parse viz_results into a dict"
+     14755                         assert not isinstance(vd, DataVisualization), "Failed to parse viz_results into a dict"
+     14764                 viz_list_as_dict = viz_results
+     14766                 viz_resultsb = [DataVisualization(**{ALIASES.get(k, k): v for k, v in (d or {}).items()}) for d in viz_results if isinstance(d, dict)]
+     14767                 viz_results = viz_resultsb
+     14770                 viz_results = [DataVisualization.model_validate(x or {}) for x in viz_results]
+     14772                     viz_list_as_dict = [v.model_dump() for v in viz_results]
+     14773         elif all(isinstance(x, DataVisualization) for x in viz_results):
+     14774             viz_list_as_dict = [v.model_dump() for v in viz_results if isinstance(v, DataVisualization)]
+     14775         first_data_viz = viz_results[0]
+     14776         if not isinstance(first_data_viz, DataVisualization) and isinstance(viz_results, list):
+     14777             viz_results = [DataVisualization.model_validate(x or {}) for x in viz_results if isinstance(x, dict)]
+     14780         first_data_viz = viz_results[0] if isinstance(viz_results, list) else viz_results
+     14787     if not isinstance(viz_results, list):
+     14788         viz_results = [viz_results]
+     14789     assert isinstance(viz_results, list), "Failed to parse viz_results into a list"
+     14790     viz_results_b = []
+     14791     for viz_ in viz_results:
+     14796             viz_ = DataVisualization.model_validate(viz_results)
+     14798             viz_results_b.append(viz_)
+     14799     viz_results = viz_results_b
+     14800     assert isinstance(viz_results, list), "Failed to parse viz_results into a list"
+     14801     assert all(isinstance(x, DataVisualization) for x in viz_results), "Failed to parse viz_results into a list of DataVisualization"
+     14816     for item in viz_results:
+     14817         assert isinstance(item, DataVisualization), "Failed to parse viz_results into a list of DataVisualization"
+     14874     prev_viz_results_list = list(state.get("viz_results") or [])
+     14875     prev_viz_results_list.append(
+     14890         "viz_results": prev_viz_results_list if prev_viz_results_list else viz_list_as_dict,
+     14961     if state.get("emergency_reroute") == "initial_analysis" or (state.get("supervisor_to_agent_msgs") and len(state.get("supervisor_to_agent_msgs")) > 0 and all(isinstance(m, SendAgentMessage) for m in
+           state.get("supervisor_to_agent_msgs")) and any(m.recipient == "initial_analysis" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)):
+     15094     if state.get("emergency_reroute") == "data_cleaner" or (
+     15244     if state.get("emergency_reroute") == "analyst" or (
+     15389     viz    = state.get("viz_results")       # VisualizationResults (may be list/dicts)
+     15425     To write the content of the files, use your tools and for each section, use each numbered section either from 'sections' state key to read them as Section class files, or from 'written_sections' for a
+           list of formatted strings. Use these to write the content to the three files in order of the sections and in a sensible, accessible way.
+     15444     if state.get("emergency_reroute") == "file_writer" or (
+     15496             "viz_results": viz if viz else None,
+     15764             task = state["viz_specs"][-1].viz_instructions if state["viz_specs"] not in state["viz_results"] else None
+     15835     if state.get("emergency_reroute") == "viz_worker" or (
+     15933         # Each worker contributes one item (or list) to viz_results
+     15955 def viz_join(state: State):
+     15956     # Nothing special besides marking as complete; fan-in happens automatically into viz_results
+     15960         all_viz = state.get("viz_results", []) or []
+     16007 def viz_evaluator_node(state: State):
+     16013         resultsa = state.get("viz_results", []) or []
+     16062     if state.get("emergency_reroute") == "viz_evaluator" or (
+     16117             "viz_results": results,
+     16154         vr_results = state.get("viz_results", []) or []
+     16178         return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,  "last_agent_message": fb["messages"][-1], "last_agent_expects_reply":
+           expect_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task, "last_created_obj": "viz_feedback" if fb["structured_response"] else None, "last_agent_id":
+           "viz_evaluator", "current_turn_agent_id": "supervisor"}
+     16179     return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,  "last_agent_message": fb["messages"][-1], "last_agent_expects_reply":
+           expect_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task, "last_created_obj": "viz_feedback" if fb["structured_response"] else None, "last_agent_id":
+           "viz_evaluator", "current_turn_agent_id": "supervisor"}
+     16181 def route_viz(state: State) -> Literal["Accepted", "Revise"]:
+     16198                "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", ""),"cleaned_dataset_description": state.get("cleaned_dataset_description", ""), "viz_results":
+           state.get("viz_results", ""),
+     16244     if state.get("emergency_reroute") == "report_orchestrator" or (
+     16289                     "analysis_insights": state.get("analysis_insights", None), "viz_results": state.get("viz_results", None), "next_agent_prompt": state.get("next_agent_prompt", None),
+     16345     rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : Section.model_json_schema(), "user_prompt": user_prompt,
+           "memories" : mems, "analysis_insights": state.get("analysis_insights", ""),"cleaned_dataset_description": state.get("cleaned_dataset_description", ""), "viz_results": state.get("viz_results", ""),
+           "report_task": "You are a professional data scientist. You write crisp, technical report sections. Be specific and cite numeric values when available. Write a concise Markdown section for an EDA report.
+           Include no preamble."}
+     16431     if state.get("emergency_reroute") == "report_section_worker" or (
+     16480         "viz_results": state.get("viz_results", None),
+     16518         "written_sections": [f"## {section.name}\n\n{content}".strip()],
+     16557 def report_join(state: State):
+     16558     parts = state.get("written_sections", []) or []
+     16562 def report_packager_node(state: State):
+     16566     written_sections: List[str] = state.get("written_sections", []) or []
+     16569     draft = f"# {title}\n\n" + "\n\n".join(written_sections)
+     16581                "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", None),"cleaned_dataset_description": state.get("cleaned_dataset_description", None),
+           "viz_results": state.get("viz_results", None),
+     16590     viz = state.get("viz_results")
+     16605     if state.get("emergency_reroute") == "report_packager" or (
+     16660             "viz_results": viz,
+     16661             "written_sections": written_sections,
+     16728     msg_obj_candidates: List[SendAgentMessage] = state.get("supervisor_to_agent_msgs") or [SendAgentMessage(message="No messages to send", recipient="supervisor", delivery_status=False, expect_reply=False,
+           finished_this_task=False, reply_msg_to_supervisor="",agent_obj_needs_recreated_bool=False, is_message_critical = False, immediate_emergency_reroute_to_recipient = False)]
+     16745         state.get("emergency_reroute")
+     16756     last_known = [ob for ob in ["report_results", "report_outline", "written_sections", "sections", "report_draft", "visualization_results", "analysis_insights", "cleaning_metadata",
+           "initial_analysis","initial_description"] if ob in state][0] if state.get("last_created_obj") is None else state.get("last_created_obj")
+     16767                     if candidate == state.get("emergency_reroute") or candidate == msg_obj.recipient:
+     16833 def route_to_writer(state) -> Literal["file_writer", "supervisor","END"]:
+     16836     finished_secs_count = len(state.get("sections", False)) or len(state.get("written_sections", []))
+     16920     route_viz,                       # returns "Accepted" or "Revise"
+     16943     route_to_writer,
+
+

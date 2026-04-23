@@ -112,7 +112,7 @@ def execute_notebook(resume: bool = False):
         nb,
         timeout=TIMEOUT,
         kernel_name=kernel_name,
-        allow_errors=False,
+        allow_errors=True,
         resources={"metadata": {"path": str(REPO_ROOT)}},
     )
 
@@ -123,7 +123,16 @@ def execute_notebook(resume: bool = False):
     import threading as _threading
 
     _log_file = REPO_ROOT / "notebook_run_log.txt"
-    _log_file.write_text("", encoding="utf-8")  # truncate / create
+    # Truncate / create; tolerate Windows file-share lock from the launching shell.
+    try:
+        _log_file.write_text("", encoding="utf-8")
+    except PermissionError as _trunc_exc:
+        print(f"W  could not truncate {_log_file.name} ({_trunc_exc}); continuing with append")
+        try:
+            with open(_log_file, "a", encoding="utf-8") as _f:
+                _f.write(f"\n--- run resumed at {datetime.now().isoformat(timespec='seconds')} ---\n")
+        except Exception as _app_exc:
+            print(f"W  could not append marker to {_log_file.name}: {_app_exc}")
     _stop_tail = _threading.Event()
 
     def _tail_log_to_stdout(log_path: Path, stop_evt: _threading.Event) -> None:

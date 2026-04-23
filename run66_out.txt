@@ -1,0 +1,253 @@
+OK  Fresh run (resume flag cleared)
+OK  nbclient and nbformat are available
+
+============================================================
+Executing: IntelligentDataDetective_beta_v5_patched.ipynb
+Timeout:   3600s (60 min)
+Output:    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\executed_20260422_203815.ipynb
+============================================================
+
+OK  Using kernel: py312-codex
+OK  Log tail started ΓåÆ C:\Users\darf3\Documents\intelligent_data_detective\notebook_run_log.txt
+OK  Deleted stale checkpoints.sqlite for clean run
+[PIPELINE] 20:39:26 [INFO] STAGE initial_analysis START
+[PIPELINE] 20:39:26 [INFO] STAGE initial_analysis DONE [OK] (0s)
+[PIPELINE] 20:39:26 [INFO] SHORTCUT0 ia_done=True ia=True dc=None cm=n
+[PIPELINE] 20:39:26 [INFO] STAGE supervisor START
+[PIPELINE] 20:39:26 [INFO] STAGE initial_analysis DONE [OK] (0s)
+[PIPELINE] 20:41:11 [WARNING] RECOVERY data_cleaner error=GraphRecursionError: Recursion limit of 40 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+[PIPELINE] For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+[PIPELINE] 20:41:11 [INFO] STATE cleaner: type=CleaningMetadata steps=1 desc='Cleaned dataset; recursion-limit recovery applied.' finished=True
+[PIPELINE] 20:41:12 [INFO] STAGE data_cleaner START
+[PIPELINE] 20:41:12 [INFO] STAGE data_cleaner DONE [OK] (0s)
+[PIPELINE] 20:41:12 [INFO] SHORTCUT0 ia_done=True ia=True dc=True cm=y
+[PIPELINE] 20:41:12 [INFO] SHORTCUT dc_done=True dc=True cm=y ac=None
+[PIPELINE] 20:41:12 [INFO] STAGE data_cleaner DONE [OK] (0s)
+[PIPELINE] 20:42:11 [INFO] STATE analyst: type=AnalysisInsights finished=True summary="I performed statistical EDA on 'sample_dirty' (n=50, columns: id, name, value, category, score). Key" viz_count=3
+[PIPELINE] 20:42:12 [INFO] STAGE analyst START
+[PIPELINE] 20:42:12 [INFO] STAGE analyst DONE [OK] (0s)
+[PIPELINE] 20:42:12 [INFO] SHORTCUT0 ia_done=True ia=True dc=True cm=y
+[PIPELINE] 20:42:12 [INFO] SHORTCUT dc_done=True dc=True cm=y ac=True
+[PIPELINE] 20:42:12 [INFO] SHORTCUT2 ac_done=True ac=True vc=None
+[PIPELINE] 20:42:12 [INFO] STAGE analyst DONE [OK] (0s)
+[PIPELINE] 20:42:12 [INFO] STAGE visualization START
+[PIPELINE] 20:44:19 [WARNING] RECOVERY visualization error=ValueError: You cannot provide a MEMORY ID when creating a MEMORY. Please try again, omitting the id argument.
+[PIPELINE] 20:44:19 [INFO] STAGE viz_worker START
+[PIPELINE] 20:45:39 [WARNING] RECOVERY visualization error=ValueError: You cannot provide a MEMORY ID when creating a MEMORY. Please try again, omitting the id argument.
+[PIPELINE] 20:48:42 [WARNING] RECOVERY visualization error=GraphRecursionError: Recursion limit of 60 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+[PIPELINE] For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+[PIPELINE] 20:48:44 [INFO] STAGE viz_join START
+[PIPELINE] 20:48:44 [INFO] STAGE visualization DONE [OK] (392s)
+[PIPELINE] 20:49:44 [WARNING] RECOVERY viz_evaluator error=GraphRecursionError: Recursion limit of 40 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+[PIPELINE] For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+[PIPELINE] 20:49:44 [INFO] STAGE viz_evaluator START
+[PIPELINE] 20:50:27 [INFO] STAGE report_orchestrator START
+[PIPELINE] 20:50:27 [INFO] STAGE report_section_worker START
+[PIPELINE] 20:50:27 [INFO] STAGE report_join START
+[PIPELINE] 20:50:27 [INFO] STAGE data_cleaner DONE [OK] (554s)
+[PIPELINE] 20:51:50 [WARNING] RECOVERY report_packager error=GraphRecursionError: Recursion limit of 120 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+[PIPELINE] For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+[PIPELINE] 20:51:51 [INFO] STAGE report_packager START
+[PIPELINE] 20:51:51 [INFO] STAGE report_packager DONE [OK] (0s)
+[PIPELINE] 20:51:51 [INFO] SHORTCUT0 ia_done=True ia=True dc=True cm=y
+[PIPELINE] 20:51:51 [INFO] SHORTCUT dc_done=True dc=True cm=y ac=True
+[PIPELINE] 20:51:51 [INFO] SHORTCUT2 ac_done=True ac=True vc=True
+[PIPELINE] 20:51:51 [INFO] SHORTCUT3 vc_done=True vc=True rg=True
+[PIPELINE] 20:51:51 [INFO] SHORTCUT4 all_done=True rg=True -> write_output_to_file
+[PIPELINE] 20:51:51 [INFO] STAGE visualization DONE [OK] (578s)
+[PIPELINE] 20:51:51 [INFO] STAGE report_packager DONE [OK] (0s)
+[PIPELINE] 20:53:38 [WARNING] RECOVERY report_packager error=GraphRecursionError: Recursion limit of 120 reached without hitting a stop condition. You can increase the limit by setting the `recursion_limit` config key.
+[PIPELINE] For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT
+[PIPELINE] 20:54:07 [INFO] FINAL initial_analysis=True cleaning=True analyst=True viz=True report=True
+
+OK  Notebook completed in 954s (15.9 min)
+OK  Executed notebook saved: C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\executed_20260422_203815.ipynb
+OK  Pipeline log: C:\Users\darf3\Documents\intelligent_data_detective\notebook_run_log.txt (4056 bytes)
+
+============================================================
+ARTIFACT SUMMARY
+============================================================
+OK  HTML (48 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty_final.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\final_report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report_final.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report_snippet.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\analysis_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty_final.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\final_report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report_final.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\report_snippet.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\analysis_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.html
+OK  PDF (32 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.pdf
+OK  Markdown (52 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\analysis_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0846-35a04921\output\cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0940-61e43bb3\artifacts\run_default_id-20260421-0940-61e43bb3\outputs\logs\sample_dirty_cleaning_notes.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_final_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_report_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_summary_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1939-baa5eabc\artifacts\run_default_id-20260421-1939-baa5eabc\sample_dirty_cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0011-f46e1239\artifacts\run_default_id-20260422-0011-f46e1239\artifacts\cleaned\cleaning_log.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_plan.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-6c0f0c31\artifacts\run_default_id-20260422-2250-1c895da2\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\analysis_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\artifacts\run_default_id-20260422-2330-7202db66\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0846-35a04921\output\cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0940-61e43bb3\artifacts\run_default_id-20260421-0940-61e43bb3\outputs\logs\sample_dirty_cleaning_notes.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_final_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_report_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_summary_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1939-baa5eabc\artifacts\run_default_id-20260421-1939-baa5eabc\sample_dirty_cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0011-f46e1239\artifacts\run_default_id-20260422-0011-f46e1239\artifacts\cleaned\cleaning_log.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1211-91892d3a\artifacts\run_default_id-20260422-1211-91892d3a\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-1225-ec891d58\artifacts\run_default_id-20260422-1225-ec891d58\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_plan.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\run_default_id-20260422-2132-421b1d00\reports\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\final_report_recovery.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2157-3512fff2\artifacts\run_default_id-20260422-2157-3512fff2\reports\final_report_recovery.md
+OK  PNG (38 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__score__30b98d96.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__score__fefc4226.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__value__511ab85b.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__4954537f.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__911219fb.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__dca2daa9.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\category_count.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\mean_score_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\scatter_value_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\bar_category_counts.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\box_value_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\corr_matrix.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\hist_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\hist_value.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\scatter_value_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__score__30b98d96.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__score__fefc4226.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-2bd14e26\figures\sample_dirty__hist__value__511ab85b.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__4954537f.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__911219fb.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run-c7189856\figures\sample_dirty__hist__value__dca2daa9.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\category_count.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\mean_score_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\scatter_value_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\bar_category_counts.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\box_value_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\corr_matrix.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\hist_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\hist_value.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-2132-421b1d00\artifacts\scatter_value_score.png
+
+Paths extracted from notebook cell outputs:
+    /artifacts/visualizations/viz_value_histogram.png
+    C:\Users\darf3\AppData\Local\Temp\tmp06q7hrpe\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty.html
+    C:\Users\darf3\AppData\Local\Temp\tmp06q7hrpe\artifacts\run_default_id-20260423-0038-e48ff6b9\reports\eda_report_sample_dirty_final.html
+    C:\Users\darf3\AppData\Local\Temp\tmp06q7hrpe\artifactsun_default_id-20260423-0038-e48ff6b9eports\eda_report_sample_dirty.html
+    C:\Users\darf3\AppData\Local\Temp\tmp06q7hrpe\artifactsun_default_id-20260423-0038-e48ff6b9eports\eda_report_sample_dirty_final.html
+
+OK  All artifact types present.
+============================================================

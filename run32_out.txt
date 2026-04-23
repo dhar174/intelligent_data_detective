@@ -1,0 +1,132 @@
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:1 char:15
++ function ghcs {
++               ~
+Missing closing '}' in statement block or type definition.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:63 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:65 char:15
++ function ghce {
++               ~
+Missing closing '}' in statement block or type definition.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:94 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : MissingEndCurlyBrace
+ 
+OK  Fresh run (resume flag cleared)
+OK  OPENAI_API_KEY loaded from User environment scope
+OK  nbclient and nbformat are available
+
+============================================================
+Executing: IntelligentDataDetective_beta_v5_patched.ipynb
+Timeout:   3600s (60 min)
+Output:    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\executed_20260422_020616.ipynb
+============================================================
+
+OK  Using kernel: py312-codex
+OK  Log tail started ΓåÆ C:\Users\darf3\Documents\intelligent_data_detective\notebook_run_log.txt
+WARN checkpoints.sqlite locked (attempt 1/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 2/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 3/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 4/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 5/5), retrying in 2s...
+WARN Could not delete checkpoints.sqlite ΓÇö another process may hold it open. Kill lingering Python kernels and retry.
+[PIPELINE] 02:07:13 [INFO] STAGE initial_analysis START
+[PIPELINE] 02:07:13 [INFO] STAGE initial_analysis DONE [OK] (0s)
+[PIPELINE] 02:07:13 [INFO] SHORTCUT0 ia_done=True ia=True dc=None cm=n
+[PIPELINE] 02:07:13 [INFO] STAGE supervisor START
+[PIPELINE] 02:07:13 [INFO] STAGE initial_analysis DONE [OK] (0s)
+[PIPELINE] 02:17:25 [WARNING] RECOVERY data_cleaner hit recursion limit at 300
+[PIPELINE] 02:17:25 [INFO] STAGE data_cleaner START
+[PIPELINE] 02:17:25 [INFO] STAGE data_cleaner DONE [OK] (0s)
+[PIPELINE] 02:17:25 [INFO] SHORTCUT0 ia_done=True ia=True dc=True cm=y
+[PIPELINE] 02:17:25 [INFO] SHORTCUT dc_done=True dc=True cm=y ac=None
+[PIPELINE] 02:17:25 [INFO] STAGE data_cleaner DONE [OK] (0s)
+[PIPELINE] 02:34:18 [WARNING] RECOVERY analyst hit recursion limit at 300
+[PIPELINE] 02:34:19 [INFO] STAGE analyst START
+[PIPELINE] 02:34:19 [INFO] STAGE analyst DONE [OK] (0s)
+[PIPELINE] 02:34:19 [INFO] SHORTCUT0 ia_done=True ia=True dc=True cm=y
+[PIPELINE] 02:34:19 [INFO] SHORTCUT dc_done=True dc=True cm=y ac=True
+[PIPELINE] 02:34:19 [INFO] SHORTCUT2 ac_done=True ac=True vc=None
+[PIPELINE] 02:34:19 [INFO] STAGE analyst DONE [OK] (0s)
+[PIPELINE] 02:34:19 [INFO] STAGE visualization START
+[PIPELINE] 02:34:19 [INFO] STAGE viz_worker START
+
+WARN Notebook raised an exception after 1698s: An error occurred while executing the following cell:
+------------------
+# save temp dir to gdrive
+final_state = data_detective_graph.get_state(run_config)
+if final_state and final_state.values:
+    state_vals = final_state.values
+    final_dst = persist_to_drive(WORKING_DIRECTORY, run_id = str(run_config.get("run_id") or state_vals.get("run_id") or state_vals.get("_config", {}).get("run_id", run_id)))
+
+    if state_vals.get("report_results") is not None and isinstance(state_vals.get("report_res
+
+ERR Cell errors detected:
+    Cell 82 (idx 81): InvalidUpdateError: At key 'last_agent_expects_reply': Can receive only one value per step. Use an Annotated key to handle multiple values.
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE
+OK  Executed notebook saved: C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\executed_20260422_020616.ipynb
+OK  Pipeline log: C:\Users\darf3\Documents\intelligent_data_detective\notebook_run_log.txt (1044 bytes)
+
+============================================================
+ARTIFACT SUMMARY
+============================================================
+OK  HTML (6 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.html
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.html
+OK  PDF (4 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.pdf
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.pdf
+OK  Markdown (20 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0846-35a04921\output\cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0940-61e43bb3\artifacts\run_default_id-20260421-0940-61e43bb3\outputs\logs\sample_dirty_cleaning_notes.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_final_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_report_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_summary_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1939-baa5eabc\artifacts\run_default_id-20260421-1939-baa5eabc\sample_dirty_cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0011-f46e1239\artifacts\run_default_id-20260422-0011-f46e1239\artifacts\cleaned\cleaning_log.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0846-35a04921\output\cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-0940-61e43bb3\artifacts\run_default_id-20260421-0940-61e43bb3\outputs\logs\sample_dirty_cleaning_notes.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_final_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_report_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1055-13050b48\artifacts\run_default_id-20260421-1055-13050b48\outputs\sample_dirty\v1\cleaning_summary_v1.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1150-3a2b942e\artifacts\run_default_id-20260421-1150-3a2b942e\outputs\visualization_report_sample_dirty.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260421-1939-baa5eabc\artifacts\run_default_id-20260421-1939-baa5eabc\sample_dirty_cleaning_summary.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0011-f46e1239\artifacts\run_default_id-20260422-0011-f46e1239\artifacts\cleaned\cleaning_log.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0047-e410b478\report.md
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\report.md
+OK  PNG (14 file(s)):
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\category_count.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\mean_score_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\scatter_value_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\category_count.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\mean_score_by_category.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\scatter_value_score.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\score_hist.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_box.png
+    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\IDD_run_run_default_id-20260422-0413-9a3b2b17\value_hist.png
+
+OK  All artifact types present.
+============================================================
+
+ERR 1 cell error(s) occurred during execution:
+    Cell 82: InvalidUpdateError: At key 'last_agent_expects_reply': Can receive only one value per step. Use an Annotated key to handle multiple values.
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE

@@ -53,3 +53,31 @@ export TAVILY_API_KEY="your-tavily-api-key"   # optional
 - There is no CI pipeline (no `.github/workflows/` for automated test runs).
 - Preserve user-authored docs and existing agent assets outside managed sections.
 <!-- repo-agent-bootstrap:managed:end -->
+
+<!-- session-curated:start -->
+## Session-added tooling
+
+### `validate_graph.py` (repo root)
+Fast (<20s) **compile-only** graph validator. No API calls — safe to run as a pre-commit gate before launching a full notebook run.
+
+Detects:
+- Managed-channel collisions (e.g., `remaining_steps` leaking into InputSchema, source of BR-7).
+- Missing reducers on collection fields.
+- Unreachable nodes / dead-end nodes (e.g., EMERGENCY_MSG with no outgoing edge).
+- Schema-tool name collisions across agents.
+
+```bash
+python validate_graph.py
+```
+
+### Resuming a notebook run
+```bash
+python run_notebook_live.py --resume
+```
+Resumes from `checkpoints.sqlite`, skipping completed nodes (saves 12–15 min on a typical mid-pipeline restart). **Only safe if `State` schema is unchanged since the last checkpoint.** Adding a field, changing a reducer, or renaming an annotation invalidates the checkpoint and will cause silent corruption — delete `checkpoints.sqlite` and start fresh in that case.
+
+### Test baseline (reaffirmed this session)
+- `test_intelligent_data_detective.py`: **22/22 pass**
+- `test_error_handling_framework.py`: **15/16 pass** (same known edge case)
+<!-- session-curated:end -->
+

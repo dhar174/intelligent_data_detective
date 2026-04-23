@@ -1,0 +1,378 @@
+import inspect
+import json
+import logging
+import math
+from functools import wraps
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Sequence, Tuple
+
+# Optional heavy deps
+
+try:
+    import numpy as np  # type: ignore
+except Exception:
+    np = None  # type: ignore
+try:
+    from pydantic import BaseModel as PydanticBaseModel  # v2/v1 alias
+except Exception:
+    PydanticBaseModel = None  # type: ignore
+
+_LOG = logging.getLogger("tool_capper")
+
+
+def cap_output(
+    max_chars: Optional[int] = 3000,
+    max_bytes: Optional[int] = 10_000,
+    max_lines: Optional[int] = 200,
+    *,
+    # Behavior control
+    mode: Literal["llm_safe", "preserve"] = "llm_safe",
+    sequence_policy: Literal["tuple_only", "sequence_first_str", "none"] = "tuple_only",
+    minify_json: bool = False,
+    log_overflow: bool = True,
+    add_footer: bool = True,
+    footer_prefix: str = "\n\n[tool-output truncated]",
+    # Preview limits for JSON/stringification
+    json_max_depth: int = 3,
+    json_max_items: int = 200,
+    json_max_string: int = 4000,
+    df_preview_rows: int = 6,
+    df_preview_cols: int = 10,
+) -> Callable[..., Any]:
+    """
+    Decorator that caps tool outputs safely.
+
+    mode="llm_safe" (default): always returns a STRING (LLM-safe),
+      stringifying & truncating any object (prevents oversized/malformed payloads).
+    mode="preserve": returns non-string outputs unchanged, but still truncates
+      str or first element of tuples (NamedTuple preserved).
+
+    sequence_policy controls whether container truncation applies beyond tuples.
+    """
+
+    # ---------------------------
+    # Size/clip helpers (strings)
+    # ---------------------------
+
+    def _safe_len_bytes(s: str) -> int:
+        return len(s.encode("utf-8", errors="ignore"))
+
+    def _minify_json_string(s: str) -> str:
+        if not minify_json:
+            return s
+        try:
+            obj = json.loads(s)
+        except Exception:
+            return s
+        try:
+            return json.dumps(obj, separators=(",", ":"))
+        except Exception:
+            return s
+
+    def _clip_lines(s: str, max_lns: int) -> Tuple[str, bool]:
+        lines = s.splitlines()
+        if len(lines) <= max_lns:
+            return s, False
+        head = max(1, math.ceil(max_lns * 0.7) - 1)
+        tail = max(0, max_lns - head - 1)
+        kept = lines[:head] + ["… [lines truncated]"] + (lines[-tail:] if tail else [])
+        return "\n".join(kept), True
+
+    def _clip_chars_head_tail(s: str, max_ch: int) -> Tuple[str, bool]:
+        if len(s) <= max_ch:
+            return s, False
+        keep_head = max(0, int(max_ch * 0.8))
+        ell = " … "
+        keep_tail = max(0, max_ch - keep_head - len(ell))
+        return s[:keep_head] + ell + (s[-keep_tail:] if keep_tail else ""), True
+
+    def _clip_bytes_head_tail(s: str, max_b: int) -> Tuple[str, bool]:
+        b = s.encode("utf-8", errors="ignore")
+        if len(b) <= max_b:
+            return s, False
+        head = max(0, int(max_b * 0.8))
+        ell_b = b" ... "
+        tail = max(0, max_b - head - len(ell_b))
+        clipped = b[:head] + ell_b + (b[-tail:] if tail else b"")
+        return clipped.decode("utf-8", errors="ignore"), True
+
+    def _apply_caps_no_footer(s: str) -> Tuple[str, bool]:
+        truncated_any = False
+        orig = s
+        if max_lines is not None:
+            s, t = _clip_lines(s, max_lines)
+            truncated_any |= t
+        if max_chars is not None:
+            s, t = _clip_chars_head_tail(s, max_chars)
+            truncated_any |= t
+        if max_bytes is not None:
+            s, t = _clip_bytes_head_tail(s, max_bytes)
+            truncated_any |= t
+        return s, truncated_any or (s != orig)
+
+    def _append_footer_and_enforce(s_body: str, s_footer: str) -> str:
+        tentative = s_body.rstrip() + s_footer
+        final, _ = _apply_caps_no_footer(tentative)
+        # Try to reserve space explicitly if needed
+        footer_bytes = _safe_len_bytes(s_footer)
+        footer_chars = len(s_footer)
+        footer_lines = s_footer.count("\n") + 1
+        allowed_chars = None if max_chars is None else max(0, max_chars - footer_chars)
+        allowed_bytes = None if max_bytes is None else max(0, max_bytes - footer_bytes)
+        allowed_lines = None if max_lines is None else max(1, max_lines - footer_lines)
+        body_capped = s_body
+        if allowed_lines is not None:
+            body_capped, _ = _clip_lines(body_capped, allowed_lines)
+        if allowed_chars is not None:
+            body_capped, _ = _clip_chars_head_tail(body_capped, allowed_chars)
+        if allowed_bytes is not None:
+            body_capped, _ = _clip_bytes_head_tail(body_capped, allowed_bytes)
+        tentative2 = body_capped.rstrip() + s_footer
+        final2, _ = _apply_caps_no_footer(tentative2)
+        return final2
+
+    def _truncate_string(s: str, fn_name: str) -> str:
+        orig_chars = len(s)
+        orig_lines = s.count("\n") + 1
+        orig_bytes = _safe_len_bytes(s)
+
+        s = _minify_json_string(s)
+        s_trunc, truncated = _apply_caps_no_footer(s)
+
+        if truncated and add_footer:
+            new_chars = len(s_trunc)
+            new_lines = s_trunc.count("\n") + 1
+            new_bytes = _safe_len_bytes(s_trunc)
+            footer = (
+                f"{footer_prefix} "
+                f"(chars {new_chars}/{orig_chars}, bytes {new_bytes}/{orig_bytes}, lines {new_lines}/{orig_lines})."
+            )
+            s_trunc = _append_footer_and_enforce(s_trunc, footer)
+
+        if truncated and log_overflow and _LOG:
+            try:
+                new_chars = len(s_trunc)
+                new_lines = s_trunc.count("\n") + 1
+                new_bytes = _safe_len_bytes(s_trunc)
+                _LOG.info(
+                    "Tool output truncated: %s | chars %d→%d | bytes %d→%d | lines %d→%d",
+                    fn_name, orig_chars, new_chars, orig_bytes, new_bytes, orig_lines, new_lines
+                )
+            except Exception as e:
+                print(f"Output capper log error: {e}\n", flush=True)
+        return s_trunc
+
+    # ---------------------------
+    # JSON-able preview helpers
+    # ---------------------------
+
+    def _truncate_long_string_val(v: str) -> str:
+        if len(v) <= json_max_string:
+            return v
+        head = max(0, int(json_max_string * 0.8))
+        tail = max(0, json_max_string - head - 5)
+        return v[:head] + " ... " + (v[-tail:] if tail > 0 else "")
+
+    def _is_namedtuple_instance(obj: Any) -> bool:
+        return isinstance(obj, tuple) and hasattr(obj, "_fields")
+
+    def _reconstruct_tuple_like_with_first(orig: Tuple[Any, ...], first: Any):
+        if _is_namedtuple_instance(orig) and type(orig) is not tuple:
+            return orig.__class__(first, *orig[1:])
+        return (first,) + orig[1:]
+
+    def _df_preview(df) -> Dict[str, Any]:
+        try:
+            info = {
+                "type": "DataFrame",
+                "shape": list(df.shape),
+                "columns": list(map(str, df.columns[:df_preview_cols])),
+                "dtypes": {str(c): str(df.dtypes[c]) for c in df.columns[:df_preview_cols]},
+            }
+            head = df.iloc[: df_preview_rows, : df_preview_cols]
+            tail = df.iloc[-df_preview_rows:, : df_preview_cols] if len(df) > df_preview_rows else None
+            info["head"] = head.to_dict(orient="records")
+            if tail is not None:
+                info["tail"] = tail.to_dict(orient="records")
+            return info
+        except Exception as e:
+            return {"type": "DataFrame", "repr": _truncate_long_string_val(repr(df)), "error": str(e)}
+
+    def _np_preview(arr) -> Dict[str, Any]:
+        try:
+            shp = list(arr.shape)
+            dtype = str(arr.dtype)
+            # sample a small slice
+            sample = arr.ravel()[: min(arr.size, 32)]
+            return {"type": "ndarray", "shape": shp, "dtype": dtype, "sample": sample.tolist()}
+        except Exception as e:
+            return {"type": "ndarray", "repr": _truncate_long_string_val(repr(arr)), "error": str(e)}
+
+    def _pyd_preview(model) -> Any:
+        try:
+            if hasattr(model, "model_dump"):
+                return model.model_dump()  # pydantic v2
+            if hasattr(model, "dict"):
+                return model.dict()       # pydantic v1
+        except Exception:
+            pass
+        return _truncate_long_string_val(repr(model))
+
+    def _to_jsonable(
+        obj: Any,
+        *,
+        depth: int = 0,
+        max_depth: int = json_max_depth,
+        max_items: int = json_max_items,
+    ) -> Any:
+        """Best-effort small JSON preview with bounded depth/breadth."""
+        if depth >= max_depth:
+            return f"<truncated at depth {max_depth}>"
+
+        # Primitives
+        if obj is None or isinstance(obj, (bool, int, float)):
+            return obj
+        if isinstance(obj, str):
+            return _truncate_long_string_val(obj)
+
+        # pandas DataFrame
+        if pd is not None and isinstance(obj, pd.DataFrame):
+            return _df_preview(obj)
+
+        # numpy array
+        if np is not None and isinstance(obj, np.ndarray):
+            return _np_preview(obj)
+
+        # Pydantic
+        if PydanticBaseModel is not None and isinstance(obj, PydanticBaseModel):
+            return _to_jsonable(_pyd_preview(obj), depth=depth + 1, max_depth=max_depth, max_items=max_items)
+
+        # Mapping (dict-like)
+        if isinstance(obj, Mapping):
+            out = {}
+            count = 0
+            for k, v in obj.items():
+                if count >= max_items:
+                    out["<more>"] = f"... ({len(obj) - max_items} more)"
+                    break
+                out[str(k)] = _to_jsonable(v, depth=depth + 1, max_depth=max_depth, max_items=max_items)
+                count += 1
+            return out
+
+        # Iterable (list/tuple/set)
+        if isinstance(obj, (list, tuple, set)):
+            seq = list(obj)
+            result = []
+            for i, v in enumerate(seq):
+                if i >= max_items:
+                    result.append(f"... ({len(seq) - max_items} more)")
+                    break
+                result.append(_to_jsonable(v, depth=depth + 1, max_depth=max_depth, max_items=max_items))
+            return result
+
+        # NamedTuple
+        if _is_namedtuple_instance(obj):
+            return {name: _to_jsonable(getattr(obj, name), depth=depth + 1, max_depth=max_depth, max_items=max_items)
+                    for name in obj._fields}
+
+        # Dataclasses
+        try:
+            import dataclasses  # local import
+            if dataclasses.is_dataclass(obj):
+                return _to_jsonable(dataclasses.asdict(obj), depth=depth + 1, max_depth=max_depth, max_items=max_items)
+        except Exception:
+            pass
+
+        # Fallback repr
+        return _truncate_long_string_val(repr(obj))
+
+    # ---------------------------
+    # LLM-safe stringifier
+    # ---------------------------
+
+    def _stringify_for_llm(out: Any, fn_name: str) -> str:
+        if isinstance(out, str):
+            return _truncate_string(out, fn_name)
+        try:
+            js = _to_jsonable(out)
+            s = json.dumps(js, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            s = repr(out)
+        return _truncate_string(s, fn_name)
+
+    # ---------------------------
+    # Container helpers (preserve)
+    # ---------------------------
+
+    def _maybe_truncate_in_container_preserve(out: Any, fn_name: str) -> Any:
+        if sequence_policy == "none":
+            return out
+
+        # Tuples (incl. NamedTuple): truncate only the first str element
+        if isinstance(out, tuple) and out and isinstance(out[0], str):
+            first = _truncate_string(out[0], f"{fn_name}[0]")
+            return _reconstruct_tuple_like_with_first(out, first)
+
+        if sequence_policy == "sequence_first_str":
+            # Generic Sequence (but not str/bytes/tuple)
+            if isinstance(out, Sequence) and not isinstance(out, (str, bytes, bytearray, tuple)):
+                if len(out) > 0 and isinstance(out[0], str):
+                    try:
+                        if isinstance(out, list):
+                            new0 = _truncate_string(out[0], f"{fn_name}[0]")
+                            return [new0] + list(out[1:])
+                        else:
+                            new0 = _truncate_string(out[0], f"{fn_name}[0]")
+                            return type(out)([new0] + list(out[1:]))
+                    except Exception:
+                        new0 = _truncate_string(out[0], f"{fn_name}[0]")
+                        return [new0] + list(out[1:])
+        return out
+
+    # ---------------------------
+    # Wrappers
+    # ---------------------------
+
+    def _wrap_sync(fn: Callable[..., Any]) -> Callable[..., Any]:
+        sig = inspect.signature(fn)
+        fn_name = getattr(fn, "__name__", "tool")
+
+        @wraps(fn)
+        def wrapper(*args, **kwargs) -> Any:
+            out = fn(*args, **kwargs)
+
+            if mode == "llm_safe":
+                return _stringify_for_llm(out, fn_name)
+
+            # mode == "preserve"
+            if isinstance(out, str):
+                return _truncate_string(out, fn_name)
+            out2 = _maybe_truncate_in_container_preserve(out, fn_name)
+            return out2
+
+        wrapper.__signature__ = sig
+        return wrapper
+
+    def _wrap_async(fn: Callable[..., Any]) -> Callable[..., Any]:
+        sig = inspect.signature(fn)
+        fn_name = getattr(fn, "__name__", "tool")
+
+        @wraps(fn)
+        async def wrapper(*args, **kwargs) -> Any:
+            out = await fn(*args, **kwargs)
+
+            if mode == "llm_safe":
+                return _stringify_for_llm(out, fn_name)
+
+            # mode == "preserve"
+            if isinstance(out, str):
+                return _truncate_string(out, fn_name)
+            out2 = _maybe_truncate_in_container_preserve(out, fn_name)
+            return out2
+
+        wrapper.__signature__ = sig
+        return wrapper
+
+    def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
+        return _wrap_async(fn) if inspect.iscoroutinefunction(fn) else _wrap_sync(fn)
+
+    return deco

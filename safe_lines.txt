@@ -1,0 +1,52 @@
+2721: # replan_llm = planner_llm.with_structured_output(Plan)
+2722: # todo_llm   = planner_llm.with_structured_output(ToDoList)
+2808: def _safe_len_bytes(s: str) -> int:
+2868: footer_bytes = _safe_len_bytes(s_footer)
+2888: orig_bytes = _safe_len_bytes(s)
+2896: new_bytes = _safe_len_bytes(s_trunc)
+2907: new_bytes = _safe_len_bytes(s_trunc)
+4922: safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+4923: fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+5350: safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+5351: fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+5681: safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+5682: fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+6043: safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+6044: fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+6385: safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+6386: fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+7093: safe_title_for_file = _sanitize_filename(report_title)
+7094: assets_dir = _resolve_in_workdir(f"{safe_title_for_file}_assets")
+7151: file_name = f"{safe_title_for_file}_report.html"
+7673: safe_title = (title or "").replace("\n", " ").strip()
+7674: md_parts.append(f"## {safe_title}\n{text_content}\n")
+7677: safe_title_for_file = _sanitize_filename(report_title)
+7678: assets_dir = _resolve_in_workdir(f"{safe_title_for_file}_assets")
+7738: file_name = f"{safe_title_for_file}_report.md"
+8632: config = yaml.safe_load(f)
+8776: config = yaml.safe_load(config_str)
+9944: def _safe_json_loads(s: str) -> Optional[Any]:
+9977: data = _safe_json_loads(m)
+9987: parsed = _safe_json_loads(_args)
+9998: data = _safe_json_loads(arr.group(0))
+10007: data = _safe_json_loads(obj_match.group(0))
+10513: - Preferred: with_structured_output(method="json_schema", strict=True)
+10517: return base_llm.with_structured_output(
+11381: def _safe_pointerize_tool_message(m: ToolMessage, *, max_chars: int = 2000) -> ToolMessage:
+11489: out.append(_safe_pointerize_tool_message(m))
+12994: cst_llm = models["progress"].with_structured_output(cst_schema, strict=True, method="json_schema")
+13115: planning_supervisor_llm = updated_replan_prompt | planning_llm.with_structured_output(Plan, strict=True, method="json_schema")
+13190: todo_llm = updated_todo_prompt | models["todo"].with_structured_output(ToDoList, strict=True, method="json_schema")
+13344: routing_llm = updated_routing_prompt | models["router"].with_structured_output(Router, strict=True, method="json_schema")
+13572: replying_supervisor_llm = reply_prompt | models["reply"].with_structured_output(MessagesToAgentsList, strict=True, method="json_schema")
+13738: cst_llmb = models["progress"].with_structured_output(new_cst_schema, strict=True, method="json_schema")
+13820: progress_llm_conv = updated_progress_promptc | models["conversational"].with_structured_output(ConversationalResponse, strict=True, method="json_schema")
+13900: planning_supervisor_llm = updated_replan_prompt | planning_llm.with_structured_output(Plan, strict=True, method="json_schema")
+13964: planning_supervisor_llm = updated_replan_prompt | planning_llm.with_structured_output(ConversationalResponse, strict=True, method="json_schema")
+14022: todo_llm = updated_todo_prompt | models["todo"].with_structured_output(ToDoList, strict=True, method="json_schema")
+14066: todo_llm = updated_todo_prompt | models["todo"].with_structured_output(ConversationalResponse, strict=True, method="json_schema")
+14140: routing_llm = supervisor_prompt | models["router"].with_structured_output(Router, strict=True, method="json_schema")
+14188: conv_routing_llm = supervisor_prompt | models["router"].with_structured_output(ConversationalResponse, strict=True, method="json_schema")
+14291: routing_llm = supervisor_prompt | models["router"].with_structured_output(Router, strict=True, method="json_schema")
+14633: def _safe_copy(src: PathlibPath, dst: PathlibPath, mode: Literal["copy","move","link"]) -> None:
+14832: _safe_copy(src, dest, copy_mode)
