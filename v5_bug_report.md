@@ -41,7 +41,3 @@ This report outlines potential bugs, logical errors, and edge cases identified i
     *   **Description:** The `emergency_reroute` state key does not appear to have a reducer or mechanism that clears it after it is read. If it is set once, it might stay set unless explicitly cleared by returning `{"emergency_reroute": None}`.
 
 ## Low Priority (Code cleanup and performance)
-
-*   **Missing explicit `None` handling in custom reducers**
-    *   **Context:** Custom reducers like `merge_dicts(a: Dict | None, b: Dict | None)` use truthy checks `if a: d.update(a)`.
-    *   **Description:** Pydantic validation handles this mostly, but explicit type checking (e.g., `if a is not None:`) could prevent edge cases where empty containers trigger incorrect logic.
