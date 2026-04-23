@@ -23,8 +23,8 @@ This report outlines potential bugs, logical errors, and edge cases identified i
     *   **Description:** The current report entry incorrectly labels this mapping as a typo. In the current implementation, `viz_join` first consumes `state["visualization_results"]` when it is a `VisualizationResults` object, and only falls back to `viz_results` otherwise. That means routing `VisualizationResults` to `viz_join` is compatible with the implemented join logic and does not inherently fail due to missing `viz_worker` tasks. The real concern here is maintainability: because `viz_join` supports multiple input shapes, the code should remain clearly documented so future changes do not accidentally break the intentional routing.
 
 *   **`viz_join` State Update Bug**
-    *   **Context:** `viz_join` pulls `all_viz = state.get("viz_results", [])`. Then it iterates and creates `DataVisualization` objects.
-    *   **Description:** It does not return or explicitly clear the `viz_results` list (e.g. `{"viz_results": []}`). Because `viz_results` uses `operator.add` as its reducer, the old results will persist in the state on the next iteration. If the visualizations are revised and redone, the old and new results will be merged, duplicating the data.
+    *   **Context:** `viz_join` checks `state.get("visualization_results")` first and only falls back to `state.get("viz_results", [])` before iterating and creating `DataVisualization` objects.
+    *   **Description:** It does not return or explicitly clear the fallback `viz_results` list (e.g. `{"viz_results": []}`). Because `viz_results` uses `operator.add` as its reducer, old results can persist in state and be merged with newer ones if the fallback path is used again or if later logic consults `viz_results`. If visualizations are revised and regenerated through that path, the old and new results may be combined, duplicating data.
 
 *   **`report_join` State Update Bug**
     *   **Context:** `report_join(state: State)` takes `state.get("written_sections", [])`, joins them into `draft`, and returns `{"report_draft": draft}`.
