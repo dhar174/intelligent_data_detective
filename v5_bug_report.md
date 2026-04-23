@@ -12,7 +12,7 @@ This report outlines potential bugs, logical errors, and edge cases identified i
     *   **Context:** `data_analysis_team_builder.add_conditional_edges(src, route_to_writer, {"file_writer": "file_writer", "supervisor": "supervisor", "END": END})` is added for `src` in `["file_writer", "supervisor", "report_packager"]`.
     *   **Description:** If `supervisor` routes to `route_to_writer` which routes back to `supervisor`, it creates an infinite loop if `report_done` and `report_ready` are not completely satisfied. Additionally, `file_writer` is in the `src` list; if `route_to_writer` returns `file_writer`, it creates a self-loop on `file_writer`.
 
-*   **`viz_evaluator` Routing Typo**
+*   **`viz_evaluator` routing bypasses supervisor**
     *   **Context:** `route_viz` returns `"Accepted"` or `"Revise"`. The mapping is `{"Accepted": "report_orchestrator", "Revise": "analyst"}`.
     *   **Description:** The evaluator routes directly to `report_orchestrator` or `analyst`. While this might be intentional, the rest of the architecture uses a hub-and-spoke model where workers return to `supervisor`. Bypassing the supervisor could skip state planning, progress reporting, or routing logic centralized in the supervisor.
 
