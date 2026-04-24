@@ -20,8 +20,8 @@
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
-- No CI pipeline — tests must be run manually.
-- `automation.instructions.md` is a scaffolded stub; no automated hooks exist yet.
+- CI now runs via `.github/workflows/copilot-setup-steps.yml` (`push`, `pull_request`, `workflow_dispatch`) for required-file checks, notebook smoke validation, tests, and formatting/lint checks; full notebook/API-key runs still require manual execution.
+- `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
 - The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.
 
 ## Validation status
