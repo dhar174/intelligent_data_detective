@@ -3,13 +3,15 @@ name: copilot-setup-steps
 on:
   pull_request:
   push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  verify-agent-stack:
+  copilot-setup-steps:
     runs-on: ubuntu-latest
     env:
       PYTHON_VERSION: "3.11"
@@ -87,6 +89,7 @@ jobs:
               seaborn \
               pydantic \
               python-dotenv \
+              pyyaml \
               tiktoken \
               openpyxl \
               tavily-python \
@@ -108,10 +111,17 @@ jobs:
             test_memory_lifecycle.py \
             -v
 
-      - name: Run known edge-case error handling tests
+      - name: Run error handling regression tests
+        run: |
+          python -m pytest test_error_handling_framework.py -v \
+            --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
+
+      - name: Run known edge-case signature test
         continue-on-error: true
         run: |
-          python -m pytest test_error_handling_framework.py -v
+          python -m pytest \
+            test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures \
+            -v
 
       - name: Check formatting
         run: |
@@ -128,6 +138,6 @@ jobs:
             echo "## CI workflow notes"
             echo "- \`python -m pytest -v\` runs the managed \`tests/\` tree via \`pytest.ini\`."
             echo "- Root-level regression suites are invoked explicitly because they are outside \`tests/\`."
-            echo "- \`test_error_handling_framework.py\` is allowed to continue on error because one edge-case failure is currently expected."
+            echo "- \`test_error_handling_framework.py\` runs as a required step except for the one known edge-case signature test, which is isolated in its own non-blocking step."
             echo "- Trajectory tests require \`OPENAI_API_KEY\` and are not part of this default CI workflow."
           } >> "$GITHUB_STEP_SUMMARY"

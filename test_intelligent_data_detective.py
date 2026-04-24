@@ -478,22 +478,18 @@ class TestBugFixes(unittest.TestCase):
         self.assertEqual(len(params), 1)
 
     def test_parentheses_balance_in_description(self):
-        """Test that description strings have balanced parentheses."""
-        # This tests the bug fix for unbalanced parentheses in field descriptions
-        # The original had `(start, end)` which created extra unmatched parentheses
-        # The numbered items 1), 2), 3) contribute 3 close parentheses
-        # (start, end) contributes 1 open and 1 close
-        # (inclusive) contributes 1 open and 1 close
-        # Total: 2 open, 5 close - this is actually the fixed state
+        """Test the real index field description is preserved in the schema."""
+        description = GetDataParams.model_fields["index"].description
 
-        # Let's test a simpler case that should be balanced
-        simple_description = "A tuple with start and end values for range selection."
-        simple_open = simple_description.count("(")
-        simple_close = simple_description.count(")")
+        self.assertIsNotNone(description)
+        self.assertIn("3) A 2-element tuple (start, end)", description)
+        self.assertIn("(inclusive)", description)
+
+        schema = GetDataParams.model_json_schema()
         self.assertEqual(
-            simple_open,
-            simple_close,
-            "Simple descriptions should have balanced parentheses",
+            schema["properties"]["index"]["description"],
+            description,
+            "The schema should preserve the real index field description",
         )
 
 
