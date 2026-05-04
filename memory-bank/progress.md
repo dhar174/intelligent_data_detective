@@ -9,7 +9,9 @@
 - [x] False-positive agent deleted (`frontend-experience-specialist`)
 - [x] IDD-specific agents created/customised
 - [x] Memory-bank and AGENTS.md enriched with real IDD content
-- [ ] Validator run and any warnings resolved
+- [x] W14 completion proof reached (`IDD_run_run_default_id-20260504-1338-b3079aea`)
+- [x] Final validators added and pushed (`validate_run.py`, `validate_artifact_quality.py`)
+- [x] Validator run and W14 warnings resolved
 - [ ] Maintenance drift reviewed against future repo changes
 
 ## What works
@@ -17,6 +19,8 @@
 - Error handling tests: **15/16 pass** (1 known edge-case failure — acceptable)
 - Memory test suites: all pass
 - Notebook execution: functional end-to-end (requires `OPENAI_API_KEY`; 6–25 min)
+- Patched notebook completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`
+- Final artifacts: canonical root `final_report.html`, `final_report.md`, `final_report.pdf`, resolving HTML images, parseable PDF, no marker `.txt` artifacts
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
@@ -26,6 +30,9 @@
 
 ## Validation status
 ```bash
+python -m pytest test_validate_run.py -q
+python validate_run.py --latest --log-path notebook_run_log.txt --window 180
+python validate_artifact_quality.py --latest
 python3 -m pytest test_intelligent_data_detective.py -v          # 22/22
 python3 -m pytest test_error_handling_framework.py -v            # 15/16
 python3 -m pytest -v                                             # all suites
@@ -33,7 +40,7 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 ```
 
 ## Last meaningful update
-[2026-04-20] Scaffolded and fully customised agent stack for IDD repo.
+W14 final proof and docs refresh: completion baseline `IDD_run_run_default_id-20260504-1338-b3079aea`, pushed patched notebook, production validator 12/12, artifact-quality validator 9/9.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
@@ -64,7 +71,7 @@ Root cause was twofold: (a) `langchain.agents.factory._resolve_schemas` iterates
 | Run | Outcome | Notes |
 |---|---|---|
 | 87 | + W9-SR-DROP — **7/8 GREEN** | viz=True report=True, 0 recoveries / 0 finalhop / 0 tracebacks. ❌ PDF only. ~21 min. |
-| 88 | + W10-PDF-POST — **8/8 GREEN** structurally, **HOLLOW** semantically | All structural gates pass; PDF emitted (1983 B). But report = 356-char placeholder, 0 sections, 1 viz embedded 5×, 25+ stub marker files in reports dir. **Potemkin pipeline.** Analyst output was rich and correct — content lost between analyst and report. Triggered Phase 6 pivot. |
+| 88 | + W10-PDF-POST — **8/8 GREEN** structurally, **HOLLOW** semantically | Historical hollow-report regression: report = 356-char placeholder, 0 sections, 1 viz embedded 5×, 25+ stub marker files in reports dir. Analyst output was rich and correct — content lost between analyst and report. Triggered Phase 6 pivot. |
 
 ### Acceptance bar — REPLACED (2026-04-23)
 The "8/8 CLEAN" structural success criterion is **OBSOLETE** as of Run 88. The new active bar is the **Phase 6 12-criteria content-quality gate**:
@@ -96,16 +103,10 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 ### Phase 6 milestones
 - [x] Run 87 structural pass (7/8) — W9-SR-DROP verified
 - [x] Run 88 structural pass (8/8) — W10-PDF-POST verified
-- [x] Wave 5 cutover (direct-to-notebook) + backups at `_wave5_backup_20260423-091557/`
+- [x] Historical Wave 5 cutover experiment; superseded by the W14 patcher-generated notebook workflow.
 - [x] GitHub epic + 7 sub-issues filed (#119 epic; #112–#118 phases A–G)
 - [x] Forensic agents launched (`forensic-pipeline`, `forensic-sr-persistence`) — results stranded; re-harvest pending
-- [ ] Phase A — forensic confirmation of RC1–RC5 (re-launch or direct inspection)
-- [ ] Phase B — telemetry-only instrumented run
-- [ ] Phase C — viz pipeline fix
-- [ ] Phase D — report pipeline fix (`Section.body` min-length validator, `written_sections` reducer audit)
-- [ ] Phase E — `file_writer` prompt rewrite + tool-list restriction + tool-call cap
-- [ ] Phase F — supervisor FINAL gate content-validation preconditions
-- [ ] Phase G — validation against 12-criteria (expect 5–8 convergence runs)
+- [x] Phase A-G investigation/fix sequence superseded by W14 completion proof.
 
 ### Known artifacts to inspect
 - `IDD_results/IDD_run_*-20260423-*/report.html` — verify 356-char placeholder
@@ -125,8 +126,8 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 - [x] Supervisor/file-writer routing now requires content readiness instead of boolean-only completion.
 - [x] File writer blocks insufficient final report content and uses metadata content correctly.
 - [x] Static and no-key validations pass.
-- [ ] Fresh keyed full notebook run.
-- [ ] Post-patch `validate_run.py` score reaches 12/12.
+- [x] Fresh full notebook run with API keys completed in later W14 proof.
+- [x] Post-patch `validate_run.py` score reaches 12/12 in W14 proof.
 
 ### Validation evidence
 ```bash
@@ -175,12 +176,12 @@ python validate_run.py --latest --log-path notebook_run_log.txt --window 45
 ### Latest quality-passing run
 | Run | Outcome | Notes |
 |---|---|---|
-| `IDD_run_run_default_id-20260430-1920-eaf0025a` | **12/12 production + 5/5 artifact quality PASS** | Valid parseable 5-page PDF; 3 embedded HTML images; 3 embedded Markdown images; non-ID-dominated charts; duplicate paragraph audit passes. |
+| `IDD_run_run_default_id-20260430-1920-eaf0025a` | **12/12 production + historical artifact-quality PASS** | Valid parseable 5-page PDF; 3 embedded HTML images; 3 embedded Markdown images; non-ID-dominated charts; duplicate paragraph audit passes. Superseded by the W14 9/9 artifact-quality bar. |
 
 ### Added quality gate
 ```bash
 python validate_artifact_quality.py --latest
-# SCORE: 5 / 5
+# Historical validator passed; current W14 bar is SCORE: 9 / 9
 ```
 
 Checks covered:
@@ -300,7 +301,7 @@ python validate_run.py --latest --log-path notebook_run_log.txt --window 180
 # SCORE: 12 / 12 (PASS)
 
 python validate_artifact_quality.py --latest
-# SCORE: 5 / 5
+# Historical validator passed; current W14 bar is SCORE: 9 / 9
 ```
 
 Full-log scan found no `recovered`, `failed_native`, `GraphRecursionError`, `BadRequestError`, `Traceback`, `ERROR`, `W2-BA-finalhop`, `W4-NORECOV`, `W13U-NORECOV`, `W13V2-NORECOV`, `placeholder.txt`, or `HTML report saved` markers.
@@ -316,7 +317,7 @@ Artifact inventory for the clean run:
 
 W13X naming correction: the report renderer now writes future final artifacts as `final_report.html`, `final_report.md`, and `final_report.pdf` instead of deriving filenames from the agent-produced outline title. The W13W baseline run was backfilled with those canonical aliases in both the run root and nested reports directory.
 
-W13Y root HTML image correction: root-level report HTML copies now rewrite nested report-relative image paths into run-root-relative paths, so `final_report.html` displays visualizations in a browser. `validate_artifact_quality.py` now includes a root HTML image-resolution gate. Re-validation remained green: `validate_run.py --latest --log-path notebook_run_log.txt --window 180` scored 12/12, and `validate_artifact_quality.py --latest` scored 6/6.
+W13Y root HTML image correction: root-level report HTML copies now rewrite nested report-relative image paths into run-root-relative paths, so `final_report.html` displays visualizations in a browser. The later W14 validator expands this into the current 9/9 artifact-quality bar.
 
 ### Remaining secondary work
 - Prompt-template parity: deferred/blocked as a secondary follow-up; revise static/factory prompts to match original prompt structure, tone, format, and wording while preserving rendered dynamic context.

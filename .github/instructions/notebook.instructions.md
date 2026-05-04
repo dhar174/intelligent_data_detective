@@ -7,12 +7,17 @@ applyTo: "**/*.ipynb"
 <!-- repo-agent-bootstrap:managed:start -->
 # Notebook editing instructions
 
-These rules apply to every edit of `IntelligentDataDetective_beta_v5.ipynb`.
+These rules apply to notebook behavior changes for IDD v5.
+
+Current workflow:
+- Edit `_patch_notebook.py`.
+- Regenerate `IntelligentDataDetective_beta_v5_patched.ipynb`.
+- Run validation against the patched notebook.
+- Do not hand-edit `IntelligentDataDetective_beta_v5_patched.ipynb`; it is a generated runnable artifact.
 
 ## Cell integrity
-- **Never delete or reorder cells.** The cell map is load-order dependent; renumbering breaks imports.
-- To add logic, append a new cell after the relevant section.
-- The notebook has 27 cells. Confirm the count before and after any structural change.
+- **Never delete or reorder existing source-notebook cells.** The cell map is load-order dependent; renumbering breaks imports.
+- The W14 patched notebook currently has 99 cells after regeneration. Confirm JSON validity and cell count after patcher changes.
 
 ## Model usage
 - Always use `MyChatOpenai` (Cell 5) — never `ChatOpenAI` directly.
@@ -56,9 +61,14 @@ def my_tool(df_id: str, ...) -> tuple[str, dict]:
 
 ## Validation after any notebook edit
 ```bash
-# Confirm cell count and JSON validity
-python3 -c "import json; c=json.load(open('IntelligentDataDetective_beta_v5.ipynb'))['cells']; print(len(c),'cells')"
+# Regenerate and confirm patched notebook validity
+python3 _patch_notebook.py
+python3 -c "import json; c=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(len(c),'cells')"
 # Run unit tests (no API keys needed)
 python3 -m pytest test_intelligent_data_detective.py -v
+# Run validator smoke tests
+python3 -m pytest test_validate_run.py -q
 ```
+
+For completion-impacting changes, run a full patched-notebook proof with `IDD_NOTEBOOK=IntelligentDataDetective_beta_v5_patched.ipynb` and validate with `validate_run.py` plus `validate_artifact_quality.py`.
 <!-- repo-agent-bootstrap:managed:end -->
