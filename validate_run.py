@@ -18,12 +18,10 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_LOG = REPO_ROOT / "notebook_run_log.txt"

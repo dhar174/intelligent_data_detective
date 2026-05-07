@@ -12,6 +12,8 @@
 - [x] W14 completion proof reached (`IDD_run_run_default_id-20260504-1338-b3079aea`)
 - [x] Final validators added and pushed (`validate_run.py`, `validate_artifact_quality.py`)
 - [x] Validator run and W14 warnings resolved
+- [x] Stale Phase 6 GitHub issues closed/rescoped after W14 proof (#112-#119 closed, #121 post-W14 hardening)
+- [x] No-key CI workflow added for validator/unit/integration checks
 - [ ] Maintenance drift reviewed against future repo changes
 
 ## What works
@@ -24,13 +26,15 @@
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
-- No CI pipeline — tests must be run manually.
-- `automation.instructions.md` is a scaffolded stub; no automated hooks exist yet.
+- Full API-key notebook proof is intentionally manual because it is expensive and credential-dependent.
+- Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
 - The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.
 
 ## Validation status
 ```bash
 python -m pytest test_validate_run.py -q
+python -m pytest test_validate_run.py tests/unit tests/integration -q
+python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
 python validate_run.py --latest --log-path notebook_run_log.txt --window 180
 python validate_artifact_quality.py --latest
 python3 -m pytest test_intelligent_data_detective.py -v          # 22/22
@@ -40,7 +44,7 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 ```
 
 ## Last meaningful update
-W14 final proof and docs refresh: completion baseline `IDD_run_run_default_id-20260504-1338-b3079aea`, pushed patched notebook, production validator 12/12, artifact-quality validator 9/9.
+Post-W14 repo hygiene: closed stale Phase 6 issues, rescoped #121 as defensive hardening, replaced the CI stub with no-key validation, and added a lightweight W14 patched-notebook marker regression test.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
