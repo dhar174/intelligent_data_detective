@@ -4,7 +4,7 @@
 # Architecture
 
 ## Overview
-The Intelligent Data Detective (IDD) is a multi-agent autonomous data analysis system implemented as a Jupyter-notebook pipeline. Current runnable proof work uses the committed generated notebook `IntelligentDataDetective_beta_v5_patched.ipynb` (99 cells in the W14 completion baseline), regenerated from `IntelligentDataDetective_beta_v5.ipynb` by `_patch_notebook.py`. It uses a **supervisor-worker LangGraph** pattern: a central supervisor routes a shared `State` object to specialised worker nodes, then collates results into HTML/Markdown/PDF final reports.
+The Intelligent Data Detective (IDD) is a multi-agent autonomous data analysis system implemented entirely in `IntelligentDataDetective_beta_v5.ipynb` (27 cells). It uses a **supervisor-worker LangGraph** pattern: a central supervisor routes a shared `State` object to specialised worker nodes, then collates results into an HTML/PDF report.
 
 For the full authoritative graph topology, see `idd_v4_state_graph.mmd`.
 
@@ -30,16 +30,6 @@ supervisor → EMERGENCY_MSG → __end__  (fatal error path)
 ```
 Terminal condition: `report_done ∧ report_ready ∧ already_wrote`
 
-## Current completion baseline
-The current completion baseline is `IDD_run_run_default_id-20260504-1338-b3079aea`, produced from `IntelligentDataDetective_beta_v5_patched.ipynb` with `IDD_SAMPLE_DATASET=retail_orders`.
-
-Validation bar:
-- `validate_run.py --latest --log-path notebook_run_log.txt --window 180` scores 12/12.
-- `validate_artifact_quality.py --latest` scores 9/9.
-- The run log has native structured-output markers for initial analysis, data cleaning, analysis, visualization, report orchestration, section writing, report packaging, and file writing.
-- The run log has zero recovery, final-hop, native-failure, path-normalization, recursion, or traceback markers.
-- Root `final_report.html`, `final_report.md`, and `final_report.pdf` exist; HTML embeds resolving visualizations and PDF is parseable.
-
 ## State flow (Cell 7)
 `State` is a TypedDict with reducer-annotated fields. Every node receives the full `State` dict and returns a partial update. Reductions happen automatically via LangGraph:
 
@@ -49,8 +39,6 @@ Validation bar:
 | `Annotated[list, operator.add]` | Accumulate items (messages, artifact paths) |
 | `Annotated[list, _reduce_plan_keep_sorted]` | Merge plan items, deduplicate by key, keep sorted |
 | `Annotated[str, ...]` plain | Last-write-wins (status flags, routing hints) |
-
-W14H protects visualization fan-in from last-writer loss by rebuilding `viz_join` from all available visualization channels (`viz_results`, `visualization_results`, `viz_paths`) plus discovered PNG artifacts before evaluation. Preserve this union behavior when editing visualization state.
 
 ## Key subsystems
 
@@ -72,23 +60,27 @@ typed_tool_list.append(tool_name)
 ### Memory system (Cells 14–15)
 Namespaced vector memory: `('memories', '<kind>')` where `kind` ∈ `{conversation, analysis, cleaning, visualization, insights, errors}`. TTL and limits from `memory_config.yaml`.
 
-### Report pipeline
-`report_orchestrator` decomposes the report into sections. `report_section_worker` nodes execute in parallel. `report_join` collates. `report_packager` returns native `ReportResults`, then the renderer writes canonical `final_report.md`, `final_report.html`, and `final_report.pdf`. `file_writer` produces a no-write final manifest over existing artifacts.
+### Report pipeline (Cells 22–24)
+`report_orchestrator` decomposes the report into sections. `report_section_worker` nodes execute in parallel. `report_join` collates. `report_packager` renders HTML+PDF. `file_writer` persists via `_resolve_artifact_path()`.
 
-## Notebook source and generation map
-| File/area | Content |
+## Notebook cell map
+| Cells | Content |
 |---|---|
-| `_patch_notebook.py` | Durable patch source for notebook behavior changes |
-| `IntelligentDataDetective_beta_v5.ipynb` | Source notebook input |
-| `IntelligentDataDetective_beta_v5_patched.ipynb` | Generated runnable W14 notebook |
-| Early notebook cells | Imports, environment setup, API keys, model wrappers, state definitions |
-| Tool/agent cells | Tool definitions, prompt construction, agent construction, graph compilation |
-| Final notebook cells | Dataset setup, execution entrypoint, artifact/report finalization |
+| 1–3 | Imports, environment setup, API keys |
+| 4–5 | `MyChatOpenai`, LLM factory helpers |
+| 6–7 | `State` TypedDict, reducers, `BaseNoExtrasModel` |
+| 8 | `DataFrameRegistry` |
+| 9–11 | Supervisor logic and routing |
+| 12–13 | Tool definitions and registration |
+| 14–15 | Memory subsystem |
+| 16–20 | Worker agents (cleaner, analyst, viz, report) |
+| 21 | Graph assembly and compilation |
+| 22–24 | Report orchestration and packaging |
+| 25–27 | File writer, entry point, sample invocation |
 
 ## Security / reliability considerations
 - All file writes go through `_resolve_artifact_path()` — no raw `open()` calls in tools.
 - `@handle_tool_errors` wraps every tool — exceptions surface as supervisor-readable messages, not crashes.
 - State reducers prevent accidental field overwrite across parallel branches.
 - `DataFrameRegistry` prevents large DataFrames being serialised into State.
-- Final report quality is validated by both production gates and artifact/readability gates, not by boolean completion flags alone.
 <!-- repo-agent-bootstrap:managed:end -->

@@ -4,7 +4,7 @@
 # AGENTS.md
 
 ## Project overview
-The **Intelligent Data Detective (IDD)** is a multi-agent autonomous data analysis system built with LangChain and LangGraph. The notebook system is maintained through `_patch_notebook.py`, which regenerates the committed runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb` (99 cells in the W14 completion baseline). The original `IntelligentDataDetective_beta_v5.ipynb` remains the source notebook input, but current runnable proof work targets the patched notebook.
+The **Intelligent Data Detective (IDD)** is a multi-agent autonomous data analysis system built with LangChain and LangGraph. All logic lives inside one Jupyter notebook: `IntelligentDataDetective_beta_v5.ipynb` (27 cells, ~11 k lines). There is no separate Python package.
 
 Agents execute a supervisor-worker pipeline:
 ```
@@ -19,10 +19,7 @@ Primary goals:
 
 ## Repo map
 Key files:
-- `_patch_notebook.py` — patch source for notebook changes; regenerates the patched notebook
-- `IntelligentDataDetective_beta_v5_patched.ipynb` — committed runnable W14 completion notebook
-- `IntelligentDataDetective_beta_v5.ipynb` — source notebook input for the patcher
-- `validate_run.py`, `validate_artifact_quality.py` — final production/artifact proof validators
+- `IntelligentDataDetective_beta_v5.ipynb` — **source of truth** for the entire system
 - `memory_enhancements.py` — standalone memory lifecycle/categorization module
 - `memory_config.yaml` — per-agent memory namespace TTL and limits
 - `idd_v4_state_graph.mmd` — authoritative LangGraph state graph topology
@@ -40,7 +37,7 @@ Important directories:
 ## How to work in this repo
 Before making changes:
 1. Read `memory-bank/activeContext.md` and `memory-bank/progress.md`.
-2. For notebook behavior changes, edit `_patch_notebook.py`, regenerate `IntelligentDataDetective_beta_v5_patched.ipynb`, and run the relevant validators.
+2. Check the cell map in `.github/copilot-instructions.md` when the task involves the notebook.
 3. Inspect `.github/agents/` and `.github/instructions/` before adding new guidance files.
 
 ## Build, test, lint
@@ -61,13 +58,7 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 
 # Full workflow (requires API keys, 6–25 minutes — never cancel)
 export OPENAI_API_KEY="your-key"
-export IDD_NOTEBOOK="IntelligentDataDetective_beta_v5_patched.ipynb"
-export IDD_SAMPLE_DATASET="retail_orders"
-python run_notebook_live.py
-
-# Final proof validators
-python validate_run.py --latest --log-path notebook_run_log.txt --window 180
-python validate_artifact_quality.py --latest
+jupyter notebook IntelligentDataDetective_beta_v5.ipynb
 ```
 
 ## Engineering conventions
@@ -81,7 +72,6 @@ python validate_artifact_quality.py --latest
 - **No `src/` directory**: all Python files are at repo root.
 
 ## Constraints / do-not rules
-- Do not edit the generated patched notebook directly; make notebook behavior changes through `_patch_notebook.py`.
 - Do not delete or reorder notebook cells.
 - Do not bypass `DataFrameRegistry` by passing DataFrames directly.
 - Do not hardcode memory TTL or limits — use `memory_config.yaml`.
@@ -90,8 +80,7 @@ python validate_artifact_quality.py --latest
 
 ## Definition of done
 - Relevant tests pass (see counts above).
-- Patched notebook regenerates successfully and keeps the expected W14 99-cell structure unless the task explicitly changes it.
-- Completion-impacting notebook changes preserve the W14 baseline gates: `validate_run.py` 12/12, `validate_artifact_quality.py` 9/9, no recovery/final-hop/path-normalization markers, and complete final artifacts.
+- Notebook cell count unchanged after edits (unless new cells were appended).
 - `memory-bank/` or `docs/` files refreshed when architecture or contributor expectations change.
 - The final diff stays within the requested scope.
 <!-- repo-agent-bootstrap:managed:end -->
