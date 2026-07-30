@@ -123,7 +123,10 @@ def execute_notebook(resume: bool = False):
     import threading as _threading
 
     _log_file = REPO_ROOT / "notebook_run_log.txt"
-    _log_file.write_text("", encoding="utf-8")  # truncate / create
+    try:
+        _log_file.write_text("", encoding="utf-8")  # truncate / create
+    except PermissionError:
+        pass  # file may be locked on Windows; the tail thread will still read from it
     _stop_tail = _threading.Event()
 
     def _tail_log_to_stdout(log_path: Path, stop_evt: _threading.Event) -> None:
