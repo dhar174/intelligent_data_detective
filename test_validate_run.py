@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,6 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
 import validate_run as vr  # noqa: E402
+
+PATCHED_NOTEBOOK = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
 
 
 RUN88 = REPO_ROOT / "IDD_results" / "IDD_run_run_default_id-20260423-1026-3ecefbee"
@@ -153,9 +155,12 @@ def test_marker_file_detection(tmp_path):
 def test_find_latest_run_picks_newest(tmp_path):
     base = tmp_path / "IDD_results"
     base.mkdir()
-    a = base / "IDD_run_old"; a.mkdir()
-    b = base / "IDD_run_new"; b.mkdir()
-    c = base / "not_a_run"; c.mkdir()
+    a = base / "IDD_run_old"
+    a.mkdir()
+    b = base / "IDD_run_new"
+    b.mkdir()
+    c = base / "not_a_run"
+    c.mkdir()
     os.utime(a, (1_000_000, 1_000_000))
     os.utime(b, (2_000_000, 2_000_000))
     os.utime(c, (3_000_000, 3_000_000))  # not matching prefix
@@ -170,9 +175,27 @@ def test_render_json_shape(tmp_path):
     # Minimal empty run dir — every criterion will fail, but output must be
     # well-formed JSON with the required keys.
     crits = vr.evaluate(tmp_path, LOG, window_min=10**6)
-    import json as _json
-    out = _json.loads(vr.render_json(tmp_path, crits))
+    out = json.loads(vr.render_json(tmp_path, crits))
     assert set(out.keys()) >= {"run", "score", "total", "criteria"}
     assert out["total"] == 12
     for c in out["criteria"]:
         assert set(c.keys()) == {"id", "name", "pass", "detail"}
+
+
+# --------------------------------------------------------------------------
+# W14 lightweight regression proof.
+# --------------------------------------------------------------------------
+
+def test_w14_patched_notebook_is_committed_and_marked():
+    assert PATCHED_NOTEBOOK.is_file(), "patched W14 notebook must stay committed"
+    notebook = json.loads(PATCHED_NOTEBOOK.read_text(encoding="utf-8"))
+    cells = notebook.get("cells") or []
+    assert len(cells) >= 90, "patched notebook should contain the generated W14 cell set"
+    source = "\n".join(
+        "".join(cell.get("source") or [])
+        for cell in cells
+        if cell.get("cell_type") == "code"
+    )
+    assert "W14G-FW-DEFERRED-VIZ" in source
+    assert "W14H-VIZ-JOIN-UNION" in source
+    assert "retail_orders" in source

@@ -258,7 +258,14 @@ The proof run `IDD_run_run_default_id-20260504-1338-b3079aea` completed on the d
    python validate_artifact_quality.py --latest
    ```
 
-3. **Regenerate the patched notebook after notebook behavior changes**:
+3. **Run no-key regression checks before expensive notebook proofs**:
+   ```bash
+   python -m pytest test_validate_run.py tests/unit tests/integration -q
+   python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
+   ```
+   These checks verify validator behavior, the committed W14 patched notebook markers, and the importable no-key core without requiring API credentials.
+
+4. **Regenerate the patched notebook after notebook behavior changes**:
    ```bash
    python _patch_notebook.py
    python -m pytest test_validate_run.py -q
