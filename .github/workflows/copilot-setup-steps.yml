@@ -1,37 +1,35 @@
 name: copilot-setup-steps
 
 on:
+  workflow_dispatch:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   copilot-setup-steps:
+    name: No-key validation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-      PYTHON_VERSION: "3.11"
+      PYTHON_VERSION: "3.12"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Cache pip downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('.github/workflows/copilot-setup-steps.yml', 'requirements.txt', 'requirements-dev.txt', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
+          cache: pip
 
       - name: Check required project files
         run: |
@@ -43,6 +41,9 @@ jobs:
             "test_memory_categorization.py"
             "test_memory_integration.py"
             "test_memory_lifecycle.py"
+            "test_validate_run.py"
+            "validate_run.py"
+            "validate_artifact_quality.py"
           )
           for path in "${required_files[@]}"; do
             if [ ! -e "$path" ]; then
@@ -65,7 +66,7 @@ jobs:
           print(f"Notebook smoke check passed: {len(cells)} cells found.")
           PY
 
-      - name: Install dependencies
+      - name: Install validation dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
@@ -94,13 +95,13 @@ jobs:
               openpyxl \
               tavily-python \
               chromadb \
-              joblib
+              joblib \
+              typing_extensions
           fi
           pip install pytest black flake8
 
-      - name: Run tests in tests/
-        run: |
-          python -m pytest -v
+      - name: Run no-key unit and integration tests
+        run: python -m pytest test_validate_run.py tests/unit tests/integration -q
 
       - name: Run root regression tests
         run: |
@@ -127,16 +128,25 @@ jobs:
         run: |
           black --check test_intelligent_data_detective.py test_error_handling_framework.py
 
-      - name: Run flake8
+      - name: Run flake8 on root regression test file
         run: |
           flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
+
+      - name: Lint validation scripts
+        run: >
+          python -m flake8
+          validate_run.py
+          validate_artifact_quality.py
+          test_validate_run.py
+          --max-line-length=120
+          --extend-ignore=E203,W503
 
       - name: Summarize CI caveats
         if: always()
         run: |
           {
             echo "## CI workflow notes"
-            echo "- \`python -m pytest -v\` runs the managed \`tests/\` tree via \`pytest.ini\`."
+            echo "- No-key validator/unit/integration coverage runs via \`python -m pytest test_validate_run.py tests/unit tests/integration -q\`."
             echo "- Root-level regression suites are invoked explicitly because they are outside \`tests/\`."
             echo "- \`test_error_handling_framework.py\` runs as a required step except for the one known edge-case signature test, which is isolated in its own non-blocking step."
             echo "- Trajectory tests require \`OPENAI_API_KEY\` and are not part of this default CI workflow."

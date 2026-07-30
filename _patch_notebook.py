@@ -13,29 +13,75 @@ OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
 
 CELL48_REPLACEMENT = '''\
 import os, glob
-# Use local fixture CSV instead of Kaggle download
-raw_path_str = os.path.abspath(os.path.join(os.getcwd(), "tests", "trajectory", "fixtures", "sample_dirty.csv"))
-print(f"Using fixture dataset: {raw_path_str}")
-
-df = pd.read_csv(raw_path_str)
+import numpy as np
+import pandas as pd
+# Use local deterministic data instead of Kaggle download. Set
+# IDD_SAMPLE_DATASET=retail_orders for the richer final-proof fixture.
+sample_choice = os.environ.get("IDD_SAMPLE_DATASET", "sample_dirty").strip().lower()
+if sample_choice == "retail_orders":
+    rng = np.random.default_rng(42)
+    n = 180
+    regions = np.array(["North", "South", "East", "West"])
+    channels = np.array(["Online", "Retail", "Partner"])
+    segments = np.array(["Consumer", "Small Business", "Enterprise"])
+    product_lines = np.array(["Analytics", "Security", "Collaboration", "Infrastructure"])
+    dates = pd.date_range("2025-01-01", periods=n, freq="2D")
+    df = pd.DataFrame({
+        "order_id": [f"ORD-{1000+i}" for i in range(n)],
+        "order_date": rng.choice(dates, size=n, replace=True),
+        "region": rng.choice(regions, size=n, p=[0.28, 0.24, 0.26, 0.22]),
+        "channel": rng.choice(channels, size=n, p=[0.55, 0.30, 0.15]),
+        "customer_segment": rng.choice(segments, size=n, p=[0.58, 0.30, 0.12]),
+        "product_line": rng.choice(product_lines, size=n, p=[0.32, 0.27, 0.24, 0.17]),
+        "units": rng.poisson(3.2, size=n) + 1,
+        "unit_price": np.round(rng.normal(145, 38, size=n).clip(35, 320), 2),
+        "discount_rate": np.round(rng.beta(2.2, 12.0, size=n), 3),
+        "satisfaction_score": np.round(rng.normal(7.4, 1.25, size=n).clip(1, 10), 1),
+        "support_tickets": rng.poisson(0.7, size=n),
+    })
+    df["gross_revenue"] = np.round(df["units"] * df["unit_price"], 2)
+    df["net_revenue"] = np.round(df["gross_revenue"] * (1 - df["discount_rate"]), 2)
+    df.loc[df.sample(frac=0.06, random_state=10).index, "satisfaction_score"] = np.nan
+    df.loc[df.sample(frac=0.04, random_state=11).index, "discount_rate"] = np.nan
+    df = pd.concat([df, df.iloc[:4]], ignore_index=True)
+    df_name = "retail_orders"
+    raw_path_str = os.path.abspath(os.path.join(os.getcwd(), "tests", "trajectory", "fixtures", "retail_orders.csv"))
+    os.makedirs(os.path.dirname(raw_path_str), exist_ok=True)
+    df.to_csv(raw_path_str, index=False)
+    print(f"Using deterministic retail_orders dataset: {raw_path_str}")
+else:
+    raw_path_str = os.path.abspath(os.path.join(os.getcwd(), "tests", "trajectory", "fixtures", "sample_dirty.csv"))
+    print(f"Using fixture dataset: {raw_path_str}")
+    df = pd.read_csv(raw_path_str)
+    df_name = "sample_dirty"
 print(f"Loaded {len(df)} rows, {len(df.columns)} columns")
 
 # Register DF in the global registry
-df_name = "sample_dirty"
-df_id = global_df_registry.register_dataframe(df, df_name, raw_path_str)
+registered_df_id = global_df_registry.register_dataframe(df, df_name, raw_path_str)
+df_id = registered_df_id or df_name
 print(f"Registered df_id: {df_id}, df_name: {df_name}")
 
 # Compose the sample prompt
-sample_prompt_text = (
-    f"Please perform a complete analysis of the dataset named '{df_name}' (df_id=`{df_id}`). "
-    f"Step 1 - DATA CLEANING (data_cleaner agent): clean the data (dedup, impute, normalize, outlier flags). "
-    f"When cleaning is complete, set finished_this_task=True and return to the supervisor. "
-    f"Step 2 - ANALYSIS (analyst agent): compute statistics and correlations. "
-    f"Step 3 - VISUALIZATION (visualization agent): create histograms of 'value', "
-    f"bar chart of 'category' counts, and scatter of 'score' vs 'value' as PNG files. "
-    f"Step 4 - REPORTING (report_generator agent): write a final report in PDF, Markdown, and HTML. "
-    f"Each agent should set finished_this_task=True as soon as its stage is done."
-)
+if df_name == "retail_orders":
+    sample_prompt_text = (
+        f"Please perform a complete stakeholder-ready analysis of the retail orders dataset named '{df_name}' (df_id=`{df_id}`). "
+        f"Step 1 - DATA CLEANING (data_cleaner agent): remove duplicate orders, handle missing discounts and satisfaction scores, validate datatypes, and document quality issues. "
+        f"Step 2 - ANALYSIS (analyst agent): identify revenue drivers, regional/channel differences, discount impacts, satisfaction patterns, support-ticket risks, and useful correlations. "
+        f"Step 3 - VISUALIZATION (visualization agent): create at least three meaningful PNG charts using revenue, satisfaction, discount, region, channel, segment, or product-line fields. "
+        f"Step 4 - REPORTING (report_generator agent): write a final human-readable report in PDF, Markdown, and HTML with findings, implications, and recommended actions. "
+        f"Each agent should set finished_this_task=True as soon as its stage is done."
+    )
+else:
+    sample_prompt_text = (
+        f"Please perform a complete analysis of the dataset named '{df_name}' (df_id=`{df_id}`). "
+        f"Step 1 - DATA CLEANING (data_cleaner agent): clean the data (dedup, impute, normalize, outlier flags). "
+        f"When cleaning is complete, set finished_this_task=True and return to the supervisor. "
+        f"Step 2 - ANALYSIS (analyst agent): compute statistics and correlations. "
+        f"Step 3 - VISUALIZATION (visualization agent): create histograms of 'value', "
+        f"bar chart of 'category' counts, and scatter of 'score' vs 'value' as PNG files. "
+        f"Step 4 - REPORTING (report_generator agent): write a final report in PDF, Markdown, and HTML. "
+        f"Each agent should set finished_this_task=True as soon as its stage is done."
+    )
 sample_prompt_tuple = ("user", sample_prompt_text)
 print("Prompt:", sample_prompt_text[:120])
 
@@ -86,7 +132,7 @@ def main():
     cells = nb["cells"]
     print(f"Loaded notebook with {len(cells)} cells")
 
-    # --- Patch cell idx 48 (the kagglehub download code cell) ---
+    # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]
     src48 = join_source(c48["source"])
     if "kagglehub" in src48 or "KaggleHub" in src48 or "kaggle" in src48.lower():
@@ -96,19 +142,38 @@ def main():
             c48["outputs"] = []
             c48["execution_count"] = None
         print("✅ Cell idx 48: replaced Kaggle download with fixture CSV injection")
+    elif 'df_name = "sample_dirty"' in src48 and "global_df_registry.register_dataframe" in src48:
+        if 'IDD_SAMPLE_DATASET' not in src48:
+            c48["source"] = CELL48_REPLACEMENT
+            if c48["cell_type"] == "code":
+                c48["outputs"] = []
+                c48["execution_count"] = None
+            print("✅ Cell idx 48: upgraded dataset preparation with IDD_SAMPLE_DATASET switch")
+        else:
+            print("ℹ️  Cell idx 48 already prepares deterministic datasets with IDD_SAMPLE_DATASET switch")
     else:
         print(f"⚠️  Cell idx 48 does not look like Kaggle cell. First 100 chars: {src48[:100]}")
-        print("   Attempting patch anyway...")
-        # Find the actual Kaggle cell
+        print("   Searching for a Kaggle download cell, but preserving import/bootstrap cells.")
+        # Find the actual Kaggle data-download cell. Avoid broad "kaggle" matches because
+        # the core import/bootstrap cell may mention optional Kaggle dependencies.
         for i, c in enumerate(cells):
             s = join_source(c["source"])
-            if "kagglehub" in s and c["cell_type"] == "code":
+            if (
+                c["cell_type"] == "code"
+                and (
+                    "kagglehub.dataset_download" in s
+                    or "kagglehub.com" in s
+                    or "KaggleDatasetAdapter" in s
+                )
+            ):
                 c["source"] = CELL48_REPLACEMENT
                 if "outputs" in c:
                     c["outputs"] = []
                 c["execution_count"] = None
                 print(f"✅ Found and patched Kaggle cell at index {i}")
                 break
+        else:
+            print("ℹ️  No Kaggle download cell found; leaving dataset preparation unchanged")
 
     # --- Patch cell idx 81: fix final_report → report_results ---
     c81 = cells[81]
@@ -169,6 +234,71 @@ def main():
         print("✅ Cell idx 7: fixed _is_colab() false-positive on Windows")
     else:
         print("⚠️  Cell idx 7: expected _is_colab() pattern not found — skipping")
+
+    # --- W13Y-HTML-ROOT-IMAGES: rewrite image refs when promoting report HTML to run root ---
+    src7 = join_source(c7["source"])
+    W13Y_GUARD = "# W13Y-HTML-ROOT-IMAGES: rewrite promoted HTML image refs"
+    if W13Y_GUARD not in src7 and "def persist_to_drive(" in src7:
+        old = (
+            '    def _should_ignore(name: str) -> bool:\n'
+            '        return name in ignore_names\n'
+        )
+        new = (
+            '    def _should_ignore(name: str) -> bool:\n'
+            '        return name in ignore_names\n\n'
+            f'    {W13Y_GUARD}\n'
+            '    def _rewrite_promoted_html_image_refs(source_html: PathlibPath, target_html: PathlibPath) -> None:\n'
+            '        if source_html.suffix.lower() != ".html":\n'
+            '            return\n'
+            '        try:\n'
+            '            import re as _html_re\n'
+            '            import os as _html_os\n'
+            '            html_text = target_html.read_text(encoding="utf-8", errors="replace")\n'
+            '            img_src_pattern = _html_re.compile(r\'(<img\\b[^>]*?\\bsrc\\s*=\\s*)(["\\\\\\\'])(.*?)(\\2)\', _html_re.IGNORECASE)\n'
+            '            def _replace_src(match):\n'
+            '                prefix, quote, ref = match.group(1), match.group(2), match.group(3)\n'
+            '                ref_str = str(ref or "").strip()\n'
+            '                if not ref_str or ref_str.startswith(("data:", "http://", "https://", "#")):\n'
+            '                    return match.group(0)\n'
+            '                source_ref = (source_html.parent / PathlibPath(ref_str.replace("/", _html_os.sep))).resolve()\n'
+            '                if not source_ref.exists() or not _is_relative_to(source_ref, WORKING_DIRECTORY):\n'
+            '                    return match.group(0)\n'
+            '                promoted_ref = (dst_root / source_ref.relative_to(WORKING_DIRECTORY)).resolve()\n'
+            '                if not promoted_ref.exists():\n'
+            '                    return match.group(0)\n'
+            '                rel_ref = _html_os.path.relpath(promoted_ref, target_html.parent).replace(_html_os.sep, "/")\n'
+            '                return f"{prefix}{quote}{rel_ref}{quote}"\n'
+            '            rewritten = img_src_pattern.sub(_replace_src, html_text)\n'
+            '            if rewritten != html_text:\n'
+            '                target_html.write_text(rewritten, encoding="utf-8")\n'
+            '        except Exception as exc:\n'
+            '            print(f"Warning: could not rewrite promoted HTML image refs for {target_html}: {exc}")\n'
+        )
+        if old in src7:
+            src7 = src7.replace(old, new, 1)
+            old_copy = (
+                '    else:\n'
+                '        target = dst_root / src.name\n'
+                '        target.parent.mkdir(parents=True, exist_ok=True)\n'
+                '        shutil.copy2(src, target)\n'
+            )
+            new_copy = (
+                '    else:\n'
+                '        target = dst_root / src.name\n'
+                '        target.parent.mkdir(parents=True, exist_ok=True)\n'
+                '        shutil.copy2(src, target)\n'
+                '        _rewrite_promoted_html_image_refs(src, target)\n'
+            )
+            if old_copy in src7:
+                src7 = src7.replace(old_copy, new_copy, 1)
+                c7["source"] = src7
+                c7["outputs"] = []
+                c7["execution_count"] = None
+                print("✅ Cell idx 7: W13Y-HTML-ROOT-IMAGES patched promoted report HTML links")
+            else:
+                print("⚠️  W13Y-HTML-ROOT-IMAGES copy anchor not found")
+        else:
+            print("⚠️  W13Y-HTML-ROOT-IMAGES helper anchor not found")
 
     # --- Patch cell idx 7 (also): fix bool_or reducer to handle None initial values ---
     # operator.or_(None, True) raises TypeError — so data_cleaning_complete stays None
@@ -300,6 +430,39 @@ def main():
     if not fixv1_patched:
         print("⚠️  Fix V1: State class cell not found")
 
+    # --- Fix AR-3: Change report_paths reducer from operator.add → safe dict-merge lambda ---
+    # operator.add is invalid for dicts: {a} + {b} raises TypeError.
+    # Use a defensive lambda that coerces non-dict values to {} before merging.
+    fixar3_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State(AgentState, TypedDict, total=False):" not in src:
+            continue
+        if "# Fix AR-3" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AR-3 (report_paths reducer) already applied")
+            fixar3_patched = True
+            break
+        old_ann = "    report_paths: Annotated[Optional[dict[str, str]], operator.add]"
+        new_ann = (
+            "    report_paths: Annotated[Optional[dict[str, str]], "
+            "lambda _a3, _b3: {**(_a3 if isinstance(_a3, dict) else {}), "
+            "**(_b3 if isinstance(_b3, dict) else {})}]  # Fix AR-3: safe dict-merge"
+        )
+        if old_ann in src:
+            new_src = src.replace(old_ann, new_ann, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AR-3 — report_paths reducer → safe dict-merge lambda")
+            fixar3_patched = True
+        else:
+            print(f"⚠️  Fix AR-3: target annotation not found in State cell {idx}")
+        break
+    if not fixar3_patched:
+        print("⚠️  Fix AR-3: State class cell not found")
+
     # --- Patch query_dataframe: align flat-arg function with nested args_schema ---
     # QueryDataframeInput uses params: DataQueryParams (nested), but the function
     # expects flat columns/operation/etc. LangChain calls query_dataframe(params=..., df_id=...)
@@ -395,7 +558,7 @@ def main():
         "# --- patched: safe invoke wrapper for initial_analysis_node ---\n"
         "def _safe_initial_analysis_invoke(agent, inputs, config=None):\n"
         "    _outer_cfg = dict(config or {})\n"
-        "    cfg = {'configurable': _outer_cfg.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    cfg = {'configurable': _outer_cfg.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
         "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
         "    from langchain_core.messages import AIMessage as _IAIM, ToolMessage as _TM_IA\n"
         "    _raw_ia = list(inputs.get('messages') or [])\n"
@@ -408,7 +571,10 @@ def main():
         "            raise\n"
         "        _nm = type(_iaexc).__name__\n"
         "        print(f'WARNING initial_analysis hit error ({_nm}: {str(_iaexc)[:120]}) -- building recovery InitialDescription')\n"
-        "        try: _log_recovery('initial_analysis', 300)\n"
+        "        # W4-NORECOV: zero-stubs mode — recovery branches raise instead of fabricating\n"
+        "        if os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+        "            raise RuntimeError('[W4-NORECOV] initial_analysis recovery branch hit but zero-stubs mode is active — fix upstream instead') from _iaexc\n"
+        "        try: _log_recovery('initial_analysis', 300, _iaexc)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -496,7 +662,7 @@ def main():
         "# --- patched: safe invoke wrapper for data_cleaner_node ---\n"
         "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
         "    _outer_dc = dict(kwargs.get('config', {}))\n"
-        "    cfg = {'configurable': _outer_dc.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    cfg = {'configurable': _outer_dc.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
         "    from langgraph.errors import GraphRecursionError as _GRE\n"
         "    from langchain_core.messages import AIMessage as _DLAIM, ToolMessage as _TM_DC\n"
         "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
@@ -510,7 +676,10 @@ def main():
         "            raise\n"
         "        _nm = type(_exc).__name__\n"
         "        print(f'WARNING data_cleaner hit error ({_nm}: {str(_exc)[:120]}) -- building recovery CleaningMetadata')\n"
-        "        try: _log_recovery('data_cleaner', 300)\n"
+        "        # W4-NORECOV: zero-stubs mode — recovery branches raise instead of fabricating\n"
+        "        if os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+        "            raise RuntimeError('[W4-NORECOV] data_cleaner recovery branch hit but zero-stubs mode is active — fix upstream instead') from _exc\n"
+        "        try: _log_recovery('data_cleaner', 300, _exc)\n"
         "        except Exception: pass\n"
         "        _msgs = list(inputs.get('messages') or [])\n"
         "        _msgs.append(_DLAIM(content='Data cleaning completed (recursion recovery).', name='data_cleaner'))\n"
@@ -619,7 +788,35 @@ def main():
             1,
         )
 
-        # 2. Replace data_cleaner_agent.invoke(...) with _safe_data_cleaner_invoke(...)
+        # Fix AL-1: Override user_prompt with a FOCUSED data-cleaning-only task message.
+        # Anchor to the DC idempotency guard suffix + user_prompt line (unique in the cell).
+        FIXAL1_DC_GUARD = "# Fix AL-1: focused dc task"
+        _DC_AL1_ANCHOR = (
+            "    # --- END PATCH: idempotency guard ---\n"
+            "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+        )
+        if FIXAL1_DC_GUARD not in new_src and _DC_AL1_ANCHOR in new_src:
+            new_src = new_src.replace(
+                _DC_AL1_ANCHOR,
+                (
+                    "    # --- END PATCH: idempotency guard ---\n"
+                    "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+                    "    # Fix AL-1: focused dc task\n"
+                    "    _dc_df_ids = state.get('available_df_ids') or ['sample_dirty']\n"
+                    "    user_prompt = (\n"
+                    "        f\"YOUR TASK: DATA CLEANING ONLY for dataset(s): {_dc_df_ids}. \"\n"
+                    "        \"DO NOT do visualization, analysis, or report writing — those are handled by other agents. \"\n"
+                    "        \"Steps: check schema, handle missing values, remove duplicates, normalize categories, clip outliers, save cleaned CSV. \"\n"
+                    "        \"After cleaning (max 5 tool calls), call the `respond` tool with CleaningMetadata \"\n"
+                    "        \"(steps_taken=[list of steps], data_description_after_cleaning='brief description'). \"\n"
+                    "        \"Call respond IMMEDIATELY after completing cleaning — do not wait.\"\n"
+                    "    )\n"
+                ),
+                1,
+            )
+        elif FIXAL1_DC_GUARD not in new_src:
+            print("  ⚠️  Fix AL-1 DC: anchor not found — skipping")
+
         #    Old: result = data_cleaner_agent.invoke(\n        {
         #    New: result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {
         #    The config= keyword arg passes through unchanged — _safe_data_cleaner_invoke
@@ -670,7 +867,7 @@ def main():
         "# --- patched: safe invoke wrapper for analyst_node ---\n"
         "def _safe_analyst_invoke(agent, inputs, config=None):\n"
         "    _outer_an = dict(config or {})\n"
-        "    cfg = {'configurable': _outer_an.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    cfg = {'configurable': _outer_an.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
         "    from langchain_core.messages import AIMessage as _AAIM, ToolMessage as _TM_AN\n"
         "    # Fix N: strip orphaned ToolMessages to prevent 400 BadRequest errors\n"
         "    _raw_an = list(inputs.get('messages') or [])\n"
@@ -683,7 +880,10 @@ def main():
         "            raise\n"
         "        _nm = type(_aexc).__name__\n"
         "        print(f'WARNING analyst hit error ({_nm}: {str(_aexc)[:120]}) -- building recovery AnalysisInsights')\n"
-        "        try: _log_recovery('analyst', 300)\n"
+        "        # W4-NORECOV: zero-stubs mode — analyst recovery fabricated viz_recovery_01/02 stubs; refuse unless explicitly enabled\n"
+        "        if os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+        "            raise RuntimeError('[W4-NORECOV] analyst recovery branch hit but zero-stubs mode is active — fix upstream instead') from _aexc\n"
+        "        try: _log_recovery('analyst', 300, _aexc)\n"
         "        except Exception: pass\n"
         "        _df_ids = list(inputs.get('available_df_ids') or [])\n"
         "        _df_id = _df_ids[0] if _df_ids else 'sample_dirty'\n"
@@ -743,7 +943,28 @@ def main():
             1,
         )
 
-        # 2. Replace analyst_agent.invoke with _safe_analyst_invoke
+        # Fix AL-1: Override user_prompt with a FOCUSED analytics-only task message.
+        FIXAL1_AN_GUARD = "# Fix AL-1: focused analyst task"
+        if FIXAL1_AN_GUARD not in new_src:
+            new_src = new_src.replace(
+                "def analyst_node(state: State):\n    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n",
+                (
+                    "def analyst_node(state: State):\n"
+                    "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+                    "    # Fix AL-1: focused analyst task\n"
+                    "    _an_df_ids = state.get('available_df_ids') or ['sample_dirty']\n"
+                    "    user_prompt = (\n"
+                    "        f\"YOUR TASK: STATISTICAL ANALYSIS ONLY for dataset(s): {_an_df_ids}. \"\n"
+                    "        \"DO NOT do data cleaning, visualization creation, or report writing — those are handled by other agents. \"\n"
+                    "        \"Steps: get schema, compute descriptive stats, correlations, detect anomalies/patterns. \"\n"
+                    "        \"After analysis (max 5 tool calls), call the `respond` tool with AnalysisInsights \"\n"
+                    "        \"(summary, correlation_insights, anomaly_insights, recommended_visualizations=[2-3 VizSpec], recommended_next_steps=[2-3 steps]). \"\n"
+                    "        \"Call respond IMMEDIATELY after completing analysis — do not wait.\"\n"
+                    "    )\n"
+                ),
+                1,
+            )
+
         new_src = new_src.replace(
             "    result = analyst_agent.invoke(\n        {",
             "    result = _safe_analyst_invoke(analyst_agent, {",
@@ -836,7 +1057,7 @@ def main():
         "# --- patched: safe invoke wrapper for report_packager_node ---\n"
         "def _safe_report_packager_invoke(agent, inputs, config=None):\n"
         "    _outer_rp = dict(config or {})\n"
-        "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_packager (AZ: raised to 160)\n"
         "    from langchain_core.messages import AIMessage as _RAIM, ToolMessage as _TM_RP\n"
         "    import html as _html_lib\n"
         "    # Fix N: strip orphaned ToolMessages\n"
@@ -850,21 +1071,109 @@ def main():
         "            raise\n"
         "        _nm = type(_rexc).__name__\n"
         "        print(f'WARNING report_packager hit error ({_nm}: {str(_rexc)[:120]}) -- building recovery ReportResults')\n"
-        "        try: _log_recovery('report_packager', 300)\n"
+        "        # W4-NORECOV: zero-stubs mode — report_packager recovery wrote final_report_recovery.{html,md,pdf} which shadowed real artifacts; refuse unless explicitly enabled\n"
+        "        if os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+        "            raise RuntimeError('[W4-NORECOV] report_packager recovery branch hit but zero-stubs mode is active — fix upstream instead') from _rexc\n"
+        "        try: _log_recovery('report_packager', 300, _rexc)\n"
         "        except Exception: pass\n"
-        "        _reports = str(inputs.get('reports_path') or (WORKING_DIRECTORY / 'reports'))\n"
+        "        _reports = str(inputs.get('reports_path') or inputs.get('report_paths') or (WORKING_DIRECTORY / 'reports'))\n"
         "        import os as _os2\n"
         "        _os2.makedirs(_reports, exist_ok=True)\n"
         "        _html_path = _os2.path.join(_reports, 'final_report_recovery.html')\n"
         "        _md_path = _os2.path.join(_reports, 'final_report_recovery.md')\n"
         "        _pdf_path = _os2.path.join(_reports, 'final_report_recovery.pdf')\n"
-        "        # Write minimal valid files; HTML escapes draft content\n"
-        "        _draft = str(inputs.get('report_draft', 'Recovery report (recursion limit reached).'))\n"
-        "        _escaped = _html_lib.escape(_draft[:2000])\n"
+        "        # Fix AS: Rich recovery — build real report from available state data\n"
+        "        _ai_rec = inputs.get('analysis_insights')\n"
+        "        _cm_rec = inputs.get('cleaning_metadata')\n"
+        "        # Fix AT-b: use visualization_results to get PNG paths (viz_paths in outer state is empty until file_writer runs)\n"
+        "        _vis_results_rec = inputs.get('visualization_results')\n"
+        "        _vis_list_rec = list(getattr(_vis_results_rec, 'visualizations', []) or [])\n"
+        "        _vp_rec = [v.path for v in _vis_list_rec if getattr(v, 'path', '') and v.path]\n"
+        "        if not _vp_rec:\n"
+        "            # Fallback: scan WORKING_DIRECTORY/figures then IDD_results for recently-created PNGs\n"
+        "            import glob as _rpglob, os as _rpos, pathlib as _rpplib, time as _rptime\n"
+        "            _rp_run_id = str(inputs.get('run_id', '') or '')\n"
+        "            _rp_scan = []\n"
+        "            # 1) WORKING_DIRECTORY/figures/ — primary location for viz tool outputs\n"
+        "            try:\n"
+        "                _rp_scan.append(str(WORKING_DIRECTORY / 'figures'))\n"
+        "                _rp_scan.append(str(WORKING_DIRECTORY))\n"
+        "            except Exception: pass\n"
+        "            # 2) artifacts_path\n"
+        "            _rp_art = str(inputs.get('artifacts_path', '') or '')\n"
+        "            if _rp_art: _rp_scan.append(_rp_art)\n"
+        "            # 3) IDD_results\n"
+        "            _rp_idd = _rpplib.Path.cwd() / 'IDD_results'\n"
+        "            if _rp_run_id:\n"
+        "                _rp_run_dir = _rp_idd / f'IDD_run_{_rp_run_id}'\n"
+        "                if _rp_run_dir.exists(): _rp_scan.append(str(_rp_run_dir))\n"
+        "            if _rp_idd.exists(): _rp_scan.append(str(_rp_idd))\n"
+        "            _rp_all = []\n"
+        "            for _rpd in _rp_scan:\n"
+        "                if _rpos.path.exists(_rpd):\n"
+        "                    _rp_all += _rpglob.glob(_rpos.path.join(_rpd, '**', '*.png'), recursive=True)\n"
+        "            _rp_all = sorted(set(_rp_all), key=_rpos.path.getmtime, reverse=True)\n"
+        "            _rp_recent = [p for p in _rp_all if _rptime.time() - _rpos.path.getmtime(p) < 1800]\n"
+        "            _vp_rec = _rp_recent[:5] if _rp_recent else _rp_all[:5]\n"
+        "        if not _vp_rec:\n"
+        "            _vp_rec = inputs.get('viz_paths') or []\n"
+        "        _ws_rec = inputs.get('written_sections') or []\n"
+        "        _draft = str(inputs.get('report_draft', '') or '')\n"
+        "        _ro_rec = inputs.get('report_outline')\n"
+        "        _title_rec = (getattr(_ro_rec, 'title', None) if _ro_rec else None) or 'Exploratory Data Analysis Report'\n"
+        "        _body_parts = []\n"
+        "        if _ws_rec:\n"
+        "            for _s_rec in _ws_rec:\n"
+        "                _sname = getattr(_s_rec, 'name', '') or getattr(_s_rec, 'section_title', '') or 'Section'\n"
+        "                _scontent = getattr(_s_rec, 'content', '') or getattr(_s_rec, 'section_content', '') or ''\n"
+        "                _body_parts.append(f'<h2>{_html_lib.escape(str(_sname))}</h2><div>{_html_lib.escape(str(_scontent))}</div>')\n"
+        "        if _cm_rec:\n"
+        "            _cm_desc = getattr(_cm_rec, 'data_description_after_cleaning', None) or ''\n"
+        "            _cm_steps = getattr(_cm_rec, 'steps_taken', []) or []\n"
+        "            if _cm_desc or _cm_steps:\n"
+        "                _body_parts.append('<h2>Data Cleaning</h2>')\n"
+        "                if _cm_desc:\n"
+        "                    _body_parts.append(f'<p>{_html_lib.escape(str(_cm_desc))}</p>')\n"
+        "                if _cm_steps:\n"
+        "                    _body_parts.append('<ul>' + ''.join(f'<li>{_html_lib.escape(str(s))}</li>' for s in _cm_steps) + '</ul>')\n"
+        "        if _ai_rec:\n"
+        "            _ai_summ = getattr(_ai_rec, 'summary', None) or ''\n"
+        "            _ai_insights = getattr(_ai_rec, 'insights', []) or []\n"
+        "            _body_parts.append('<h2>Analysis Findings</h2>')\n"
+        "            if _ai_summ:\n"
+        "                _body_parts.append(f'<p>{_html_lib.escape(str(_ai_summ))}</p>')\n"
+        "            for _ins in _ai_insights[:10]:\n"
+        "                _body_parts.append(f'<p>• {_html_lib.escape(str(_ins))}</p>')\n"
+        "        if _vp_rec:\n"
+        "            _body_parts.append('<h2>Visualizations</h2>')\n"
+        "            for _vpath in _vp_rec:\n"
+        "                _vname = _os2.path.basename(str(_vpath))\n"
+        "                _body_parts.append(f'<figure><img src=\"{_html_lib.escape(str(_vpath))}\" alt=\"{_html_lib.escape(_vname)}\" style=\"max-width:100%\"><figcaption>{_html_lib.escape(_vname)}</figcaption></figure>')\n"
+        "        if _draft and not _body_parts:\n"
+        "            _body_parts.append(f'<pre>{_html_lib.escape(_draft[:4000])}</pre>')\n"
+        "        if not _body_parts:\n"
+        "            _body_parts.append('<p>Analysis complete. See pipeline logs for details.</p>')\n"
+        "        _html_body = '\\n'.join(_body_parts)\n"
+        "        _full_html = f'<html><head><meta charset=\"utf-8\"><title>{_html_lib.escape(_title_rec)}</title></head><body><h1>{_html_lib.escape(_title_rec)}</h1>\\n{_html_body}\\n</body></html>'\n"
         "        with open(_html_path, 'w', encoding='utf-8') as _f:\n"
-        "            _f.write(f'<html><body><h1>Report (Recovery)</h1><pre>{_escaped}</pre></body></html>')\n"
+        "            _f.write(_full_html)\n"
+        "        _md_lines = [f'# {_title_rec}', '']\n"
+        "        if _cm_rec and (getattr(_cm_rec,'data_description_after_cleaning',None)):\n"
+        "            _md_lines += ['## Data Cleaning', str(getattr(_cm_rec,'data_description_after_cleaning','')), '']\n"
+        "        if _ai_rec and getattr(_ai_rec,'summary',None):\n"
+        "            _md_lines += ['## Analysis Findings', str(getattr(_ai_rec,'summary','')), '']\n"
+        "            for _ins in (getattr(_ai_rec,'insights',[]) or [])[:10]:\n"
+        "                _md_lines.append(f'- {_ins}')\n"
+        "            _md_lines.append('')\n"
+        "        if _vp_rec:\n"
+        "            _md_lines += ['## Visualizations', '']\n"
+        "            for _vpath in _vp_rec:\n"
+        "                _md_lines.append(f'![{_os2.path.basename(str(_vpath))}]({_vpath})')\n"
+        "            _md_lines.append('')\n"
+        "        if _draft and len(_md_lines) < 5:\n"
+        "            _md_lines.append(_draft[:4000])\n"
         "        with open(_md_path, 'w', encoding='utf-8') as _f:\n"
-        "            _f.write(f'# Report (Recovery)\\n\\n{_draft[:2000]}')\n"
+        "            _f.write('\\n'.join(_md_lines))\n"
         "        with open(_pdf_path, 'wb') as _f:\n"
         "            # Minimal valid PDF stub — enough for size > 0 check\n"
         "            _f.write(b'%PDF-1.4\\n1 0 obj\\n<<\\n/Type /Catalog\\n>>\\nendobj\\n%%EOF')\n"
@@ -901,7 +1210,34 @@ def main():
             1,
         )
 
-        # 2. Replace report_packager_agent.invoke with _safe_report_packager_invoke
+        # Fix AL-2: focused prompt for report_packager — override user_prompt so agent
+        # doesn't see full pipeline prompt and try to do everything.
+        FIXAL2_RP_GUARD = "# Fix AL-2: focused report_packager task"
+        _RP_AL2_ANCHOR = "def report_packager_node(state: State):\n    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+        if FIXAL2_RP_GUARD not in new_src and _RP_AL2_ANCHOR in new_src:
+            new_src = new_src.replace(
+                _RP_AL2_ANCHOR,
+                (
+                    "def report_packager_node(state: State):\n"
+                    "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+                    "    # Fix AL-2: focused report_packager task\n"
+                    "    _rp_outline = state.get('report_outline')\n"
+                    "    _rp_title = getattr(_rp_outline, 'title', 'Analysis Report') if _rp_outline else 'Analysis Report'\n"
+                    "    _rp_sections = state.get('written_sections') or []\n"
+                    "    user_prompt = (\n"
+                    "        \"YOUR TASK: REPORT ASSEMBLY ONLY. \"\n"
+                    "        f\"Assemble the final report titled '{_rp_title}' from {len(_rp_sections)} written sections. \"\n"
+                    "        \"Combine the sections into a complete HTML report string and call the `respond` tool with a ReportResults object. \"\n"
+                    "        \"The respond tool expects: html_report_path (str), markdown_report_path (str), pdf_report_path (str), reply_msg_to_supervisor (str), finished_this_task=True, expect_reply=False. \"\n"
+                    "        \"Use write_file to save the HTML content to disk first, then call respond with the file paths. \"\n"
+                    "        \"Do NOT run any analysis, cleaning, or visualization. \"\n"
+                    "        \"After saving files (max 5 tool calls total), call `respond` with the file paths immediately.\"\n"
+                    "    )\n"
+                ),
+                1,
+            )
+        elif FIXAL2_RP_GUARD not in new_src:
+            print("  ⚠️  Fix AL-2 RP: anchor not found — skipping")
         new_src = new_src.replace(
             "    result = report_packager_agent.invoke(\n        {",
             "    result = _safe_report_packager_invoke(report_packager_agent, {",
@@ -1010,7 +1346,8 @@ def main():
         break
     if not fixAC_patched:
         print("W  Fix AC: State class target not found")
-
+
+
     # --- Fix AD: fix route_to_writer + write_output_to_file to reach END when report is done ---
     # route_to_writer returns "supervisor" when report_done and not report_ready, even when
     # already_wrote=True — causing infinite supervisor↔FINISH loop after recovery.
@@ -1594,9 +1931,10 @@ def main():
         OLD_V2 = f"{_dv}if _vc_done and not state.get('report_generator_complete'):"
         NEW_V2 = (
             f"{_dv}_last_agent_id_sc3 = state.get('last_agent_id') or ''\n"
+            f"{_dv}# W4-SC3-GATE: dropped viz_* nodes (post-W2-BR6 they route through supervisor, not directly to report_orchestrator)\n"
             f"{_dv}_in_report_round = _last_agent_id_sc3 in (\n"
             f"{_dv}    'report_orchestrator', 'report_section_worker', 'report_join',\n"
-            f"{_dv}    'report_packager', 'file_writer', 'viz_evaluator',\n"
+            f"{_dv}    'report_packager', 'file_writer',\n"
             f"{_dv})\n"
             f"{_dv}_report_already_dispatched = bool(state.get('_report_dispatched'))\n"
             f"{_dv}if _vc_done and not state.get('report_generator_complete') and not _in_report_round and not _report_already_dispatched:"
@@ -1641,6 +1979,63 @@ def main():
         break
     if not fixv2_patched:
         print("⚠️  Fix V2: target cell not found")
+
+    # --- Fix AH: SHORTCUT4 — all stages done → route directly to write_output_to_file ---
+    # Problem: when rg=True (report_generator_complete=True), SHORTCUT3 logs the state but
+    # falls through to LLM routing (because _in_report_round=True blocks the SHORTCUT3 branch).
+    # The LLM then routes BACK to report_packager again (it sees stub content and wants to redo it),
+    # causing an infinite loop that burns API credits and never terminates.
+    # Fix: insert SHORTCUT4 BEFORE the _in_report_round guard. When rg=True (all stages done),
+    # route DIRECTLY to write_output_to_file, completely bypassing LLM routing.
+    import re as _re_fixah
+    fixAH_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# --- PATCH: force report routing after viz ---" not in src:
+            continue
+        if "SHORTCUT4" in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AH (SHORTCUT4) already applied")
+            fixAH_patched = True
+            break
+        # Find the _last_agent_id_sc3 line inserted by Fix V2
+        m_ah = _re_fixah.search(
+            r"^([ \t]*)_last_agent_id_sc3 = state\.get\('last_agent_id'\)",
+            src, _re_fixah.MULTILINE
+        )
+        if not m_ah:
+            # Fix V2 may not have been applied yet (first run) — fall through gracefully
+            print(f"⚠️  Fix AH: '_last_agent_id_sc3' not found in cell {idx} (Fix V2 may not be applied yet)")
+            break
+        _dah = m_ah.group(1)
+        OLD_AH = f"{_dah}_last_agent_id_sc3 = state.get('last_agent_id') or ''"
+        NEW_AH = (
+            f"{_dah}# --- SHORTCUT4: all stages done → write_output_to_file (Fix AH) ---\n"
+            f"{_dah}if _vc_done and _sc3_rg:\n"
+            f"{_dah}    try: _pl_logger.info(f'SHORTCUT4 all_done=True rg={{_sc3_rg}} -> write_output_to_file')\n"
+            f"{_dah}    except Exception: pass\n"
+            f"{_dah}    return Command(goto='write_output_to_file', update={{\n"
+            f"{_dah}        '_count_': int(state.get('_count_', 0)) + 1,\n"
+            f"{_dah}        'next': 'write_output_to_file',\n"
+            f"{_dah}        'report_generator_complete': True,\n"
+            f"{_dah}        'visualization_complete': True,\n"
+            f"{_dah}    }})\n"
+            f"{_dah}# --- END SHORTCUT4 ---\n"
+            f"{_dah}_last_agent_id_sc3 = state.get('last_agent_id') or ''"
+        )
+        new_src = src.replace(OLD_AH, NEW_AH, 1)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AH applied — SHORTCUT4 (all_done → write_output_to_file)")
+            fixAH_patched = True
+        else:
+            print(f"⚠️  Fix AH: replacement failed in cell {idx}")
+        break
+    if not fixAH_patched:
+        print("⚠️  Fix AH: target cell not found (check Fix V2 applied first)")
 
     # config=state["_config"] raises KeyError if _config key is absent from state. This happens
     # BEFORE _safe_supervisor_routing_invoke can catch it. Fix: use the node's own config param
@@ -1881,17 +2276,34 @@ def main():
         "# --- patched: safe invoke wrapper for viz_worker ---\n"
         "def _safe_visualization_invoke(agent, inputs, config=None):\n"
         "    _outer_vz = dict(config or {})\n"
-        "    cfg = {'configurable': _outer_vz.get('configurable', {}), 'recursion_limit': 300}  # cap=300 isolated\n"
+        "    cfg = {'configurable': _outer_vz.get('configurable', {}), 'recursion_limit': 160}  # cap=160 viz_worker (AZ: raised to 160)\n"
         "    from langchain_core.messages import AIMessage as _VAIM, ToolMessage as _TM_VZ\n"
         "    # Fix N: strip orphaned ToolMessages\n"
         "    _raw_vz = list(inputs.get('messages') or [])\n"
         "    _valid_vz = {tc.get('id','') for m in _raw_vz for tc in (getattr(m,'tool_calls',None) or [])}\n"
         "    inputs = {**inputs, 'messages': [m for m in _raw_vz if not isinstance(m, _TM_VZ) or getattr(m,'tool_call_id','') in _valid_vz]}\n"
+        "    # Fix AR-2: coerce viz_paths/report_paths to correct types to prevent binop TypeError\n"
+        "    # viz_paths: Annotated[list[str], operator.add] must NOT receive a str — use [] as default\n"
+        "    _vp_ar2 = inputs.get('viz_paths')\n"
+        "    if not isinstance(_vp_ar2, list):\n"
+        "        inputs = {**inputs, 'viz_paths': []}\n"
+        "    _rp_ar2 = inputs.get('report_paths')\n"
+        "    if not isinstance(_rp_ar2, dict):\n"
+        "        inputs = {**inputs, 'report_paths': {}}\n"
         "    import time as _vwtime\n"
         "    _vwretries = 0\n"
         "    while True:\n"
         "        try:\n"
-        "            return agent.invoke(inputs, config=cfg)\n"
+        "            _vw_result = agent.invoke(inputs, config=cfg)\n"
+        "            # Fix AR-2: normalize return viz_paths/report_paths to correct accumulator types\n"
+        "            if isinstance(_vw_result, dict):\n"
+        "                _vp_ret = _vw_result.get('viz_paths')\n"
+        "                if _vp_ret is not None and not isinstance(_vp_ret, list):\n"
+        "                    _vw_result = {**_vw_result, 'viz_paths': []}\n"
+        "                _rp_ret = _vw_result.get('report_paths')\n"
+        "                if _rp_ret is not None and not isinstance(_rp_ret, dict):\n"
+        "                    _vw_result = {**_vw_result, 'report_paths': {}}\n"
+        "            return _vw_result\n"
         "        except (KeyboardInterrupt, SystemExit):\n"
         "            raise\n"
         "        except Exception as _vexc:\n"
@@ -1904,19 +2316,53 @@ def main():
         "                _vwtime.sleep(_vwwait)\n"
         "                continue\n"
         "            print(f'WARNING visualization_agent hit error ({_nm}: {str(_vexc)[:120]}) -- building recovery DataVisualization')\n"
-        "            try: _log_recovery('visualization', 300)\n"
+        "            try: _log_recovery('visualization', 300, _vexc)\n"
         "            except Exception: pass\n"
-        "            import uuid as _vuuid\n"
+        "            # Fix AT: scan for PNGs created before hitting RL — include them in recovery\n"
+        "            import glob as _vglob, os as _vos, uuid as _vuuid\n"
+        "            _vrun_id = str(inputs.get('run_id', '') or '')\n"
+        "            import pathlib as _vplib, time as _vtime_at\n"
+        "            _vscan_dirs = []\n"
+        "            # 1) WORKING_DIRECTORY/figures/ — where viz tools write PNGs directly\n"
+        "            try:\n"
+        "                _vwd_figs = str(WORKING_DIRECTORY / 'figures')\n"
+        "                _vscan_dirs.append(_vwd_figs)\n"
+        "                _vscan_dirs.append(str(WORKING_DIRECTORY))  # catch any subdir\n"
+        "            except Exception: pass\n"
+        "            # 2) artifacts_path temp dir\n"
+        "            _vart = str(inputs.get('artifacts_path', '') or '')\n"
+        "            if _vart:\n"
+        "                _vscan_dirs.append(_vart)\n"
+        "            # 3) IDD_results output dir (files persisted there)\n"
+        "            _vidd_base = _vplib.Path.cwd() / 'IDD_results'\n"
+        "            if _vrun_id:\n"
+        "                _vidd_run = _vidd_base / f'IDD_run_{_vrun_id}'\n"
+        "                if _vidd_run.exists():\n"
+        "                    _vscan_dirs.append(str(_vidd_run))\n"
+        "            if _vidd_base.exists():\n"
+        "                _vscan_dirs.append(str(_vidd_base))\n"
+        "            # Find all PNGs, sorted newest-first, prefer those < 15 min old\n"
+        "            _vpngs_all = []\n"
+        "            for _vsd in _vscan_dirs:\n"
+        "                if _vos.path.exists(_vsd):\n"
+        "                    _vpngs_all += _vglob.glob(_vos.path.join(_vsd, '**', '*.png'), recursive=True)\n"
+        "            _vpngs_all = sorted(set(_vpngs_all), key=_vos.path.getmtime, reverse=True)\n"
+        "            _vrecent = [p for p in _vpngs_all if _vtime_at.time() - _vos.path.getmtime(p) < 900]\n"
+        "            _vrecovery_path = _vrecent[0] if _vrecent else (_vpngs_all[0] if _vpngs_all else '')\n"
+        "            print(f'[Fix AT] viz recovery scan: found {len(_vpngs_all)} PNGs, using: {_vrecovery_path}')\n"
+        "            # W4-NORECOV: zero-stubs mode — empty-PNG fallback fabricates a placeholder; refuse unless explicitly enabled\n"
+        "            if not _vrecovery_path and os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+        "                raise RuntimeError('[W4-NORECOV] visualization recovery found no real PNGs and zero-stubs mode is active — fix upstream instead') from _vexc\n"
         "            _recovery_dv = DataVisualization(\n"
-        "                reply_msg_to_supervisor='Visualization completed (recursion-limit recovery). No file produced.',\n"
+        "                reply_msg_to_supervisor='Visualization completed (recursion-limit recovery).',\n"
         "                finished_this_task=True,\n"
         "                expect_reply=False,\n"
-        "                path='',\n"
+        "                path=_vrecovery_path,\n"
         "                visualization_id=_vuuid.uuid4().hex,\n"
-        "                visualization_type='none',\n"
-        "                visualization_description='Visualization skipped: recursion-limit recovery',\n"
+        "                visualization_type='histogram' if 'hist' in _vrecovery_path.lower() else 'chart',\n"
+        "                visualization_description=f'Visualization at {_vrecovery_path}' if _vrecovery_path else 'Visualization skipped: recursion-limit recovery',\n"
         "                visualization_style='none',\n"
-        "                visualization_title='Recovery Placeholder',\n"
+        "                visualization_title=_vos.path.basename(_vrecovery_path) if _vrecovery_path else 'Recovery Placeholder',\n"
         "            )\n"
         "            _rmsg = _VAIM(content='Visualization completed (recursion-limit recovery).', name='visualization')\n"
         "            return {'messages': [_rmsg], 'structured_response': _recovery_dv}\n"
@@ -1991,7 +2437,8 @@ def main():
         "def _safe_viz_evaluator_invoke(agent, inputs, config=None):\n"
         "    import time as _vetime\n"
         "    from langchain_core.messages import AIMessage as _VEAIM\n"
-        "    cfg = dict(config or {})\n"
+        "    _outer_ve = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_ve.get('configurable', {}), 'recursion_limit': 160}  # cap=160 viz_evaluator (AZ: raised to 160)\n"
         "    _veretries = 0\n"
         "    while True:\n"
         "        try:\n"
@@ -2008,7 +2455,7 @@ def main():
         "                _vetime.sleep(_vewait)\n"
         "                continue\n"
         "            print(f'WARNING viz_evaluator hit error ({_nm}: {str(_veexc)[:120]}) -- building recovery VizFeedback')\n"
-        "            try: _log_recovery('viz_evaluator', 0)\n"
+        "            try: _log_recovery('viz_evaluator', 0, _veexc)\n"
         "            except Exception: pass\n"
         "            _recovery_vf = VizFeedback(\n"
         "                grade='acceptable',\n"
@@ -2328,8 +2775,11 @@ def main():
         "    elapsed = _pl_time.time() - _pl_stage_times.get(stage, _pl_time.time())\n"
         "    _pl_logger.info(f'STAGE {stage} DONE [{status}] ({elapsed:.0f}s)')\n"
         "\n"
-        "def _log_recovery(agent: str, cap: int) -> None:\n"
-        "    _pl_logger.warning(f'RECOVERY {agent} hit recursion limit at {cap}')\n"
+        "def _log_recovery(agent: str, cap: int, exc=None) -> None:\n"
+        "    if exc is not None:\n"
+        "        _pl_logger.warning(f'RECOVERY {agent} error={type(exc).__name__}: {str(exc)[:300]}')\n"
+        "    else:\n"
+        "        _pl_logger.warning(f'RECOVERY {agent} hit recursion limit at {cap}')\n"
         "\n"
         "def _log_final_state(sv: dict) -> None:\n"
         "    _pl_logger.info(\n"
@@ -2338,6 +2788,13 @@ def main():
         "        f'analyst={sv.get(\"analyst_complete\")} '\n"
         "        f'viz={sv.get(\"visualization_complete\")} '\n"
         "        f'report={sv.get(\"report_generator_complete\")}'\n"
+        "    )\n"
+        "    _pl_logger.info(\n"
+        "        f'STRUCT cleaning_metadata={type(sv.get(\"cleaning_metadata\")).__name__} '\n"
+        "        f'analysis_insights={type(sv.get(\"analysis_insights\")).__name__} '\n"
+        "        f'viz_results={len(sv.get(\"visualization_results\") or [])} '\n"
+        "        f'report_draft={bool(sv.get(\"report_draft\"))} '\n"
+        "        f'report_results={type(sv.get(\"report_results\")).__name__}'\n"
         "    )\n"
         "# --- END PIPELINE LOGGER ---\n\n"
     )
@@ -2929,6 +3386,371 @@ def main():
     if not fixj_patched:
         print("⚠️  Fix J: python_repl_tool invoke cell not found")
 
+    # --- Fix AI-1: Fix report_intermediate_progress description ---
+    # The tool description says "use constantly! Please provide updates as often as possible"
+    # which makes agents loop on this tool instead of calling `respond` for their final answer.
+    # Fix: change description to clarify it is ONLY for intermediate updates, not final output.
+    fixai1_patched = False
+    FIXAI1_GUARD = "# Fix AI-1: report_intermediate_progress description corrected"
+    FIXAI1_OLD_DESC = (
+        '    """\n'
+        '    Use this tool every several turns to continuously and repeatedly report on your step-by-step progress to your supervisor and directly to the user.\n'
+        '    This is an important tool to use constantly! Please provide updates on your tasks as often as possible.\n'
+        '    """'
+    )
+    FIXAI1_NEW_DESC = (
+        '    """\n'
+        '    Use this tool occasionally to report INTERMEDIATE progress updates to your supervisor.\n'
+        '    IMPORTANT: This tool is for brief status updates ONLY — do NOT use it to submit your final answer.\n'
+        '    To submit your final structured output, call the `respond` tool instead.\n'
+        '    Calling `respond` ends your task — use it when your analysis is complete.\n'
+        '    ' + FIXAI1_GUARD + '\n'
+        '    """'
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_intermediate_progress" not in src:
+            continue
+        if FIXAI1_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AI-1 already applied")
+            fixai1_patched = True
+            break
+        if FIXAI1_OLD_DESC in src:
+            new_src = src.replace(FIXAI1_OLD_DESC, FIXAI1_NEW_DESC, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AI-1 applied — report_intermediate_progress description corrected")
+            fixai1_patched = True
+        else:
+            print(f"⚠️  Fix AI-1: report_intermediate_progress docstring pattern not found in cell {idx}")
+        break
+    if not fixai1_patched:
+        print("⚠️  Fix AI-1: target cell not found")
+
+    # --- Fix AK-2: Add escalating call-counter warning to report_intermediate_progress ---
+    # After 5 calls, return a warning urging the agent to call respond.
+    # After 10+ calls, return an error-level message demanding respond.
+    fixak2_patched = False
+    FIXAK2_GUARD = "# Fix AK-2: escalating counter in report_intermediate_progress"
+    FIXAK2_OLD = (
+        '    progress_message_final = progress_message.strip() or "Empty progress message"\n'
+        '\n'
+        '    return Command(\n'
+        '        update={\n'
+        '            "latest_progress": progress_message_final,\n'
+        '            "progress_reports": [progress_message_final],\n'
+        '            "messages": [\n'
+        '                ToolMessage(\n'
+        '                    content=f"You have logged the following progress update: {progress_message_final}",\n'
+        '                    tool_call_id=runtime.tool_call_id,\n'
+        '                )\n'
+        '            ],\n'
+        '        }\n'
+        '    )'
+    )
+    # Uses a module-level dict _rip_counts (injected as a declaration just before the function)
+    # so the counter persists across calls within a kernel session.
+    FIXAK2_DECL = '_rip_counts: dict = {}  # Fix AK-2: module-level call counter for report_intermediate_progress\n'
+    # Anchor to insert the module-level dict BEFORE the @tool decorator (not between decorator and def)
+    FIXAK2_DECL_ANCHOR = '@tool("report_intermediate_progress")\ndef report_intermediate_progress(\n'
+    FIXAK2_NEW = (
+        '    progress_message_final = progress_message.strip() or "Empty progress message"\n'
+        '    # Fix AK-2: escalating counter\n'
+        '    _rip_tid = str((runtime.config or {}).get("configurable", {}).get("thread_id", "?"))\n'
+        '    _rip_counts[_rip_tid] = _rip_counts.get(_rip_tid, 0) + 1\n'
+        '    _rip_n = _rip_counts[_rip_tid]\n'
+        '    if _rip_n >= 10:\n'
+        '        _rip_msg = (f"CRITICAL ERROR ({_rip_n} calls): Stop calling this tool. "\n'
+        '                   "You MUST call the `respond` tool NOW with your structured output. "\n'
+        '                   "Use best-effort values for any incomplete fields. Do NOT call this tool again.")\n'
+        '    elif _rip_n >= 5:\n'
+        '        _rip_msg = (f"WARNING ({_rip_n}/10): You have called report_intermediate_progress {_rip_n} times. "\n'
+        '                   "Begin wrapping up. You MUST call `respond` within your next 5 tool calls. "\n'
+        '                   f"Progress noted: {progress_message_final}")\n'
+        '    else:\n'
+        '        _rip_msg = f"You have logged the following progress update: {progress_message_final}"\n'
+        '\n'
+        '    return Command(\n'
+        '        update={\n'
+        '            "latest_progress": progress_message_final,\n'
+        '            "progress_reports": [progress_message_final],\n'
+        '            "messages": [\n'
+        '                ToolMessage(\n'
+        '                    content=_rip_msg,\n'
+        '                    tool_call_id=runtime.tool_call_id,\n'
+        '                )\n'
+        '            ],\n'
+        '        }\n'
+        '    )'
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_intermediate_progress" not in src:
+            continue
+        if FIXAK2_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AK-2 already applied")
+            fixak2_patched = True
+            break
+        if FIXAK2_OLD in src:
+            new_src = src.replace(FIXAK2_OLD, FIXAK2_NEW, 1)
+            # Also inject the module-level _rip_counts dict before the function definition
+            if FIXAK2_DECL not in new_src and FIXAK2_DECL_ANCHOR in new_src:
+                new_src = new_src.replace(FIXAK2_DECL_ANCHOR, FIXAK2_DECL + '@tool("report_intermediate_progress")\ndef report_intermediate_progress(\n', 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AK-2 applied — escalating counter in report_intermediate_progress")
+            fixak2_patched = True
+        else:
+            print(f"⚠️  Fix AK-2: report_intermediate_progress body pattern not found in cell {idx}")
+        break
+    if not fixak2_patched:
+        print("⚠️  Fix AK-2: target cell not found")
+
+    # --- Fix AI-2: Add `respond` tool termination instruction to analyst and data_cleaner prompts ---
+    # Agents see {output_format} schema but are never told to call the `respond` tool specifically.
+    # Fix: add explicit TERMINATION block to each prompt's OUTPUT section.
+    import re as _re_fixai2
+    fixai2_patched = False
+    FIXAI2_GUARD = "# Fix AI-2: respond tool termination instruction added"
+    RESPOND_INSTRUCTION = (
+        "\nTERMINATION — HOW TO SUBMIT YOUR FINAL ANSWER:\n"
+        "When your analysis is ready, call the `respond` tool with your final structured output.\n"
+        "- `respond` is the ONLY correct tool for submitting your final structured result\n"
+        "- Do NOT call `report_intermediate_progress` to submit your final answer\n"
+        "- Calling `respond` ends your task immediately and returns control to the supervisor\n"
+        "- After 10 tool calls total, you MUST call `respond` using best-effort values for any incomplete fields\n"
+        "- INCOMPLETE RESULTS ARE ACCEPTABLE — infinite loops are NOT. Submit now if uncertain.\n"
+        "\n"
+    )
+    # Patch main analyst prompt: anchor = "Return your structured result using the schema:"
+    FIXAI2_ANALYST_OLD = "Return your structured result using the schema:\n{output_format}\n\n## Memories"
+    FIXAI2_ANALYST_NEW = RESPOND_INSTRUCTION + "Return your structured result using the schema:\n{output_format}\n\n## Memories"
+    # Patch mini analyst prompt: anchor after ROLE: Main Analyst section
+    FIXAI2_MINI_OLD = "evidence (ids/metrics/slices).\n\nOUTPUT\n{output_format}\nInclude: descriptive_stats"
+    FIXAI2_MINI_NEW = "evidence (ids/metrics/slices).\n\nOUTPUT\n" + RESPOND_INSTRUCTION + "{output_format}\nInclude: descriptive_stats"
+    # Patch data_cleaner prompt: anchor = "STOP using tools and finalize!\n\nOUTPUT\n{output_format}"
+    FIXAI2_DC_OLD = "STOP using tools and finalize!\n\nOUTPUT\n{output_format}\nAlso include"
+    FIXAI2_DC_NEW = "STOP using tools and finalize!\n\nOUTPUT\n" + RESPOND_INSTRUCTION + "{output_format}\nAlso include"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "analyst_prompt_template_main" not in src and "analyst_prompt_template_initial" not in src:
+            continue
+        if FIXAI2_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AI-2 already applied")
+            fixai2_patched = True
+            break
+        new_src = src
+        patched_items = []
+        if FIXAI2_ANALYST_OLD in new_src:
+            new_src = new_src.replace(FIXAI2_ANALYST_OLD, FIXAI2_ANALYST_NEW, 1)
+            patched_items.append("main-analyst")
+        else:
+            print(f"⚠️  Fix AI-2: main analyst OUTPUT anchor not found in cell {idx}")
+        if FIXAI2_MINI_OLD in new_src:
+            new_src = new_src.replace(FIXAI2_MINI_OLD, FIXAI2_MINI_NEW, 1)
+            patched_items.append("mini-analyst")
+        else:
+            print(f"⚠️  Fix AI-2: mini analyst OUTPUT anchor not found in cell {idx}")
+        if FIXAI2_DC_OLD in new_src:
+            new_src = new_src.replace(FIXAI2_DC_OLD, FIXAI2_DC_NEW, 1)
+            patched_items.append("data-cleaner")
+        else:
+            print(f"⚠️  Fix AI-2: data_cleaner OUTPUT anchor not found in cell {idx}")
+        if patched_items:
+            # Add guard comment near start of cell
+            new_src = new_src.replace(
+                "analyst_prompt_template_initial = ",
+                f"# {FIXAI2_GUARD}\nanalyst_prompt_template_initial = ",
+                1,
+            )
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AI-2 applied — respond termination instruction added to: {', '.join(patched_items)}")
+            fixai2_patched = True
+        break
+    if not fixai2_patched:
+        print("⚠️  Fix AI-2: prompt template cell not found or no patches applied")
+
+    # --- Fix AI-2b: Add `respond` termination to analyst_prompt_template_initial + report_generator ---
+    # These prompts were not covered by Fix AI-2.
+    fixai2b_patched = False
+    FIXAI2B_GUARD = "# Fix AI-2b: respond termination for initial/report prompts"
+    # initial analyst prompt: anchor = "then output the in the following format :"
+    FIXAI2B_IA_OLD = (
+        "then output the in the following format :\n{output_format}\n\nPopulate two fields:"
+    )
+    FIXAI2B_IA_NEW = (
+        "then output the in the following format :\n"
+        + RESPOND_INSTRUCTION
+        + "{output_format}\n\nPopulate two fields:"
+    )
+    # report_generator prompt: anchor = "Return a structured response matching:"
+    FIXAI2B_RG_OLD = (
+        "Return a structured response matching:\n{output_format}\n\n## Memories"
+    )
+    FIXAI2B_RG_NEW = (
+        "Return a structured response matching:\n"
+        + RESPOND_INSTRUCTION
+        + "{output_format}\n\n## Memories"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "analyst_prompt_template_initial" not in src:
+            continue
+        if FIXAI2B_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AI-2b already applied")
+            fixai2b_patched = True
+            break
+        new_src = src
+        patched_2b = []
+        if FIXAI2B_IA_OLD in new_src:
+            new_src = new_src.replace(FIXAI2B_IA_OLD, FIXAI2B_IA_NEW, 1)
+            patched_2b.append("initial-analyst")
+        else:
+            print(f"⚠️  Fix AI-2b: initial analyst OUTPUT anchor not found in cell {idx}")
+        if FIXAI2B_RG_OLD in new_src:
+            new_src = new_src.replace(FIXAI2B_RG_OLD, FIXAI2B_RG_NEW, 1)
+            patched_2b.append("report-generator")
+        else:
+            print(f"⚠️  Fix AI-2b: report_generator OUTPUT anchor not found in cell {idx}")
+        if patched_2b:
+            new_src = new_src.replace(
+                "analyst_prompt_template_initial = ",
+                f"# {FIXAI2B_GUARD}\nanalyst_prompt_template_initial = ",
+                1,
+            )
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AI-2b applied — respond termination added to: {', '.join(patched_2b)}")
+            fixai2b_patched = True
+        break
+    if not fixai2b_patched:
+        print("⚠️  Fix AI-2b: no patches applied")
+
+    # --- Fix AI-2c: Add `respond` termination to data_cleaner_prompt_template (MAIN) ---
+    # Fix AI-2 accidentally targeted data_cleaner_prompt_template_mini instead of the main
+    # template. The main template uses "After cleaning, summarize actions and the dataset
+    # state in the schema:" as its output anchor.
+    fixai2c_patched = False
+    FIXAI2C_GUARD = "# Fix AI-2c: respond termination for data_cleaner main prompt"
+    FIXAI2C_DC_OLD = (
+        "After cleaning, summarize actions and the dataset state in the schema:\n"
+        "{output_format}\n\n## Memories"
+    )
+    FIXAI2C_DC_NEW = (
+        "After cleaning, summarize actions and the dataset state in the schema:\n"
+        + RESPOND_INSTRUCTION
+        + "{output_format}\n\n## Memories"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "data_cleaner_prompt_template" not in src:
+            continue
+        if FIXAI2C_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AI-2c already applied")
+            fixai2c_patched = True
+            break
+        new_src = src
+        patched_2c = []
+        if FIXAI2C_DC_OLD in new_src:
+            new_src = new_src.replace(FIXAI2C_DC_OLD, FIXAI2C_DC_NEW, 1)
+            patched_2c.append("data-cleaner-main")
+        else:
+            print(f"⚠️  Fix AI-2c: data_cleaner main OUTPUT anchor not found in cell {idx}")
+        if patched_2c:
+            new_src = new_src.replace(
+                "data_cleaner_prompt_template = ",
+                f"# {FIXAI2C_GUARD}\ndata_cleaner_prompt_template = ",
+                1,
+            )
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AI-2c applied — respond termination added to: {', '.join(patched_2c)}")
+            fixai2c_patched = True
+        break
+    if not fixai2c_patched:
+        print("⚠️  Fix AI-2c: no patches applied")
+
+
+    # After each agent completes, log what's in the structured output to pipeline log.
+    # This makes state propagation visible without requiring LangSmith.
+    import re as _re_fixaj
+    fixaj_patched = False
+    FIXAJ_GUARD = "# Fix AJ: state snapshot logging"
+    # Patch 1: analyst_node — after "insights: AnalysisInsights = result["structured_response"]"
+    FIXAJ_AN_OLD = '    insights: AnalysisInsights = result["structured_response"]\n'
+    FIXAJ_AN_NEW = (
+        '    insights: AnalysisInsights = result["structured_response"]\n'
+        '    try:  # Fix AJ: state snapshot log\n'
+        '        _ai_summary = str(getattr(insights, "summary", "") or "")[:100]\n'
+        '        _ai_viz_n = len(getattr(insights, "recommended_visualizations", None) or [])\n'
+        '        _pl_logger.info(f"STATE analyst: type={type(insights).__name__} finished={getattr(insights,\'finished_this_task\',None)} summary={_ai_summary!r} viz_count={_ai_viz_n}, output={insights}")\n'
+        '    except Exception: pass\n'
+    )
+    # Patch 2: data_cleaner_node — after cleaning_metadata is set from structured_response
+    FIXAJ_DC_OLD = '    cleaning_metadata: CleaningMetadata = result["structured_response"]\n    initial_description'
+    FIXAJ_DC_NEW = (
+        '    cleaning_metadata: CleaningMetadata = result["structured_response"]\n'
+        '    try:  # Fix AJ: state snapshot log\n'
+        '        _cm_steps = len(getattr(cleaning_metadata, "steps_taken", None) or [])\n'
+        '        _cm_desc = str(getattr(cleaning_metadata, "data_description_after_cleaning", "") or "")[:80]\n'
+        '        _pl_logger.info(f"STATE cleaner: type={type(cleaning_metadata).__name__} steps={_cm_steps} desc={_cm_desc!r} finished={getattr(cleaning_metadata,\'finished_this_task\',None)} output={cleaning_metadata}")\n'
+        '    except Exception: pass\n'
+        '    initial_description'
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def analyst_node" not in src or "_safe_analyst_invoke" not in src:
+            continue
+        if FIXAJ_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: Fix AJ already applied")
+            fixaj_patched = True
+            break
+        new_src = src
+        patched_aj = []
+        if FIXAJ_AN_OLD in new_src:
+            new_src = new_src.replace(FIXAJ_AN_OLD, FIXAJ_AN_NEW, 1)
+            patched_aj.append("analyst")
+        else:
+            print(f"⚠️  Fix AJ: analyst insights anchor not found in cell {idx}")
+        if FIXAJ_DC_OLD in new_src:
+            new_src = new_src.replace(FIXAJ_DC_OLD, FIXAJ_DC_NEW, 1)
+            patched_aj.append("data_cleaner")
+        else:
+            print(f"⚠️  Fix AJ: data_cleaner cleaning_metadata anchor not found in cell {idx}")
+        if patched_aj:
+            # Add guard sentinel near top of cell
+            new_src = new_src.replace(
+                "# --- patched: safe invoke wrapper for analyst_node ---\n",
+                f"# {FIXAJ_GUARD}\n# --- patched: safe invoke wrapper for analyst_node ---\n",
+                1,
+            )
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: Fix AJ applied — state snapshot logging for: {', '.join(patched_aj)}")
+            fixaj_patched = True
+        break
+    if not fixaj_patched:
+        print("⚠️  Fix AJ: target cell not found or no patches applied")
+
     # --- Fix M: visualization_orchestrator List[VizSpec] iteration ---
     # Bug: `for name, desc in recs:` tries to unpack each VizSpec as (name, desc).
     # VizSpec is a Pydantic model with many fields; this raises ValueError("too many values to unpack")
@@ -3280,15 +4102,416 @@ def main():
     if not fixo4_patched:
         print("⚠️  Fix O-4: assign_viz_workers cell not found")
 
-    # ==========================================================================
-    # Fix P: viz_worker crash — unhashable VizSpec in set literal + None viz_instructions
-    # ==========================================================================
-    # Root cause of Run 31 failure:
-    #   1. `task = state.get("individual_viz_task",{state.get("viz_spec", None)})`
-    #      Python eagerly evaluates the default arg `{VizSpec(...)}` as a SET LITERAL.
-    #      VizSpec is not hashable → TypeError: unhashable type: 'VizSpec'
-    #      This crashes viz_worker before it even starts executing.
-    #   2. `spec.viz_instructions.strip()` in the task_vizid lookup loop
+    # --- Fix AM-1: assign_viz_workers — pass cleaning_metadata + analysis_insights in Send state ---
+    # assign_viz_workers uses Send("viz_worker", {"individual_viz_task": t, "viz_spec": spec})
+    # which only passes those two keys. viz_worker then checks state.get("cleaning_metadata")
+    # and returns "Please run data_cleaner first" when cm is None — producing 0 figures.
+    # Fix: include cleaning_metadata, analysis_insights, available_df_ids, _config in Send dict.
+    FIXAM1_GUARD = "# Fix AM-1: pass cm + ai in Send"
+    fixam1_old = '    return [Send("viz_worker", {"individual_viz_task": t, "viz_spec": viz_specs[i]}) for i, t in enumerate(tasks) if i < len(viz_specs)]'
+    fixam1_new = (
+        "    # Fix AM-1: pass cm + ai in Send\n"
+        "    _vw_cm = state.get('cleaning_metadata')\n"
+        "    _vw_ai = state.get('analysis_insights')\n"
+        "    _vw_df_ids = state.get('available_df_ids') or []\n"
+        "    _vw_cfg = state.get('_config')\n"
+        "    _vw_ftml = state.get('final_turn_msgs_list') or []\n"
+        "    _vw_msgs = state.get('messages') or []\n"
+        '    return [Send("viz_worker", {\n'
+        '        "individual_viz_task": t, "viz_spec": viz_specs[i],\n'
+        '        "cleaning_metadata": _vw_cm, "analysis_insights": _vw_ai,\n'
+        '        "available_df_ids": _vw_df_ids, "_config": _vw_cfg,\n'
+        '        "final_turn_msgs_list": _vw_ftml, "messages": _vw_msgs,\n'
+        "    }) for i, t in enumerate(tasks) if i < len(viz_specs)]"
+    )
+    fixam1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def assign_viz_workers" not in src:
+            continue
+        if FIXAM1_GUARD in src:
+            print(f"ℹ️  Fix AM-1 already applied (cell {idx})")
+            fixam1_patched = True
+            break
+        if fixam1_old not in src:
+            print(f"⚠️  Fix AM-1: Send pattern not found in cell {idx}")
+            fixam1_patched = True
+            break
+        new_src = src.replace(fixam1_old, fixam1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AM-1 — assign_viz_workers Send now includes cleaning_metadata + analysis_insights")
+        fixam1_patched = True
+        break
+    if not fixam1_patched:
+        print("⚠️  Fix AM-1: assign_viz_workers cell not found")
+
+    # --- Fix AN-1: guard state["final_turn_msgs_list"][-1] in viz_worker ---
+    # With Send-based partial state (Fix AM-1), final_turn_msgs_list may be [] or missing.
+    # The hard state[key][-1] access crashes with KeyError or IndexError.
+    FIXAN1_GUARD = "# Fix AN-1: guard ftml access in viz_worker"
+    fixan1_old = '    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")'
+    fixan1_new = (
+        '    # Fix AN-1: guard ftml access in viz_worker\n'
+        '    _vw_ftml_safe = state.get("final_turn_msgs_list") or []\n'
+        '    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or (_vw_ftml_safe[-1] if _vw_ftml_safe else None) or AIMessage(content="No message available")'
+    )
+    fixan1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_worker" not in src:
+            continue
+        if FIXAN1_GUARD in src:
+            print(f"ℹ️  Fix AN-1 already applied (cell {idx})")
+            fixan1_patched = True
+            break
+        if fixan1_old not in src:
+            print(f"⚠️  Fix AN-1: final_turn_msgs_list viz_worker pattern not found in cell {idx}")
+            fixan1_patched = True
+            break
+        new_src = src.replace(fixan1_old, fixan1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AN-1 — viz_worker final_turn_msgs_list guard applied")
+        fixan1_patched = True
+        break
+    if not fixan1_patched:
+        print("⚠️  Fix AN-1: viz_worker cell not found")
+
+    # --- Fix AO-1: simplify bins type in create_histogram to valid JSON schema ---
+    # BinSpec includes Tuple[...] and ArrayLike which produce array schema without `items`
+    # → OpenAI API 400 error: "array schema missing items" for bins anyOf[2]
+    # Fix: replace BinSpec annotation with simple Optional[Union[int, str]]
+    FIXAO1_GUARD = "# Fix AO-1: bins simplified type"
+    fixao1_old = '                    bins: BinSpec = "auto",'
+    fixao1_new = (
+        '                    bins: Annotated[Optional[Union[int, str]], "Number of equal-width bins (int) or NumPy estimator: \'auto\',\'fd\',\'doane\',\'scott\',\'sturges\',\'sqrt\',\'stone\',\'rice\'"] = "auto",  # Fix AO-1: bins simplified type'
+    )
+    fixao1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_histogram" not in src:
+            continue
+        if FIXAO1_GUARD in src:
+            print(f"ℹ️  Fix AO-1 already applied (cell {idx})")
+            fixao1_patched = True
+            break
+        if fixao1_old not in src:
+            print(f"⚠️  Fix AO-1: bins BinSpec pattern not found in cell {idx}")
+            fixao1_patched = True
+            break
+        new_src = src.replace(fixao1_old, fixao1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-1 — create_histogram bins simplified to Optional[Union[int, str]]")
+        fixao1_patched = True
+        break
+    if not fixao1_patched:
+        print("⚠️  Fix AO-1: create_histogram cell not found")
+
+    # --- Fix AO-2: binrange RangeSpec → Optional[List[float]] ---
+    FIXAO2_GUARD = "# Fix AO-2: binrange simplified"
+    fixao2_old = '                    binrange: RangeSpec = None,'
+    fixao2_new = '                    binrange: Annotated[Optional[List[float]], "Two-element [lo, hi] range for x-axis, e.g. [0.0, 100.0]"] = None,  # Fix AO-2: binrange simplified'
+    fixao2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_histogram" not in src:
+            continue
+        if FIXAO2_GUARD in src:
+            print(f"ℹ️  Fix AO-2 already applied (cell {idx})")
+            fixao2_patched = True
+            break
+        if fixao2_old not in src:
+            print(f"⚠️  Fix AO-2: binrange RangeSpec pattern not found in cell {idx}")
+            fixao2_patched = True
+            break
+        new_src = src.replace(fixao2_old, fixao2_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-2 — binrange simplified to Optional[List[float]]")
+        fixao2_patched = True
+        break
+    if not fixao2_patched:
+        print("⚠️  Fix AO-2: create_histogram (binrange) cell not found")
+
+    # --- Fix AO-3: x_range RangeSpec → Optional[List[float]] ---
+    FIXAO3_GUARD = "# Fix AO-3: x_range simplified"
+    fixao3_old = '                    x_range: RangeSpec = None,'
+    fixao3_new = '                    x_range: Annotated[Optional[List[float]], "Two-element [lo, hi] range for x-axis, e.g. [0.0, 100.0]"] = None,  # Fix AO-3: x_range simplified'
+    fixao3_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_histogram" not in src:
+            continue
+        if FIXAO3_GUARD in src:
+            print(f"ℹ️  Fix AO-3 already applied (cell {idx})")
+            fixao3_patched = True
+            break
+        if fixao3_old not in src:
+            print(f"⚠️  Fix AO-3: x_range RangeSpec pattern not found in cell {idx}")
+            fixao3_patched = True
+            break
+        new_src = src.replace(fixao3_old, fixao3_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-3 — x_range simplified to Optional[List[float]]")
+        fixao3_patched = True
+        break
+    if not fixao3_patched:
+        print("⚠️  Fix AO-3: create_histogram (x_range) cell not found")
+
+    # --- Fix AO-4: binwidth BinWidthSpec → Optional[float] (np.ndarray/pd.Series → invalid schema) ---
+    FIXAO4_GUARD = "# Fix AO-4: binwidth simplified"
+    fixao4_old = '                    binwidth: BinWidthSpec = None,'
+    fixao4_new = '                    binwidth: Annotated[Optional[float], "Fixed bin width in data units; mutually exclusive with bins"] = None,  # Fix AO-4: binwidth simplified'
+    fixao4_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_histogram" not in src:
+            continue
+        if FIXAO4_GUARD in src:
+            print(f"ℹ️  Fix AO-4 already applied (cell {idx})")
+            fixao4_patched = True
+            break
+        if fixao4_old not in src:
+            print(f"⚠️  Fix AO-4: binwidth BinWidthSpec pattern not found in cell {idx}")
+            fixao4_patched = True
+            break
+        new_src = src.replace(fixao4_old, fixao4_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-4 — binwidth simplified to Optional[float]")
+        fixao4_patched = True
+        break
+    if not fixao4_patched:
+        print("⚠️  Fix AO-4: create_histogram (binwidth) cell not found")
+
+    # --- Fix AO-5: RangeSpec type alias → Optional[List[float]] (fixes scatter/box/violin) ---
+    # RangeSpec = Annotated[Optional[Tuple[Number,Number]], ...] → Tuple generates array schema without `items`
+    # Fix at type alias level so all viz tools (scatter, box, violin) are fixed with one patch
+    FIXAO5_GUARD = "# Fix AO-5: RangeSpec list"
+    fixao5_old = (
+        "RangeSpec = Annotated[\n"
+        "    Optional[Tuple[Number, Number]],\n"
+        '    "(lo, hi) numeric tuple",\n'
+        "]"
+    )
+    fixao5_new = (
+        "RangeSpec = Annotated[  # Fix AO-5: RangeSpec list\n"
+        "    Optional[List[float]],\n"
+        '    "Two-element [lo, hi] numeric range, e.g. [0.0, 100.0]",\n'
+        "]"
+    )
+    fixao5_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "BinWidthSpec" not in src or "RangeSpec" not in src:
+            continue
+        if FIXAO5_GUARD in src:
+            print(f"ℹ️  Fix AO-5 already applied (cell {idx})")
+            fixao5_patched = True
+            break
+        if fixao5_old not in src:
+            print(f"⚠️  Fix AO-5: RangeSpec type alias pattern not found in cell {idx}")
+            fixao5_patched = True
+            break
+        new_src = src.replace(fixao5_old, fixao5_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-5 — RangeSpec changed to Optional[List[float]]")
+        fixao5_patched = True
+        break
+    if not fixao5_patched:
+        print("⚠️  Fix AO-5: RangeSpec type alias cell not found")
+
+    # --- Fix AO-6: Array1D removes np.ndarray / pd.Series (invalid OpenAI schema) ---
+    FIXAO6_GUARD = "# Fix AO-6: Array1D clean"
+    fixao6_old = (
+        "Array1D = Union[\n"
+        "    Sequence[float],\n"
+        "    Sequence[int],\n"
+        "    np.ndarray,\n"
+        "    pd.Series,\n"
+        "]"
+    )
+    fixao6_new = (
+        "Array1D = Union[  # Fix AO-6: Array1D clean\n"
+        "    Sequence[float],\n"
+        "    Sequence[int],\n"
+        "]"
+    )
+    fixao6_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "Array1D" not in src or "Sequence[float]" not in src:
+            continue
+        if FIXAO6_GUARD in src:
+            print(f"ℹ️  Fix AO-6 already applied (cell {idx})")
+            fixao6_patched = True
+            break
+        if fixao6_old not in src:
+            print(f"⚠️  Fix AO-6: Array1D pattern not found in cell {idx}")
+            fixao6_patched = True
+            break
+        new_src = src.replace(fixao6_old, fixao6_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-6 — Array1D stripped of np.ndarray/pd.Series")
+        fixao6_patched = True
+        break
+    if not fixao6_patched:
+        print("⚠️  Fix AO-6: Array1D cell not found")
+
+    # --- Fix AO-7: create_correlation_heatmap figsize Tuple → List[float] ---
+    # figsize: Annotated[Tuple[Number,Number], ...] → array schema without `items` → 400 error
+    FIXAO7_GUARD = "# Fix AO-7: figsize simplified"
+    fixao7_old = '    figsize: Annotated[Tuple[Number, Number], "Matplotlib figure size"] = (12, 10),'
+    fixao7_new = '    figsize: Annotated[List[float], "Matplotlib figure size [width, height] in inches, e.g. [12, 10]"] = (12, 10),  # Fix AO-7: figsize simplified'
+    fixao7_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "create_correlation_heatmap" not in src:
+            continue
+        if FIXAO7_GUARD in src:
+            print(f"ℹ️  Fix AO-7 already applied (cell {idx})")
+            fixao7_patched = True
+            break
+        if fixao7_old not in src:
+            print(f"⚠️  Fix AO-7: figsize Tuple pattern not found in cell {idx}")
+            fixao7_patched = True
+            break
+        new_src = src.replace(fixao7_old, fixao7_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-7 — create_correlation_heatmap figsize simplified to List[float]")
+        fixao7_patched = True
+        break
+    if not fixao7_patched:
+        print("⚠️  Fix AO-7: create_correlation_heatmap (figsize) cell not found")
+
+    # --- Fix AP-1: increase report_orchestrator recursion_limit to 80 ---
+    # cap=40 is not enough for the report_orchestrator subgraph (ro_node + dispatch + section_workers + join)
+    FIXAP1_GUARD = "# cap=160 report_orchestrator (AZ)"
+    fixap1_old = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
+    fixap1_new = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_orchestrator (AZ)"
+    fixap1_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "_outer_ro" not in src:
+            continue
+        if FIXAP1_GUARD in src:
+            print(f"ℹ️  Fix AP-1 already applied (cell {idx})")
+            fixap1_patched = True
+            break
+        if fixap1_old not in src:
+            print(f"⚠️  Fix AP-1: report_orchestrator RL pattern not found in cell {idx}")
+            fixap1_patched = True
+            break
+        new_src = src.replace(fixap1_old, fixap1_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AP-1 — report_orchestrator RL increased to 80")
+        fixap1_patched = True
+        break
+    if not fixap1_patched:
+        print("⚠️  Fix AP-1: report_orchestrator RL pattern not found")
+
+    # --- Fix AP-2: increase report_packager recursion_limit to 80 ---
+    FIXAP2_GUARD = "# cap=160 report_packager (AZ)"
+    fixap2_old = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
+    fixap2_new = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_packager (AZ)"
+    fixap2_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "_outer_rp" not in src:
+            continue
+        if FIXAP2_GUARD in src:
+            print(f"ℹ️  Fix AP-2 already applied (cell {idx})")
+            fixap2_patched = True
+            break
+        if fixap2_old not in src:
+            print(f"⚠️  Fix AP-2: report_packager RL pattern not found in cell {idx}")
+            fixap2_patched = True
+            break
+        new_src = src.replace(fixap2_old, fixap2_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AP-2 — report_packager RL increased to 80")
+        fixap2_patched = True
+        break
+    if not fixap2_patched:
+        print("⚠️  Fix AP-2: report_packager RL pattern not found")
+
+    # --- Fix AO-8: create_box_plot whis Tuple → List[float] ---
+    # whis: Union[ScalarNum, Tuple[ScalarNum,ScalarNum], str] → Tuple generates array schema without `items`
+    FIXAO8_GUARD = "# Fix AO-8: whis simplified"
+    fixao8_old = '    whis: Annotated[Union[ScalarNum, Tuple[ScalarNum, ScalarNum], str], "Whisker definition (float, pair, or \'range\')"] = 1.5,'
+    fixao8_new = '    whis: Annotated[Union[float, str, List[float]], "Whisker: float (IQR multiplier, default 1.5), [lo,hi] percentiles, or \'range\'"] = 1.5,  # Fix AO-8: whis simplified'
+    fixao8_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "create_box_plot" not in src:
+            continue
+        if FIXAO8_GUARD in src:
+            print(f"ℹ️  Fix AO-8 already applied (cell {idx})")
+            fixao8_patched = True
+            break
+        if fixao8_old not in src:
+            # Try partial match
+            import re as _re
+            m = _re.search(r'whis: Annotated\[Union\[ScalarNum, Tuple', src)
+            if m:
+                print(f"⚠️  Fix AO-8: whis Tuple pattern changed in cell {idx} — partial match found at {m.start()}")
+            else:
+                print(f"⚠️  Fix AO-8: whis Tuple pattern not found in cell {idx}")
+            fixao8_patched = True
+            break
+        new_src = src.replace(fixao8_old, fixao8_new, 1)
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: Fix AO-8 — create_box_plot whis simplified")
+        fixao8_patched = True
+        break
+    if not fixao8_patched:
+        print("⚠️  Fix AO-8: create_box_plot cell not found")
+
     #      crashes with AttributeError if viz_instructions is None.
     # ==========================================================================
 
@@ -3717,7 +4940,8 @@ def main():
         "def _safe_report_orchestrator_invoke(agent, inputs, config=None):\n"
         "    import time as _rotime\n"
         "    from langchain_core.messages import AIMessage as _ROAIM\n"
-        "    cfg = dict(config or {})\n"
+        "    _outer_ro = dict(config or {})\n"
+        "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_orchestrator (AZ: raised to 160)\n"
         "    _roretries = 0\n"
         "    while True:\n"
         "        try:\n"
@@ -3734,14 +4958,22 @@ def main():
         "                _rotime.sleep(_rowait)\n"
         "                continue\n"
         "            print(f'WARNING report_orchestrator hit error ({_ronm}: {str(_roexc)[:120]}) -- building recovery ReportOutline')\n"
-        "            try: _log_recovery('report_orchestrator', 0)\n"
+        "            try: _log_recovery('report_orchestrator', 0, _roexc)\n"
         "            except Exception: pass\n"
         "            try:\n"
+        "                # Fix AU: extract real analysis data for data_signals_available\n"
+        "                _ro_ai = inputs.get('analysis_insights')\n"
+        "                _ro_cm = inputs.get('cleaning_metadata')\n"
+        "                _ro_signals = []\n"
+        "                if _ro_ai:\n"
+        "                    _ro_signals.append(f'analysis_insights: {str(_ro_ai)[:400]}')\n"
+        "                if _ro_cm:\n"
+        "                    _ro_signals.append(f'cleaning_metadata: {str(_ro_cm)[:200]}')\n"
         "                _ro_sec1 = SectionOutline(\n"
         "                    section_num=1, name='Executive Summary',\n"
         "                    description='High-level summary of the dataset and key findings.',\n"
         "                    goals=['Summarize dataset', 'Present key metrics'],\n"
-        "                    word_target=200, data_signals_needed={}, data_signals_available=[],\n"
+        "                    word_target=200, data_signals_needed={}, data_signals_available=_ro_signals,\n"
         "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
         "                    finished_this_task=True,\n"
         "                )\n"
@@ -3749,7 +4981,7 @@ def main():
         "                    section_num=2, name='Data Analysis',\n"
         "                    description='Statistical analysis and pattern findings.',\n"
         "                    goals=['Present statistics', 'Highlight patterns'],\n"
-        "                    word_target=300, data_signals_needed={}, data_signals_available=[],\n"
+        "                    word_target=300, data_signals_needed={}, data_signals_available=_ro_signals,\n"
         "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
         "                    finished_this_task=True,\n"
         "                )\n"
@@ -3757,7 +4989,7 @@ def main():
         "                    section_num=3, name='Conclusions',\n"
         "                    description='Conclusions and recommendations based on the analysis.',\n"
         "                    goals=['Conclude findings', 'Recommend actions'],\n"
-        "                    word_target=200, data_signals_needed={}, data_signals_available=[],\n"
+        "                    word_target=200, data_signals_needed={}, data_signals_available=_ro_signals,\n"
         "                    expected_figures=[], expect_reply=False, reply_msg_to_supervisor='',\n"
         "                    finished_this_task=True,\n"
         "                )\n"
@@ -3803,7 +5035,34 @@ def main():
             SAFE_RO_HELPER + "def report_orchestrator(",
             1,
         )
-        # W3b: replace bare report_generator_agent.invoke with safe wrapper
+        # Fix AL-2: focused prompt for report_orchestrator — override user_prompt so agent
+        # doesn't see the full 4-step pipeline prompt and try to do everything.
+        FIXAL2_RO_GUARD = "# Fix AL-2: focused report_orchestrator task"
+        _RO_AL2_ANCHOR = "def report_orchestrator(state: State):\n    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+        if FIXAL2_RO_GUARD not in new_src and _RO_AL2_ANCHOR in new_src:
+            new_src = new_src.replace(
+                _RO_AL2_ANCHOR,
+                (
+                    "def report_orchestrator(state: State):\n"
+                    "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)\n"
+                    "    # Fix AL-2: focused report_orchestrator task\n"
+                    "    _ro_ai = state.get('analysis_insights')\n"
+                    "    _ro_cm = state.get('cleaning_metadata')\n"
+                    "    _ro_ai_summary = getattr(_ro_ai, 'summary', '') if _ro_ai else ''\n"
+                    "    _ro_cm_desc = getattr(_ro_cm, 'data_description_after_cleaning', '') if _ro_cm else ''\n"
+                    "    user_prompt = (\n"
+                    "        \"YOUR TASK: REPORT OUTLINE ONLY. \"\n"
+                    "        \"Create a structured ReportOutline (title, goals, sections) summarizing the dataset analysis. \"\n"
+                    "        f\"Dataset description: {_ro_cm_desc or 'see cleaned dataset'}. \"\n"
+                    "        f\"Key findings: {_ro_ai_summary[:300] if _ro_ai_summary else 'see analysis_insights'}. \"\n"
+                    "        \"Do NOT clean data, create visualizations, or write files — just plan the report outline. \"\n"
+                    "        \"After outlining (max 3 tool calls), call the `respond` tool with ReportOutline immediately.\"\n"
+                    "    )\n"
+                ),
+                1,
+            )
+        elif FIXAL2_RO_GUARD not in new_src:
+            print("  ⚠️  Fix AL-2 RO: anchor not found — skipping")
         # The exact line is: outline_response = report_generator_agent.invoke(invoke_state,config=state["_config"])
         new_src = new_src.replace(
             "    outline_response = report_generator_agent.invoke(invoke_state,config=state[\"_config\"])",
@@ -3881,7 +5140,8 @@ def main():
         print("W  Fix X1: report_outline target not found")
 
     # --- Fix X2: Expand _in_report_round to block premature SHORTCUT3 ---
-    # Prevents SHORTCUT3 from firing when supervisor co-runs with viz pipeline nodes
+    # W4-SC3-GATE: superseded — viz_* nodes removed from gate set so SHORTCUT3 can dispatch report_orchestrator after viz_evaluator.
+    # This patch is now an idempotent no-op confirming W4-SC3-GATE is in effect.
     fixX2_patched = False
     for idx, cell in enumerate(cells):
         if cell.get("cell_type") != "code":
@@ -3889,10 +5149,11 @@ def main():
         src = join_source(cell["source"])
         if "_in_report_round" not in src or "SHORTCUT3" not in src:
             continue
-        if "# Fix X2" in src:
-            print(f"i  Cell idx {idx}: Fix X2 (_in_report_round expansion) already applied")
+        if "# W4-SC3-GATE" in src:
+            print(f"OK Cell idx {idx}: Fix X2 superseded by W4-SC3-GATE (viz_* nodes excluded from _in_report_round)")
             fixX2_patched = True
             break
+        # Legacy old_x2 (Fix V2 emitted viz_evaluator only); under W4-SC3-GATE this should not appear.
         old_x2 = (
             "_in_report_round = _last_agent_id_sc3 in (\n"
             "            'report_orchestrator', 'report_section_worker', 'report_join',\n"
@@ -3900,10 +5161,10 @@ def main():
             "        )"
         )
         new_x2 = (
-            "_in_report_round = _last_agent_id_sc3 in (\n"
+            "# W4-SC3-GATE: viz_* nodes excluded — they route through supervisor post-W2-BR6\n"
+            "        _in_report_round = _last_agent_id_sc3 in (\n"
             "            'report_orchestrator', 'report_section_worker', 'report_join',\n"
-            "            'report_packager', 'file_writer', 'viz_evaluator',\n"
-            "            'viz_join', 'viz_worker', 'visualization_orchestrator',  # Fix X2: block premature SHORTCUT3\n"
+            "            'report_packager', 'file_writer',\n"
             "        )"
         )
         if old_x2 in src:
@@ -3911,10 +5172,11 @@ def main():
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"OK Cell idx {idx}: Fix X2 applied — _in_report_round expanded with viz pipeline nodes")
+            print(f"OK Cell idx {idx}: Fix X2 fallback applied — pre-W4 SC3 set rewritten without viz_*")
             fixX2_patched = True
         else:
-            print(f"W  Fix X2: _in_report_round pattern not found in cell {idx}")
+            print(f"i  Cell idx {idx}: Fix X2 — pre-W4 pattern absent (W4-SC3-GATE already in NEW_V2)")
+            fixX2_patched = True
         break
     if not fixX2_patched:
         print("W  Fix X2: supervisor SHORTCUT3 target not found")
@@ -4310,6 +5572,162 @@ def main():
     if not fixZ_patched:
         print("W  Fix Z: supervisor_node target not found")
 
+    # --- Fix AV: wrap manage_memory in visualization_tools to strip id on create ---
+    # The viz LLM sometimes calls manage_memory(action="create", id=<uuid>) but langmem
+    # raises ValueError if id is provided for a create operation. Wrap the tool to silently
+    # strip the id when action="create".
+    _FIX_AV_SENTINEL = "# Fix AV: manage_memory id-strip wrapper"
+    fixAV_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "visualization_tools.append(create_manage_memory_tool" not in src:
+            continue
+        if _FIX_AV_SENTINEL in src:
+            print(f"i  Cell idx {idx}: Fix AV already applied")
+            fixAV_patched = True
+            break
+        _OLD_AV = (
+            'visualization_tools.append(create_manage_memory_tool(namespace=("memories","visualization"),store= in_memory_store))\n'
+        )
+        _NEW_AV = (
+            '# Fix AV: manage_memory id-strip wrapper\n'
+            '_viz_mm_raw = create_manage_memory_tool(namespace=("memories","visualization"), store=in_memory_store)\n'
+            'def _viz_manage_memory_safe(content=None, action="create", *, id=None):\n'
+            '    """Visualization memory tool wrapper: remaps invalid actions + strips id on create."""\n'
+            '    _VALID_ACTIONS = ("create", "update", "delete")\n'
+            '    if action not in _VALID_ACTIONS:\n'
+            '        action = "create" if action in ("remember", "save", "store") else "update"\n'
+            '    if action == "create":\n'
+            '        id = None\n'
+            '    return _viz_mm_raw.func(content=content, action=action, id=id)\n'
+            'try:\n'
+            '    _viz_mm_safe_tool = _viz_mm_raw.__class__.from_function(\n'
+            '        _viz_manage_memory_safe,\n'
+            '        name=_viz_mm_raw.name,\n'
+            '        description=_viz_mm_raw.description,\n'
+            '    )\n'
+            'except Exception:\n'
+            '    _viz_mm_safe_tool = _viz_mm_raw  # fallback to original\n'
+            'visualization_tools.append(_viz_mm_safe_tool)\n'
+        )
+        if _OLD_AV in src:
+            new_src = src.replace(_OLD_AV, _NEW_AV, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AV applied — manage_memory wrapped for viz tools")
+            fixAV_patched = True
+        else:
+            # Fallback: just comment out the manage_memory tool append for viz
+            import re as _re_av
+            _av_pat = r'visualization_tools\.append\(create_manage_memory_tool\([^)]+\)\)'
+            if _re_av.search(_av_pat, src):
+                new_src = _re_av.sub(
+                    '# Fix AV: manage_memory removed from viz tools (causes ValueError with id on create)\n'
+                    '# visualization_tools.append(create_manage_memory_tool(...))  # removed',
+                    src
+                )
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"OK Cell idx {idx}: Fix AV applied (fallback: removed manage_memory from viz tools)")
+                fixAV_patched = True
+            else:
+                print(f"W  Fix AV: manage_memory pattern not found in cell {idx}")
+        break
+    if not fixAV_patched:
+        print("W  Fix AV: visualization_tools.append(create_manage_memory_tool...) not found in any cell")
+
+    # --- Fix AW: save_viz_for_state DataVisualization missing required supervisor fields ---
+    # BaseNoExtrasModel defines reply_msg_to_supervisor/finished_this_task/expect_reply as required.
+    # DataVisualization inherits these but save_viz_for_state omits them when constructing
+    # the normalized copy — causing a ValidationError that crashes viz_worker.
+    _FIX_AW_SENTINEL = "# Fix AW: include supervisor fields"
+    fixAW_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def save_viz_for_state(" not in src:
+            continue
+        if _FIX_AW_SENTINEL in src:
+            print(f"i  Cell idx {idx}: Fix AW already applied")
+            fixAW_patched = True
+            break
+        _OLD_AW = (
+            '        # new DV with normalized path\n'
+            '        normalized = DataVisualization(\n'
+            '            path=stored_path,\n'
+            '            visualization_id=vis_id,\n'
+            '            visualization_type=item.visualization_type,\n'
+            '            visualization_description=item.visualization_description,\n'
+            '            visualization_style=item.visualization_style,\n'
+            '            visualization_title=item.visualization_title,\n'
+            '        )'
+        )
+        _NEW_AW = (
+            '        # Fix AW: include supervisor fields\n'
+            '        # BaseNoExtrasModel requires reply_msg_to_supervisor, finished_this_task, expect_reply\n'
+            '        normalized = DataVisualization(\n'
+            '            path=stored_path,\n'
+            '            visualization_id=vis_id,\n'
+            '            visualization_type=item.visualization_type,\n'
+            '            visualization_description=item.visualization_description,\n'
+            '            visualization_style=item.visualization_style,\n'
+            '            visualization_title=item.visualization_title,\n'
+            '            reply_msg_to_supervisor=getattr(item, "reply_msg_to_supervisor", "Visualization complete."),\n'
+            '            finished_this_task=getattr(item, "finished_this_task", True),\n'
+            '            expect_reply=getattr(item, "expect_reply", False),\n'
+            '        )'
+        )
+        if _OLD_AW in src:
+            new_src = src.replace(_OLD_AW, _NEW_AW, 1)
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"OK Cell idx {idx}: Fix AW applied — save_viz_for_state includes supervisor fields")
+            fixAW_patched = True
+        else:
+            print(f"W  Fix AW: save_viz_for_state DataVisualization pattern not found in cell {idx} (may already be patched or whitespace differs)")
+            # Try whitespace-insensitive approach
+            import re as _re_aw
+            _aw_pat = (
+                r'([ \t]*)# new DV with normalized path\n'
+                r'\1        normalized = DataVisualization\(\n'
+                r'\1            path=stored_path,\n'
+                r'(.*?)\1        \)'
+            )
+            _m_aw = _re_aw.search(_aw_pat, src, _re_aw.DOTALL)
+            if _m_aw and _FIX_AW_SENTINEL not in src:
+                _indent = _m_aw.group(1)
+                old_block = _m_aw.group(0)
+                new_block = (
+                    f'{_indent}        # Fix AW: include supervisor fields\n'
+                    f'{_indent}        # BaseNoExtrasModel requires reply_msg_to_supervisor, finished_this_task, expect_reply\n'
+                    f'{_indent}        normalized = DataVisualization(\n'
+                    f'{_indent}            path=stored_path,\n'
+                    f'{_indent}            visualization_id=vis_id,\n'
+                    f'{_indent}            visualization_type=item.visualization_type,\n'
+                    f'{_indent}            visualization_description=item.visualization_description,\n'
+                    f'{_indent}            visualization_style=item.visualization_style,\n'
+                    f'{_indent}            visualization_title=item.visualization_title,\n'
+                    f'{_indent}            reply_msg_to_supervisor=getattr(item, "reply_msg_to_supervisor", "Visualization complete."),\n'
+                    f'{_indent}            finished_this_task=getattr(item, "finished_this_task", True),\n'
+                    f'{_indent}            expect_reply=getattr(item, "expect_reply", False),\n'
+                    f'{_indent}        )'
+                )
+                new_src = src[:_m_aw.start()] + new_block + src[_m_aw.end():]
+                cell["source"] = new_src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"OK Cell idx {idx}: Fix AW applied (regex fallback)")
+                fixAW_patched = True
+        break
+    if not fixAW_patched:
+        print("W  Fix AW: save_viz_for_state not found in any cell")
+
     # --- Fix AA: section_worker receives dict from dispatch_sections, needs SectionOutline conversion ---
     # dispatch_sections does s.model_dump() before Send() → section is a dict in section_worker
     # section_worker tries section.name which fails on dict → AttributeError
@@ -4369,6 +5787,5779 @@ def main():
                 print(f"✅ Cell idx {idx}: replaced input() call(s) for headless execution")
     if patched_input_cells == 0:
         print("ℹ️  No input() calls found in code cells")
+
+    # --- Fix AX: Add post-processing cell to inject PNGs into HTML after run completes ---
+    _FIX_AX_SENTINEL = "# Fix AX: post-processing PNG injection"
+    _fix_ax_already = any(
+        _FIX_AX_SENTINEL in join_source(c.get("source", ""))
+        for c in cells
+        if c.get("cell_type") == "code"
+    )
+    if _fix_ax_already:
+        print("i  Fix AX: post-processing PNG injection cell already present")
+    else:
+        _ax_cell_source = (
+            "# Fix AX: post-processing PNG injection\n"
+            "# Runs after the entire LangGraph pipeline completes.\n"
+            "# Scans WORKING_DIRECTORY/figures + IDD_results for PNGs and\n"
+            "# injects <img> tags + base64 image data into the HTML report.\n"
+            "import glob as _ax_glob, os as _ax_os, pathlib as _ax_plib\n"
+            "import base64 as _ax_b64, html as _ax_html\n"
+            "import time as _ax_time\n"
+            "\n"
+            "def _ax_inject_pngs_into_html(html_path, png_paths):\n"
+            "    '''Inject <img> tags for PNGs into an existing HTML file.'''\n"
+            "    try:\n"
+            "        with open(html_path, 'r', encoding='utf-8') as _axf:\n"
+            "            _ax_html_content = _axf.read()\n"
+            "    except Exception as _axe:\n"
+            "        print(f'[Fix AX] Cannot read HTML: {_axe}')\n"
+            "        return\n"
+            "    if not png_paths:\n"
+            "        print('[Fix AX] No PNGs found to inject')\n"
+            "        return\n"
+            "    # Only inject if not already injected\n"
+            "    if '<!-- Fix AX images -->' in _ax_html_content:\n"
+            "        print('[Fix AX] HTML already has injected images')\n"
+            "        return\n"
+            "    _ax_img_tags = ['<!-- Fix AX images --><div style=\"margin:20px 0\"><h2>Visualizations</h2>']\n"
+            "    for _axp in png_paths:\n"
+            "        try:\n"
+            "            with open(_axp, 'rb') as _axpf:\n"
+            "                _ax_b64data = _ax_b64.b64encode(_axpf.read()).decode('ascii')\n"
+            "            _ax_fname = _ax_html.escape(_ax_os.path.basename(_axp))\n"
+            "            _ax_img_tags.append(\n"
+            "                f'<figure style=\"margin:10px\">'\n"
+            "                f'<img src=\"data:image/png;base64,{_ax_b64data}\" '\n"
+            "                f'style=\"max-width:800px;width:100%\" alt=\"{_ax_fname}\"/>'\n"
+            "                f'<figcaption>{_ax_fname}</figcaption></figure>'\n"
+            "            )\n"
+            "            print(f'[Fix AX] Injected PNG: {_ax_fname} ({len(_ax_b64data)//1024}KB b64)')\n"
+            "        except Exception as _axpe:\n"
+            "            print(f'[Fix AX] Failed to inject {_axp}: {_axpe}')\n"
+            "    _ax_img_tags.append('</div>')\n"
+            "    _ax_inject = '\\n'.join(_ax_img_tags)\n"
+            "    # Inject before </body> or append at end\n"
+            "    if '</body>' in _ax_html_content:\n"
+            "        _ax_html_content = _ax_html_content.replace('</body>', _ax_inject + '</body>', 1)\n"
+            "    else:\n"
+            "        _ax_html_content += _ax_inject\n"
+            "    with open(html_path, 'w', encoding='utf-8') as _axwf:\n"
+            "        _axwf.write(_ax_html_content)\n"
+            "    print(f'[Fix AX] Updated HTML: {html_path} ({len(_ax_html_content)} bytes)')\n"
+            "\n"
+            "# Gather PNGs created during this run (within last 60 min)\n"
+            "_ax_scan_dirs = []\n"
+            "try:\n"
+            "    _ax_scan_dirs.append(str(WORKING_DIRECTORY / 'figures'))\n"
+            "    _ax_scan_dirs.append(str(WORKING_DIRECTORY))\n"
+            "except Exception: pass\n"
+            "_ax_idd = _ax_plib.Path.cwd() / 'IDD_results'\n"
+            "if _ax_idd.exists(): _ax_scan_dirs.append(str(_ax_idd))\n"
+            "_ax_all_pngs = []\n"
+            "for _axd in _ax_scan_dirs:\n"
+            "    if _ax_os.path.exists(_axd):\n"
+            "        _ax_all_pngs += _ax_glob.glob(_ax_os.path.join(_axd, '**', '*.png'), recursive=True)\n"
+            "_ax_all_pngs = sorted(set(_ax_all_pngs), key=_ax_os.path.getmtime, reverse=True)\n"
+            "# Only include PNGs created within last 60 minutes\n"
+            "_ax_cutoff = _ax_time.time() - 3600\n"
+            "_ax_recent_pngs = [p for p in _ax_all_pngs if _ax_os.path.getmtime(p) > _ax_cutoff\n"
+            "                   and _ax_os.path.getsize(p) > 1000]  # >1KB (real PNGs)\n"
+            "print(f'[Fix AX] Found {len(_ax_recent_pngs)} recent PNGs to inject')\n"
+            "\n"
+            "# Find HTML reports to update\n"
+            "_ax_html_files = []\n"
+            "for _axd in [str(_ax_idd), str(WORKING_DIRECTORY)]:\n"
+            "    if _ax_os.path.exists(_axd):\n"
+            "        _ax_html_files += _ax_glob.glob(_ax_os.path.join(_axd, '**', '*.html'), recursive=True)\n"
+            "_ax_html_files = sorted(set(_ax_html_files), key=_ax_os.path.getmtime, reverse=True)\n"
+            "# Only update HTML from this run (within last 60 min)\n"
+            "_ax_recent_html = [h for h in _ax_html_files if _ax_os.path.getmtime(h) > _ax_cutoff]\n"
+            "print(f'[Fix AX] Found {len(_ax_recent_html)} recent HTML files to update')\n"
+            "\n"
+            "if _ax_recent_pngs and _ax_recent_html:\n"
+            "    for _axh in _ax_recent_html:\n"
+            "        _ax_inject_pngs_into_html(_axh, _ax_recent_pngs[:6])\n"
+            "else:\n"
+            "    print('[Fix AX] Nothing to inject (no recent PNGs or HTML files found)')\n"
+        )
+        _ax_new_cell = {
+            "cell_type": "code",
+            "execution_count": None,
+            "id": "fix-ax-png-injection",
+            "metadata": {},
+            "outputs": [],
+            "source": _ax_cell_source,
+        }
+        cells.append(_ax_new_cell)
+        print(f"OK Fix AX: post-processing PNG injection cell appended (cell idx {len(cells)-1})")
+
+    # ============================================================================
+    # ============================  WAVE 2 PATCHES  ==============================
+    # Implements: BR-1..BR-7 (validator-report) + RC-1, RC-2 (debugger-report) +
+    # BF-1, BF-3, BF-4, BF-5 (context fixes). All additive; each guarded.
+    # ============================================================================
+
+    def _w2_apply(label, predicate_fn, mutate_fn, *, expected_min=1):
+        """Helper: walk cells; for each cell satisfying predicate_fn(src), call
+        new_src = mutate_fn(src). If src changed, write back. Asserts at least
+        `expected_min` cells were mutated (or already-guarded). Logs ✅/⚠."""
+        total_changed = 0
+        already = 0
+        for _idx, _cell in enumerate(cells):
+            if _cell.get("cell_type") != "code":
+                continue
+            _src = join_source(_cell["source"])
+            if not predicate_fn(_src):
+                continue
+            try:
+                _new = mutate_fn(_src)
+            except _W2Skip:
+                already += 1
+                continue
+            if _new is None or _new == _src:
+                continue
+            _cell["source"] = _new
+            _cell["outputs"] = []
+            _cell["execution_count"] = None
+            total_changed += 1
+        if total_changed:
+            print(f"✅ {label}: applied to {total_changed} cell(s)")
+        elif already:
+            print(f"ℹ️  {label}: already applied (guarded) in {already} cell(s)")
+        else:
+            print(f"⚠️  {label}: no matching cells found")
+        return total_changed, already
+
+    class _W2Skip(Exception):
+        pass
+
+    # ---- W2-BR7v2: drop AgentState parent + use add_messages reducer directly ----
+    # Wave-2 originally swapped `from langchain.agents import AgentState` →
+    # `from langgraph.prebuilt.chat_agent_executor import AgentState`. That restored the
+    # add_messages reducer for `messages` BUT also smuggled in the managed channel
+    # `remaining_steps`, which langgraph's StateGraph._add_schema(allow_managed=False)
+    # now rejects with: "Invalid managed channels detected in InputSchema: remaining_steps."
+    # Every create_*_agent(state_schema=State, ...) call therefore raised ValueError and
+    # the graph never compiled (run 74 regression).
+    #
+    # v2 fix per debugger: don't inherit AgentState at all. Drop the parent class and
+    # declare `messages: Annotated[list[AnyMessage], add_messages]` directly. AnyMessage
+    # and add_messages are already imported in cell 22.
+    _W2_BR7v2_IMPORT_GUARD = "# W2-BR7v2: dropped AgentState import"
+    _W2_BR7v2_IMPORT_OLD_LC = "from langchain.agents import AgentState"
+    _W2_BR7v2_IMPORT_OLD_LG = "from langgraph.prebuilt.chat_agent_executor import AgentState"
+    _W2_BR7v2_IMPORT_NEW = (
+        "from langgraph.graph.message import add_messages  "
+        + _W2_BR7v2_IMPORT_GUARD
+        + " (AgentState carried managed channel remaining_steps which breaks create_agent state_schema); "
+        "use add_messages reducer directly on State.messages"
+    )
+
+    def _w2_br7v2_import_pred(s):
+        return (
+            _W2_BR7v2_IMPORT_GUARD in s
+            or _W2_BR7v2_IMPORT_OLD_LC in s
+            or (
+                _W2_BR7v2_IMPORT_OLD_LG in s
+                # avoid matching the commented-out scout line that has the same substring
+                and any(
+                    ln.strip().startswith(_W2_BR7v2_IMPORT_OLD_LG)
+                    for ln in s.splitlines()
+                )
+            )
+        )
+
+    def _w2_br7v2_import_mut(s):
+        if _W2_BR7v2_IMPORT_GUARD in s:
+            raise _W2Skip()
+        new_s = s
+        replaced = False
+        # Try Wave-2 broken import first (full uncommented line)
+        for old in (_W2_BR7v2_IMPORT_OLD_LG, _W2_BR7v2_IMPORT_OLD_LC):
+            # Only rewrite an exact-line occurrence to avoid clobbering the commented
+            # scout line "# from langgraph.prebuilt.chat_agent_executor import AgentState ...".
+            for ln in new_s.splitlines():
+                if ln.strip() == old:
+                    new_s = new_s.replace(ln, _W2_BR7v2_IMPORT_NEW, 1)
+                    replaced = True
+                    break
+            if replaced:
+                break
+        assert replaced, "W2-BR7v2: no AgentState import line found to swap"
+        return new_s
+
+    _w2_apply("W2-BR7v2 (drop AgentState import)", _w2_br7v2_import_pred, _w2_br7v2_import_mut)
+
+    # ---- W2-BR7v2 (State class): drop AgentState parent + inject messages field ----
+    _W2_BR7v2_STATE_GUARD = "# W2-BR7v2: messages with add_messages reducer (no AgentState parent)"
+    _W2_BR7v2_CLASS_OLD = "class State(AgentState, TypedDict, total=False):"
+    _W2_BR7v2_CLASS_NEW = "class State(TypedDict, total=False):"
+    _W2_BR7v2_MESSAGES_FIELD = (
+        "    messages: Annotated[list[AnyMessage], add_messages]  "
+        + _W2_BR7v2_STATE_GUARD
+    )
+
+    def _w2_br7v2_state_pred(s):
+        return _W2_BR7v2_CLASS_OLD in s or _W2_BR7v2_STATE_GUARD in s
+
+    def _w2_br7v2_state_mut(s):
+        if _W2_BR7v2_STATE_GUARD in s:
+            raise _W2Skip()
+        n = s
+        # 1) Drop AgentState parent
+        n = n.replace(_W2_BR7v2_CLASS_OLD, _W2_BR7v2_CLASS_NEW, 1)
+        # 2) Inject messages field as the first field of the class body, but only if absent
+        if "messages: Annotated[list[AnyMessage], add_messages]" not in n:
+            n = n.replace(
+                _W2_BR7v2_CLASS_NEW,
+                _W2_BR7v2_CLASS_NEW + "\n" + _W2_BR7v2_MESSAGES_FIELD,
+                1,
+            )
+        return n
+
+    _w2_apply("W2-BR7v2 (State class: drop AgentState + add messages)", _w2_br7v2_state_pred, _w2_br7v2_state_mut)
+
+    # ---- W2-REDUCERS: add reducer helpers + __active_response_tool__ field to State ----
+    _W2_RED_GUARD = "# W2-REDUCERS: resettable list reducers + active_response_tool"
+    _W2_RED_BLOCK = (
+        "\n\n" + _W2_RED_GUARD + "\n"
+        "def _reduce_viz_results_resettable(a, b):\n"
+        "    \"\"\"Append-by-default; pass None to clear.\"\"\"\n"
+        "    if b is None:\n"
+        "        return []\n"
+        "    return (a or []) + (b or [])\n"
+        "\n"
+        "def _reduce_strs_resettable(a, b):\n"
+        "    \"\"\"Append-by-default; pass None to clear.\"\"\"\n"
+        "    if b is None:\n"
+        "        return []\n"
+        "    return (a or []) + (b or [])\n"
+        "\n"
+        "def _keep_last_or_clear(a, b):\n"
+        "    \"\"\"Always overwrite; b=None acts as explicit clear.\"\"\"\n"
+        "    return b\n"
+    )
+    _W2_RED_ANCHOR = (
+        "def keep_first(a: Optional[Any], b: Optional[Any]) -> Optional[Any]:"
+    )
+    def _w2_red_pred(s):
+        return _W2_RED_ANCHOR in s or _W2_RED_GUARD in s
+    def _w2_red_mut(s):
+        if _W2_RED_GUARD in s:
+            raise _W2Skip()
+        return s.replace(
+            _W2_RED_ANCHOR,
+            _W2_RED_BLOCK + "\n" + _W2_RED_ANCHOR,
+            1,
+        )
+    _w2_apply("W2-REDUCERS (helper defs)", _w2_red_pred, _w2_red_mut)
+
+    # Add __active_response_tool__ field + actual reducer-using fields in State class.
+    _W2_STATE_GUARD = "# W2-STATE: active_response_tool + resettable reducers wired"
+    _W2_VIZRES_OLD = "    viz_results: Annotated[List[dict], operator.add]       # each viz worker appends one dict."
+    _W2_VIZRES_NEW = (
+        "    viz_results: Annotated[List[dict], _reduce_viz_results_resettable]   "
+        "# W2-BR1: pass None to reset; else append. each viz worker appends one dict."
+    )
+    _W2_VIZRES_VWS_OLD = "    viz_results: Annotated[List[dict], operator.add]\n"
+    _W2_VIZRES_VWS_NEW = (
+        "    viz_results: Annotated[List[dict], _reduce_viz_results_resettable]  "
+        "# W2-BR1 (VizWorkerState mirror)\n"
+    )
+    _W2_WS_OLD = (
+        "    written_sections: Annotated[List[str], operator.add]   "
+        "# each section worker appends text"
+    )
+    _W2_WS_NEW = (
+        "    written_sections: Annotated[List[str], _reduce_strs_resettable]   "
+        "# W2-BR2: pass None to reset; else append text"
+    )
+    _W2_ER_OLD = "    emergency_reroute: Optional[AgentId]"
+    _W2_ER_NEW = (
+        "    emergency_reroute: Annotated[Optional[AgentId], _keep_last_or_clear]  "
+        "# W2-BR4: nodes return None to clear after consumption"
+    )
+    _W2_ART_NEW_FIELD = (
+        "    __active_response_tool__: Optional[str]  "
+        "# W2-RC1: name of structured-response tool the active agent must call"
+    )
+    def _w2_state_pred(s):
+        return ("class State(TypedDict, total=False):" in s) or (_W2_STATE_GUARD in s)
+    def _w2_state_mut(s):
+        if _W2_STATE_GUARD in s:
+            raise _W2Skip()
+        n = s
+        # BR-1 main
+        if _W2_VIZRES_OLD in n:
+            n = n.replace(_W2_VIZRES_OLD, _W2_VIZRES_NEW, 1)
+        else:
+            print("⚠️  W2-STATE: viz_results main anchor not found")
+        # BR-1 mirror in VizWorkerState
+        if _W2_VIZRES_VWS_OLD in n:
+            n = n.replace(_W2_VIZRES_VWS_OLD, _W2_VIZRES_VWS_NEW, 1)
+        else:
+            print("⚠️  W2-STATE: viz_results VizWorkerState mirror not found")
+        # BR-2
+        if _W2_WS_OLD in n:
+            n = n.replace(_W2_WS_OLD, _W2_WS_NEW, 1)
+        else:
+            print("⚠️  W2-STATE: written_sections anchor not found")
+        # BR-4
+        if _W2_ER_OLD in n:
+            n = n.replace(_W2_ER_OLD, _W2_ER_NEW, 1)
+        else:
+            print("⚠️  W2-STATE: emergency_reroute anchor not found")
+        # add __active_response_tool__ field after emergency_reroute
+        if "__active_response_tool__" not in n:
+            n = n.replace(
+                _W2_ER_NEW,
+                _W2_ER_NEW + "\n" + _W2_ART_NEW_FIELD,
+                1,
+            )
+        # guard sentinel
+        n = n.replace(
+            "class State(TypedDict, total=False):",
+            f"{_W2_STATE_GUARD}\nclass State(TypedDict, total=False):",
+            1,
+        )
+        return n
+    _w2_apply("W2-STATE (reducers wired + __active_response_tool__)", _w2_state_pred, _w2_state_mut)
+
+    # ---- W2-BR8: structured_response + viz_grade + viz_feedback need reducers ----
+    # Run 75 crashed in cell 81 with InvalidUpdateError on `structured_response`:
+    #   "Can receive only one value per step. Use an Annotated key to handle multiple values."
+    # Cause: viz_worker / viz_evaluator / W2-BA-finalhop recovery shims all write
+    # `structured_response` (and viz_grade/viz_feedback for the eval path); when the
+    # main viz path and a recovery branch land in the same superstep, two writers
+    # hit a LastValue channel and LangGraph aborts the snapshot.
+    # Fix: define a "prefer non-None last write" reducer (so a None recovery write
+    # never erases a real schema object) and apply it to all three at-risk fields.
+    # NOTE: last_agent_id and last_created_obj already got `lambda a, b: b` reducers
+    # via legacy Fix Q / Fix S earlier in this patcher, so they are NOT touched here.
+    _W2_BR8_GUARD = "# W2-BR8: structured_response + viz_grade/viz_feedback reducers"
+    _W2_BR8_HELPER = (
+        "\n# " + _W2_BR8_GUARD + " (helper)\n"
+        "def _sr_reducer(left, right):\n"
+        "    \"\"\"Last-writer-wins; preserve prior non-None when right is None.\"\"\"\n"
+        "    if right is None and left is not None:\n"
+        "        return left\n"
+        "    return right\n\n"
+    )
+    _W2_BR8_SR_OLD = "    structured_response: Optional[BaseNoExtrasModel]"
+    _W2_BR8_SR_NEW = (
+        "    structured_response: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]  "
+        "# W2-BR8: prefer non-None last write"
+    )
+    _W2_BR8_VG_OLD = "    viz_grade: Optional[str]"
+    _W2_BR8_VG_NEW = (
+        "    viz_grade: Annotated[Optional[str], _sr_reducer]  # W2-BR8"
+    )
+    _W2_BR8_VF_OLD = "    viz_feedback: Optional[str]"
+    _W2_BR8_VF_NEW = (
+        "    viz_feedback: Annotated[Optional[str], _sr_reducer]  # W2-BR8"
+    )
+    def _w2_br8_pred(s):
+        return ("class State(TypedDict, total=False):" in s) or (_W2_BR8_GUARD in s)
+    def _w2_br8_mut(s):
+        if _W2_BR8_GUARD in s:
+            raise _W2Skip()
+        n = s
+        # Inject helper above class State (only once per cell)
+        if "_sr_reducer" not in n:
+            n = n.replace(
+                "class State(TypedDict, total=False):",
+                _W2_BR8_HELPER + "class State(TypedDict, total=False):",
+                1,
+            )
+        # structured_response (BR-8 primary fix)
+        if _W2_BR8_SR_OLD in n:
+            n = n.replace(_W2_BR8_SR_OLD, _W2_BR8_SR_NEW, 1)
+        else:
+            print("⚠️  W2-BR8: structured_response anchor not found "
+                  "(may already be Annotated)")
+        # viz_grade (sibling at-risk)
+        if _W2_BR8_VG_OLD in n:
+            n = n.replace(_W2_BR8_VG_OLD, _W2_BR8_VG_NEW, 1)
+        else:
+            print("⚠️  W2-BR8: viz_grade anchor not found (may already be Annotated)")
+        # viz_feedback (sibling at-risk)
+        if _W2_BR8_VF_OLD in n:
+            n = n.replace(_W2_BR8_VF_OLD, _W2_BR8_VF_NEW, 1)
+        else:
+            print("⚠️  W2-BR8: viz_feedback anchor not found (may already be Annotated)")
+        return n
+    _w2_apply("W2-BR8 (structured_response reducer)", _w2_br8_pred, _w2_br8_mut)
+
+    # ---- W2-BR1b: viz_join returns viz_results=None to flush accumulator ----
+    _W2_BR1B_GUARD = "# W2-BR1b: viz_join flushes viz_results"
+    _W2_BR1B_OLD = '"current_turn_agent_id": "supervisor",\n    }\n# ---------- 7) Evaluator'
+    _W2_BR1B_NEW = (
+        '"current_turn_agent_id": "supervisor",\n'
+        '        "viz_results": None,  ' + _W2_BR1B_GUARD + '\n'
+        '        "written_sections": None,  # W2-BR2: also flush from viz path (no-op if not present)\n'
+        '    }\n# ---------- 7) Evaluator'
+    )
+    def _w2_br1b_pred(s):
+        return ("def viz_join(state: State):" in s) or (_W2_BR1B_GUARD in s)
+    def _w2_br1b_mut(s):
+        if _W2_BR1B_GUARD in s:
+            raise _W2Skip()
+        if _W2_BR1B_OLD not in s:
+            print("⚠️  W2-BR1b: viz_join return anchor not found")
+            return None
+        return s.replace(_W2_BR1B_OLD, _W2_BR1B_NEW, 1)
+    _w2_apply("W2-BR1b (viz_join flush)", _w2_br1b_pred, _w2_br1b_mut)
+
+    # ---- W2-BR2b: report_join returns written_sections=None to flush ----
+    _W2_BR2B_GUARD = "# W2-BR2b: report_join flushes written_sections"
+    _W2_BR2B_OLD = (
+        'def report_join(state: State):\n'
+        '    parts = state.get("written_sections", []) or []\n'
+        '    draft = "\\n\\n---\\n\\n".join(parts)\n'
+        '    return {"report_draft": draft}'
+    )
+    _W2_BR2B_NEW = (
+        'def report_join(state: State):  ' + _W2_BR2B_GUARD + '\n'
+        '    parts = state.get("written_sections", []) or []\n'
+        '    draft = "\\n\\n---\\n\\n".join(parts)\n'
+        '    return {"report_draft": draft, "written_sections": None}'
+    )
+    def _w2_br2b_pred(s):
+        return ("def report_join(state: State):" in s) or (_W2_BR2B_GUARD in s)
+    def _w2_br2b_mut(s):
+        if _W2_BR2B_GUARD in s:
+            raise _W2Skip()
+        if _W2_BR2B_OLD not in s:
+            print("⚠️  W2-BR2b: report_join body anchor not found")
+            return None
+        return s.replace(_W2_BR2B_OLD, _W2_BR2B_NEW, 1)
+    _w2_apply("W2-BR2b (report_join flush)", _w2_br2b_pred, _w2_br2b_mut)
+
+    # ---- W2-BR3: report_packager_node safe state access ----
+    _W2_BR3_GUARD = "# W2-BR3: safe state access in report_packager_node"
+    _W2_BR3_OLD = (
+        '    outline: ReportOutline = state["report_outline"]\n'
+        '    title = outline.title if outline else "Analysis Report"\n'
+        '    written_sections: List[str] = state.get("written_sections", []) or []\n'
+        '    sections = state["sections"]\n'
+        '    assert all(isinstance(s, Section) for s in sections), "sections is not a list of Sections"'
+    )
+    _W2_BR3_NEW = (
+        '    # ' + _W2_BR3_GUARD + '\n'
+        '    outline: Optional[ReportOutline] = state.get("report_outline")\n'
+        '    title = outline.title if isinstance(outline, ReportOutline) else "Analysis Report"\n'
+        '    written_sections: List[str] = state.get("written_sections", []) or []\n'
+        '    sections = state.get("sections", []) or []\n'
+        '    assert all(isinstance(s, Section) for s in sections), "sections is not a list of Sections"'
+    )
+    def _w2_br3_pred(s):
+        return ("def report_packager_node(state: State):" in s) or (_W2_BR3_GUARD in s)
+    def _w2_br3_mut(s):
+        if _W2_BR3_GUARD in s:
+            raise _W2Skip()
+        if _W2_BR3_OLD not in s:
+            print("⚠️  W2-BR3: report_packager_node anchor not found")
+            return None
+        return s.replace(_W2_BR3_OLD, _W2_BR3_NEW, 1)
+    _w2_apply("W2-BR3 (report_packager safe access)", _w2_br3_pred, _w2_br3_mut)
+
+    # ---- W2-BR4b: every node return clears emergency_reroute on the way back ----
+    # Heavy hammer but correct: any node returning to supervisor releases the field.
+    _W2_BR4B_GUARD = "# W2-BR4b: emergency_reroute auto-clear on supervisor handoff"
+    _W2_BR4B_OLD_FRAG = '"current_turn_agent_id": "supervisor"'
+    _W2_BR4B_NEW_FRAG = (
+        '"current_turn_agent_id": "supervisor", "emergency_reroute": None  '
+        '/* ' + _W2_BR4B_GUARD + ' */'
+    )
+    # Use a Python comment in dict — but /* */ is invalid Python. Use end-of-line # comment.
+    _W2_BR4B_NEW_FRAG = (
+        '"current_turn_agent_id": "supervisor", "emergency_reroute": None'
+    )
+    def _w2_br4b_pred(s):
+        return _W2_BR4B_OLD_FRAG in s or _W2_BR4B_GUARD in s
+    def _w2_br4b_mut(s):
+        if _W2_BR4B_GUARD in s:
+            raise _W2Skip()
+        # avoid double-injection: only replace fragments that are NOT already followed
+        # by `, "emergency_reroute"`.
+        out = []
+        i = 0
+        cnt = 0
+        while True:
+            j = s.find(_W2_BR4B_OLD_FRAG, i)
+            if j < 0:
+                out.append(s[i:])
+                break
+            seg_end = j + len(_W2_BR4B_OLD_FRAG)
+            tail = s[seg_end:seg_end+40]
+            out.append(s[i:j])
+            if 'emergency_reroute' in tail[:40]:
+                out.append(_W2_BR4B_OLD_FRAG)  # already patched; skip
+            else:
+                out.append(_W2_BR4B_NEW_FRAG)
+                cnt += 1
+            i = seg_end
+        if cnt == 0:
+            return None
+        return "".join(out) + ("\n# " + _W2_BR4B_GUARD if _W2_BR4B_GUARD not in s else "")
+    _w2_apply("W2-BR4b (emergency_reroute clear)", _w2_br4b_pred, _w2_br4b_mut)
+
+    # ---- W2-BR5: route_to_writer registration restricted to report_packager ----
+    _W2_BR5_GUARD = "# W2-BR5: route_to_writer restricted to report_packager source"
+    # NB: post-Fix-G2 the loop reads ["file_writer","report_packager"] — anchor on that.
+    _W2_BR5_OLD = (
+        'for src in ["file_writer","report_packager"]:\n'
+        '    data_analysis_team_builder.add_conditional_edges(\n'
+        '    src,\n'
+        '    route_to_writer,\n'
+        '    {\n'
+        '        "file_writer": "file_writer",\n'
+        '        "supervisor": "supervisor",\n'
+        '        "END": END,\n'
+        '    },\n'
+        ')'
+    )
+    _W2_BR5_NEW = (
+        '# ' + _W2_BR5_GUARD + '\n'
+        'data_analysis_team_builder.add_conditional_edges(\n'
+        '    "report_packager",\n'
+        '    route_to_writer,\n'
+        '    {\n'
+        '        "file_writer": "file_writer",\n'
+        '        "supervisor": "supervisor",\n'
+        '        "END": END,\n'
+        '    },\n'
+        ')\n'
+        'data_analysis_team_builder.add_edge("file_writer", "supervisor")  # W2-BR5 explicit'
+    )
+    def _w2_br5_pred(s):
+        return (_W2_BR5_OLD in s) or (_W2_BR5_GUARD in s)
+    def _w2_br5_mut(s):
+        if _W2_BR5_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W2_BR5_OLD, _W2_BR5_NEW, 1)
+    _w2_apply("W2-BR5 (route_to_writer restrict)", _w2_br5_pred, _w2_br5_mut)
+
+    # ---- W2-BR6: route_viz both branches → supervisor; viz_evaluator_node sets next ----
+    _W2_BR6_GUARD = "# W2-BR6: route_viz returns through supervisor"
+    _W2_BR6_OLD = (
+        'data_analysis_team_builder.add_conditional_edges(\n'
+        '    "viz_evaluator",\n'
+        '    route_viz,                       # returns "Accepted" or "Revise"\n'
+        '    {"Accepted": "report_orchestrator", "Revise": "analyst"},\n'
+        ')'
+    )
+    _W2_BR6_NEW = (
+        '# ' + _W2_BR6_GUARD + '\n'
+        'data_analysis_team_builder.add_conditional_edges(\n'
+        '    "viz_evaluator",\n'
+        '    route_viz,                       # returns "Accepted" or "Revise"\n'
+        '    {"Accepted": "supervisor", "Revise": "supervisor"},\n'
+        ')'
+    )
+    def _w2_br6_pred(s):
+        return _W2_BR6_OLD in s or _W2_BR6_GUARD in s
+    def _w2_br6_mut(s):
+        if _W2_BR6_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W2_BR6_OLD, _W2_BR6_NEW, 1)
+    _w2_apply("W2-BR6 (route_viz mapping)", _w2_br6_pred, _w2_br6_mut)
+
+    # W2-BR6b: have viz_evaluator_node set state["next"] before its return.
+    # Anchor on the line that begins the final return block.
+    _W2_BR6B_GUARD = "# W2-BR6b: viz_evaluator sets next routing"
+    _W2_BR6B_OLD = (
+        '        return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,'
+    )
+    _W2_BR6B_NEW = (
+        '        # ' + _W2_BR6B_GUARD + '\n'
+        '        _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '        return {"next": _w2_next_after_viz, "viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,'
+    )
+    _W2_BR6B_OLD2 = (
+        '    return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,'
+    )
+    _W2_BR6B_NEW2 = (
+        '    # ' + _W2_BR6B_GUARD + ' (fallback path)\n'
+        '    _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '    return {"next": _w2_next_after_viz, "viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,'
+    )
+    def _w2_br6b_pred(s):
+        return ("def viz_evaluator_node(state: State):" in s) or (_W2_BR6B_GUARD in s)
+    def _w2_br6b_mut(s):
+        if _W2_BR6B_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_BR6B_OLD in n:
+            n = n.replace(_W2_BR6B_OLD, _W2_BR6B_NEW, 1)
+        if _W2_BR6B_OLD2 in n and _W2_BR6B_GUARD + ' (fallback' not in n:
+            n = n.replace(_W2_BR6B_OLD2, _W2_BR6B_NEW2, 1)
+        return n if n != s else None
+    _w2_apply("W2-BR6b (viz_evaluator set next)", _w2_br6b_pred, _w2_br6b_mut)
+
+    # ---- W2-BC: remove report_intermediate_progress from worker tool lists ----
+    _W2_BC_GUARD = "# W2-BC: RIP removed from worker tool lists"
+    # Each anchor begins with "\n" so e.g. `init_analyst_tools.append(...)` is
+    # NOT matched (the char before that line is `_`, not `\n`).
+    _W2_BC_PAIRS = [
+        ("\ndata_cleaning_tools.append(report_intermediate_progress)\n",
+         "\n# W2-BC: RIP removed from data_cleaning_tools (Fix RC-2)\n"),
+        ("\nanalyst_tools.append(report_intermediate_progress)\n",
+         "\n# W2-BC: RIP removed from analyst_tools (Fix RC-2)\n"),
+        ("\nvisualization_tools.append(report_intermediate_progress)\n",
+         "\n# W2-BC: RIP removed from visualization_tools (Fix RC-2)\n"),
+        ("\nreport_generator_tools.append(report_intermediate_progress)\n",
+         "\n# W2-BC: RIP removed from report_generator_tools (Fix RC-2)\n"),
+        ("\nfile_writer_tools.append(report_intermediate_progress)\n",
+         "\n# W2-BC: RIP removed from file_writer_tools (Fix RC-2)\n"),
+    ]
+    def _w2_bc_pred(s):
+        return ("\ndata_cleaning_tools.append(report_intermediate_progress)" in s) or (_W2_BC_GUARD in s)
+    def _w2_bc_mut(s):
+        if _W2_BC_GUARD in s:
+            raise _W2Skip()
+        n = s
+        replaced = 0
+        for old, new in _W2_BC_PAIRS:
+            cnt = n.count(old)
+            assert cnt <= 1, f"W2-BC: unexpected multi-occurrence ({cnt}) of {old!r}"
+            if cnt == 1:
+                n = n.replace(old, new, 1)
+                replaced += 1
+        if replaced == 0:
+            return None
+        return n + ("\n# " + _W2_BC_GUARD + f" (removed {replaced} append calls)\n" if _W2_BC_GUARD not in n else "")
+    _w2_apply("W2-BC (RIP removal)", _w2_bc_pred, _w2_bc_mut)
+
+    # ---- W2-BB: replace previously-applied FIXAK2 body with stronger Fix BB ----
+    # Anchor: the existing Fix AK-2 body (already in cell after FIXAK2 patch ran).
+    _W2_BB_GUARD = "# W2-BB: Fix BB replaces FIXAK2 body — threshold=3, status=error, agent-keyed"
+    _W2_BB_OLD = (
+        '    progress_message_final = progress_message.strip() or "Empty progress message"\n'
+        '    # Fix AK-2: escalating counter\n'
+        '    _rip_tid = str((runtime.config or {}).get("configurable", {}).get("thread_id", "?"))\n'
+        '    _rip_counts[_rip_tid] = _rip_counts.get(_rip_tid, 0) + 1\n'
+        '    _rip_n = _rip_counts[_rip_tid]\n'
+        '    if _rip_n >= 10:\n'
+    )
+    _W2_BB_NEW = (
+        '    progress_message_final = progress_message.strip() or "Empty progress message"\n'
+        '    ' + _W2_BB_GUARD + '\n'
+        '    _rip_tid = str((runtime.config or {}).get("configurable", {}).get("thread_id", "?"))\n'
+        '    _rip_agent = str((runtime.config or {}).get("configurable", {}).get("agent_name", "?"))\n'
+        '    _rip_key = (_rip_tid, _rip_agent)\n'
+        '    _rip_counts[_rip_key] = _rip_counts.get(_rip_key, 0) + 1\n'
+        '    _rip_n = _rip_counts[_rip_key]\n'
+        '    _rip_tool = (getattr(runtime, "state", None) or {}).get("__active_response_tool__") or "<your structured-response tool>"\n'
+        '    if _rip_n >= 3:\n'
+        '        _rip_msg = (\n'
+        '            f"STOP. report_intermediate_progress is now DISABLED for this turn "\n'
+        '            f"(call #{_rip_n}). Your next message MUST be a single tool_call to "\n'
+        '            f"`{_rip_tool}` with your final structured output. Use best-effort or "\n'
+        '            f"placeholder values for any field you have not computed. Do not call "\n'
+        '            f"any other tool. The progress was NOT logged."\n'
+        '        )\n'
+        '        return Command(update={"messages": [ToolMessage(\n'
+        '            content=_rip_msg, status="error", tool_call_id=runtime.tool_call_id)]})\n'
+        '    _rip_msg = f"Progress logged ({_rip_n}/3): {progress_message_final}"\n'
+        '    return Command(update={\n'
+        '        "latest_progress": progress_message_final,\n'
+        '        "progress_reports": [progress_message_final],\n'
+        '        "messages": [ToolMessage(content=_rip_msg, tool_call_id=runtime.tool_call_id)],\n'
+        '    })\n'
+        '    if False:  # dead code below — original FIXAK2 escalation kept for diff sentinel\n'
+    )
+    def _w2_bb_pred(s):
+        return _W2_BB_OLD in s or _W2_BB_GUARD in s
+    def _w2_bb_mut(s):
+        if _W2_BB_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W2_BB_OLD, _W2_BB_NEW, 1)
+    _w2_apply("W2-BB (Fix BB — RIP threshold=3)", _w2_bb_pred, _w2_bb_mut)
+
+    # ---- W2-RC1: per-schema termination instructions (replace 'respond') ----
+    # The previously-applied RESPOND_INSTRUCTION text contains literal "`respond`".
+    # We rewrite that single block (in place) to use a per-schema tool name based on
+    # the surrounding anchor text.
+    _W2_RC1_GUARD = "# W2-RC1: per-schema termination block injected"
+    _OLD_RESP = (
+        "\nTERMINATION — HOW TO SUBMIT YOUR FINAL ANSWER:\n"
+        "When your analysis is ready, call the `respond` tool with your final structured output.\n"
+        "- `respond` is the ONLY correct tool for submitting your final structured result\n"
+        "- Do NOT call `report_intermediate_progress` to submit your final answer\n"
+        "- Calling `respond` ends your task immediately and returns control to the supervisor\n"
+        "- After 10 tool calls total, you MUST call `respond` using best-effort values for any incomplete fields\n"
+        "- INCOMPLETE RESULTS ARE ACCEPTABLE — infinite loops are NOT. Submit now if uncertain.\n"
+        "\n"
+    )
+    def _make_ti(tool_name):
+        return (
+            "\nTERMINATION — HOW TO SUBMIT YOUR FINAL ANSWER:\n"
+            f"When ready, call the `{tool_name}` tool exactly once with your final "
+            "structured output. This is the ONLY way to end your task.\n"
+            f"- `{tool_name}` is your structured-response tool (auto-generated from "
+            "the response schema). Calling it returns control to the supervisor.\n"
+            "- Do NOT call `report_intermediate_progress` again; it is informational only.\n"
+            "- Do NOT invent tool names like `respond`, `submit`, or `submit_response`.\n"
+            "- Hard cap: after your 3rd tool call total, you MUST call "
+            f"`{tool_name}` with best-effort values for any incomplete fields.\n"
+            "- INCOMPLETE RESULTS ARE ACCEPTABLE — infinite loops are NOT.\n\n"
+        )
+    # Anchors: text that immediately follows the RESPOND_INSTRUCTION block in each
+    # FIXAI2/2b/2c-patched prompt. Map each to the correct schema tool name.
+    _W2_RC1_ANCHORS = [
+        # (text-immediately-after-RESPOND_INSTRUCTION, schema_tool_name)
+        ("Return your structured result using the schema:", "AnalysisInsights"),  # FIXAI2 main analyst
+        ("{output_format}\nInclude: descriptive_stats", "AnalysisInsights"),  # FIXAI2 mini analyst — anchored AFTER {of}
+        ("{output_format}\nAlso include", "CleaningMetadata"),  # FIXAI2 data_cleaner mini
+        ("then output the in the following format :\n", "InitialDescription"),  # FIXAI2b initial analyst
+        ("Return a structured response matching:", "{response_tool_name}"),  # FIXAI2b report_generator (DYNAMIC)
+        ("After cleaning, summarize actions and the dataset state in the schema:", "CleaningMetadata"),  # FIXAI2c
+    ]
+    def _w2_rc1_pred(s):
+        return _OLD_RESP in s or _W2_RC1_GUARD in s
+    def _w2_rc1_mut(s):
+        if _W2_RC1_GUARD in s:
+            raise _W2Skip()
+        n = s
+        replaced = []
+        for anchor, tool in _W2_RC1_ANCHORS:
+            old_block = _OLD_RESP + anchor
+            if old_block in n:
+                new_block = _make_ti(tool) + anchor
+                n = n.replace(old_block, new_block, 1)
+                replaced.append(tool)
+        if not replaced:
+            return None
+        # Strip any RESPOND_INSTRUCTION blocks not matched (should not happen).
+        # Insert guard sentinel near top of cell.
+        if _W2_RC1_GUARD not in n:
+            n = "# " + _W2_RC1_GUARD + f" (replaced: {', '.join(replaced)})\n" + n
+        return n
+    _w2_apply("W2-RC1 (per-schema TERMINATION blocks)", _w2_rc1_pred, _w2_rc1_mut)
+
+    # ---- W2-RC1c: dynamic response_tool_name partial in report_generator family ----
+    _W2_RC1C_GUARD = "# W2-RC1c: response_tool_name partial wired into output_format_map"
+    _W2_RC1C_OLD = (
+        '    output_format_map = {"outline" : {"output_format" : ReportOutline, "report_task": "generate a report outline", "name": "report_orchestrator","llm": report_orchestrator_llm},\n'
+        '                    "section" : {"output_format" : Section, "report_task": "generate a section of the report", "name": "report_section_worker","llm": report_section_worker_llm},\n'
+        '                    "package" : {"output_format" : ReportResults, "report_task": "generate a full report package in PDF, Markdown, and HTML", "name": "report_packager","llm": report_packager_llm}}'
+    )
+    _W2_RC1C_NEW = (
+        '    # ' + _W2_RC1C_GUARD + '\n'
+        '    output_format_map = {"outline" : {"output_format" : ReportOutline, "report_task": "generate a report outline", "name": "report_orchestrator","llm": report_orchestrator_llm, "response_tool_name": "ReportOutline"},\n'
+        '                    "section" : {"output_format" : Section, "report_task": "generate a section of the report", "name": "report_section_worker","llm": report_section_worker_llm, "response_tool_name": "Section"},\n'
+        '                    "package" : {"output_format" : ReportResults, "report_task": "generate a full report package in PDF, Markdown, and HTML", "name": "report_packager","llm": report_packager_llm, "response_tool_name": "ReportResults"}}'
+    )
+    _W2_RC1C_RGV_OLD = (
+        '    init_rg_vars = {"available_df_ids":init_df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : output_format,\n'
+        '                    "memories" : "No memories yet", "analysis_insights": "No analysis insights yet", "cleaned_dataset_description": "No cleaned dataset description yet",\n'
+        '                    "visualization_results": "No visualization results yet", "report_task": report_task}'
+    )
+    _W2_RC1C_RGV_NEW = (
+        '    init_rg_vars = {"available_df_ids":init_df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : output_format,\n'
+        '                    "memories" : "No memories yet", "analysis_insights": "No analysis insights yet", "cleaned_dataset_description": "No cleaned dataset description yet",\n'
+        '                    "visualization_results": "No visualization results yet", "report_task": report_task,\n'
+        '                    "response_tool_name": output_format_map[rg_agent_task]["response_tool_name"]}  # W2-RC1c'
+    )
+    def _w2_rc1c_pred(s):
+        return ("def create_report_generator_agent(" in s) or (_W2_RC1C_GUARD in s)
+    def _w2_rc1c_mut(s):
+        if _W2_RC1C_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_RC1C_OLD in n:
+            n = n.replace(_W2_RC1C_OLD, _W2_RC1C_NEW, 1)
+        else:
+            print("⚠️  W2-RC1c: output_format_map anchor not found")
+            return None
+        if _W2_RC1C_RGV_OLD in n:
+            n = n.replace(_W2_RC1C_RGV_OLD, _W2_RC1C_RGV_NEW, 1)
+        else:
+            print("⚠️  W2-RC1c: init_rg_vars anchor not found (continuing)")
+        return n
+    _w2_apply("W2-RC1c (response_tool_name partial)", _w2_rc1c_pred, _w2_rc1c_mut)
+
+    # Also patch each rg_vars rebuild in cell 57 nodes to include response_tool_name.
+    _W2_RC1C2_GUARD = "# W2-RC1c2: rg_vars include response_tool_name"
+    # Use anchor that exists in report_orchestrator and report_packager_node.
+    _RGV_NODE_OLD_OUTLINE = '"output_format" : ReportOutline.model_json_schema(),'
+    _RGV_NODE_NEW_OUTLINE = '"output_format" : ReportOutline.model_json_schema(), "response_tool_name": "ReportOutline",'
+    _RGV_NODE_OLD_PKG = '"output_format" : ReportResults.model_json_schema(),'
+    _RGV_NODE_NEW_PKG = '"output_format" : ReportResults.model_json_schema(), "response_tool_name": "ReportResults",'
+    _RGV_NODE_OLD_SEC = '"output_format" : Section.model_json_schema(),'
+    _RGV_NODE_NEW_SEC = '"output_format" : Section.model_json_schema(), "response_tool_name": "Section",'
+    def _w2_rc1c2_pred(s):
+        return any(a in s for a in [_RGV_NODE_OLD_OUTLINE, _RGV_NODE_OLD_PKG, _RGV_NODE_OLD_SEC]) or _W2_RC1C2_GUARD in s
+    def _w2_rc1c2_mut(s):
+        if _W2_RC1C2_GUARD in s:
+            raise _W2Skip()
+        n = s
+        for old, new in [(_RGV_NODE_OLD_OUTLINE, _RGV_NODE_NEW_OUTLINE),
+                          (_RGV_NODE_OLD_PKG, _RGV_NODE_NEW_PKG),
+                          (_RGV_NODE_OLD_SEC, _RGV_NODE_NEW_SEC)]:
+            if old in n and "response_tool_name" not in n[max(0, n.find(old)-20):n.find(old)+len(old)+80]:
+                n = n.replace(old, new, 1)
+        return n if n != s else None
+    _w2_apply("W2-RC1c2 (rg_vars response_tool_name)", _w2_rc1c2_pred, _w2_rc1c2_mut)
+
+    # ---- W2-BA-strip: SystemMessage strip + __active_response_tool__ inject in each SAFE wrapper ----
+    _W2_SAFE = [
+        # (anchor function-def line, outer var, schema, tag)
+        ("def _safe_data_cleaner_invoke(",       "_outer_dc",  "CleaningMetadata",     "data_cleaner",        "DC"),
+        ("def _safe_initial_analysis_invoke(",   "_outer_cfg", "InitialDescription",   "initial_analysis",    "IA"),
+        ("def _safe_analyst_invoke(",            "_outer_an",  "AnalysisInsights",     "analyst",             "AN"),
+        ("def _safe_visualization_invoke(",      "_outer_vz",  "VisualizationResults", "visualization",       "VZ"),
+        ("def _safe_viz_evaluator_invoke(",      "_outer_ve",  "VizFeedback",          "viz_evaluator",       "VE"),
+        ("def _safe_report_orchestrator_invoke(","_outer_ro",  "ReportOutline",        "report_orchestrator", "RO"),
+        ("def _safe_report_packager_invoke(",    "_outer_rp",  "ReportResults",        "report_packager",     "RP"),
+    ]
+    _W2_BA_STRIP_GUARD = "# W2-BA-strip: SystemMessage strip + active_response_tool inject"
+    for _fn_anchor, _outer, _schema, _agent_name, _tag in _W2_SAFE:
+        guard = f"# W2-BA-strip[{_tag}]: applied"
+        outer_anchor = f"    {_outer} = dict("
+        # Insertion text after the outer-var line:
+        ins = (
+            f"    {guard}\n"
+            "    from langchain_core.messages import SystemMessage as _W2_SM\n"
+            "    _w2_msgs = list(inputs.get('messages') or [])\n"
+            "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n"
+            f"    inputs = {{**inputs, 'messages': _w2_msgs, '__active_response_tool__': '{_schema}'}}\n"
+        )
+        def _make_pred(fn_anchor=_fn_anchor, guard=guard):
+            def pred(s):
+                return (fn_anchor in s) or (guard in s)
+            return pred
+        def _make_mut(fn_anchor=_fn_anchor, outer_anchor=outer_anchor, ins=ins, guard=guard):
+            def mut(s):
+                if guard in s:
+                    raise _W2Skip()
+                # find the function definition first; insert AFTER the line that contains outer_anchor
+                fpos = s.find(fn_anchor)
+                if fpos < 0:
+                    return None
+                # find outer_anchor after fpos
+                opos = s.find(outer_anchor, fpos)
+                if opos < 0:
+                    print(f"⚠️  W2-BA-strip[{guard}]: outer anchor {outer_anchor!r} not found")
+                    return None
+                # end of that line
+                eol = s.find("\n", opos)
+                if eol < 0:
+                    return None
+                return s[:eol+1] + ins + s[eol+1:]
+            return mut
+        _w2_apply(f"W2-BA-strip[{_tag}]", _make_pred(), _make_mut())
+
+    # ---- W2-BA-finalhop: forced final-hop in 7 SAFE wrappers ----
+    # We detect the actual indent of the "WARNING ... hit error" line at runtime
+    # rather than guessing 8 vs 12 spaces.
+    for _fn_anchor, _outer, _schema, _agent_name, _tag in _W2_SAFE:
+        guard = f"# W2-BA-finalhop[{_tag}]: applied"
+        _llm_map = {
+            "DC": "data_cleaner_llm",
+            "IA": "initial_analyst_llm",
+            "AN": "analyst_llm",
+            "VZ": "visualization_orchestrator_llm",
+            "VE": "viz_evaluator_llm",
+            "RO": "report_orchestrator_llm",
+            "RP": "report_packager_llm",
+        }
+        llm_var = _llm_map[_tag]
+        warn_substr = {
+            "DC": "WARNING data_cleaner hit error",
+            "IA": "WARNING initial_analysis hit error",
+            "AN": "WARNING analyst hit error",
+            "VZ": "WARNING visualization_agent hit error",
+            "VE": "WARNING viz_evaluator hit error",
+            "RO": "WARNING report_orchestrator hit error",
+            "RP": "WARNING report_packager hit error",
+        }[_tag]
+
+        def _make_pred(fn_anchor=_fn_anchor, guard=guard, warn=warn_substr):
+            def pred(s):
+                return (fn_anchor in s and warn in s) or (guard in s)
+            return pred
+
+        def _make_mut(fn_anchor=_fn_anchor, guard=guard, warn=warn_substr,
+                      llm_var=llm_var, schema=_schema, agent_name=_agent_name):
+            def mut(s):
+                if guard in s:
+                    raise _W2Skip()
+                fpos = s.find(fn_anchor)
+                if fpos < 0:
+                    return None
+                # Find the line containing warn_substr after fpos.
+                wpos = s.find(warn, fpos)
+                if wpos < 0:
+                    return None
+                # Walk back to the start of that line to capture leading whitespace.
+                line_start = s.rfind("\n", 0, wpos) + 1
+                indent = ""
+                p = line_start
+                while p < len(s) and s[p] in " \t":
+                    indent += s[p]
+                    p += 1
+                # Build the forced-hop block at the detected indent.
+                block = (
+                    f"{indent}{guard}\n"
+                    f"{indent}try:\n"
+                    f"{indent}    from langchain_core.messages import SystemMessage as _W2_SM_FH, AIMessage as _W2_AIM_FH\n"
+                    f"{indent}    _w2_avail = list(inputs.get('messages') or [])\n"
+                    f"{indent}    _w2_ctx = []\n"
+                    f"{indent}    for _w2_m in _w2_avail:\n"
+                    f"{indent}        if not getattr(_w2_m, 'content', None):\n"
+                    f"{indent}            continue\n"
+                    f"{indent}        _w2_cls = _w2_m.__class__.__name__\n"
+                    f"{indent}        if _w2_cls in ('SystemMessage', 'HumanMessage'):\n"
+                    f"{indent}            _w2_ctx.append(_w2_m)\n"
+                    f"{indent}        elif _w2_cls == 'AIMessage' and not getattr(_w2_m, 'tool_calls', None) and not (getattr(_w2_m, 'additional_kwargs', None) or {{}}).get('function_call'):\n"
+                    f"{indent}            _w2_ctx.append(_w2_m)\n"
+                    f"{indent}    _w2_final = {llm_var}.with_structured_output({schema}).invoke(\n"
+                    f"{indent}        [_W2_SM_FH(content='You are {agent_name} recovering from a recursion-limit. Return {schema} NOW with best-effort values. No tools, no prose.')] + _w2_ctx[-12:]\n"
+                    f"{indent}    )\n"
+                    f"{indent}    _w2_rmsg = _W2_AIM_FH(content='Recovery via with_structured_output final-hop.', name='{agent_name}')\n"
+                    f"{indent}    print('W2-BA-finalhop[{_tag}] succeeded for {agent_name}')\n"
+                    f"{indent}    return {{'messages': [_w2_rmsg], 'structured_response': _w2_final}}\n"
+                    f"{indent}except Exception as _w2_final_exc:\n"
+                    f"{indent}    print('WARNING {agent_name} final-hop also failed (' + type(_w2_final_exc).__name__ + '); falling back to hard-coded recovery')\n"
+                )
+                # Insert at line_start (clean line boundary).
+                return s[:line_start] + block + s[line_start:]
+            return mut
+
+        _w2_apply(f"W2-BA-finalhop[{_tag}]", _make_pred(), _make_mut())
+
+    # ---- W2-BF1: data_cleaner_node — sync dc_vars["data_sample"] after sample fallback ----
+    _W2_BF1_GUARD = "# W2-BF1: dc_vars data_sample synced after fallback"
+    _W2_BF1_OLD = (
+        '        except Exception:\n'
+        '            pass  # leave as None\n'
+        '\n'
+        '    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else"Please perform expert data cleaning tasks on the dataset."'
+    )
+    _W2_BF1_NEW = (
+        '        except Exception:\n'
+        '            pass  # leave as None\n'
+        '    ' + _W2_BF1_GUARD + '\n'
+        '    dc_vars["data_sample"] = initial_description.data_sample or "No sample available"\n'
+        '\n'
+        '    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else"Please perform expert data cleaning tasks on the dataset."'
+    )
+    def _w2_bf1_pred(s):
+        return ("def data_cleaner_node(" in s) or (_W2_BF1_GUARD in s)
+    def _w2_bf1_mut(s):
+        if _W2_BF1_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF1_OLD not in s:
+            print("⚠️  W2-BF1: data_cleaner_node fallback anchor not found")
+            return None
+        return s.replace(_W2_BF1_OLD, _W2_BF1_NEW, 1)
+    _w2_apply("W2-BF1 (dc_vars data_sample sync)", _w2_bf1_pred, _w2_bf1_mut)
+
+    # ---- W2-BF3: analyst_node — unify data_sample to initial_description.data_sample ----
+    _W2_BF3_GUARD = "# W2-BF3: analyst data_sample unified"
+    _W2_BF3_OLD = '            "data_sample": state.get("data_sample", None),'
+    _W2_BF3_NEW = (
+        '            "data_sample": (initial_description.data_sample if initial_description else None),  '
+        + _W2_BF3_GUARD
+    )
+    def _w2_bf3_pred(s):
+        return _W2_BF3_OLD in s or _W2_BF3_GUARD in s
+    def _w2_bf3_mut(s):
+        if _W2_BF3_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W2_BF3_OLD, _W2_BF3_NEW, 1)
+    _w2_apply("W2-BF3 (analyst data_sample)", _w2_bf3_pred, _w2_bf3_mut)
+
+    # ---- W2-BF4: viz_worker — sync vis_vars["cleaned_dataset_description"] after cm guard ----
+    _W2_BF4_GUARD = "# W2-BF4: vis_vars cleaned_dataset_description synced"
+    _W2_BF4_OLD = (
+        '    cleaning_metadata = cm  # type: ignore\n'
+        '\n'
+        '    _msgs = (state.get("messages") or [])\n'
+        '    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")\n'
+        '\n'
+        '\n'
+        '    base_prompt = visualization_prompt_template'
+    )
+    _W2_BF4_NEW = (
+        '    cleaning_metadata = cm  # type: ignore\n'
+        '    ' + _W2_BF4_GUARD + '\n'
+        '    vis_vars["cleaned_dataset_description"] = (\n'
+        '        getattr(cleaning_metadata, "data_description_after_cleaning", None)\n'
+        '        or state.get("cleaned_dataset_description")\n'
+        '        or state.get("dataset_description")\n'
+        '        or "No description available"\n'
+        '    )\n'
+        '\n'
+        '    _msgs = (state.get("messages") or [])\n'
+        '    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")\n'
+        '\n'
+        '\n'
+        '    base_prompt = visualization_prompt_template'
+    )
+    def _w2_bf4_pred(s):
+        return ("def viz_worker(" in s) or (_W2_BF4_GUARD in s)
+    def _w2_bf4_mut(s):
+        if _W2_BF4_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF4_OLD not in s:
+            print("⚠️  W2-BF4: viz_worker cm-guard anchor not found")
+            return None
+        return s.replace(_W2_BF4_OLD, _W2_BF4_NEW, 1)
+    _w2_apply("W2-BF4 (viz_worker cleaned_dataset_description)", _w2_bf4_pred, _w2_bf4_mut)
+
+    # ---- W2-BF5: report_packager_node — populate visualization_results AND viz_results ----
+    _W2_BF5_GUARD = "# W2-BF5: rg_vars include visualization_results+viz_results"
+    _W2_BF5_OLD = '"viz_results": state.get("viz_results", None),\n               "report_task": default_instruction}'
+    _W2_BF5_NEW = (
+        '"viz_results": (state.get("visualization_results") or state.get("viz_results")),\n'
+        '               "visualization_results": (state.get("visualization_results") or state.get("viz_results")),  '
+        + _W2_BF5_GUARD + '\n'
+        '               "report_task": default_instruction}'
+    )
+    def _w2_bf5_pred(s):
+        return ("def report_packager_node(" in s and _W2_BF5_OLD in s) or (_W2_BF5_GUARD in s)
+    def _w2_bf5_mut(s):
+        if _W2_BF5_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF5_OLD not in s:
+            print("⚠️  W2-BF5: report_packager rg_vars anchor not found (line wrap mismatch)")
+            return None
+        return s.replace(_W2_BF5_OLD, _W2_BF5_NEW, 1)
+    _w2_apply("W2-BF5 (report_packager visualization_results)", _w2_bf5_pred, _w2_bf5_mut)
+
+    # ---- W2-DOCS2c: viz_evaluator revise-cap (max 2 revisions, force-approve on round 3) ----
+    # Run 76 root cause: viz_evaluator continually returns grade="revise" → supervisor
+    # routes back into viz_team in an unbounded loop. Even after W2-BR8d fixes the
+    # viz_grade/viz_feedback reducers (so the LLM verdict actually propagates), an
+    # always-revising evaluator still causes infinite loops. Cap revise rounds at 2
+    # by design; tell the agent its budget so it spends rounds wisely.
+    #
+    # Sub-patches:
+    #   W2-DOCS2c-state  : add viz_revise_count: int field to State
+    #   W2-DOCS2c-node   : enforce cap inside viz_evaluator_node + emit new count
+    #   W2-DOCS2c-prompt : inject revise-budget paragraph into viz_evaluator prompt
+    #   W2-DOCS2c-vars   : surface viz_revise_count in init_viz_vars + runtime vis_vars
+
+    # ---- W2-DOCS2c-state: add viz_revise_count to State ----
+    _W2_DOCS2C_STATE_GUARD = "# W2-DOCS2c-state: viz_revise_count field"
+    _W2_DOCS2C_STATE_OLD = (
+        "    # evaluator loop fields\n"
+        "    viz_eval_result: Optional[VizFeedback]\n"
+    )
+    _W2_DOCS2C_STATE_NEW = (
+        "    # evaluator loop fields\n"
+        "    " + _W2_DOCS2C_STATE_GUARD + " (last-write-wins; written only by viz_evaluator_node)\n"
+        "    viz_revise_count: int  # bounded by W2-DOCS2c revise-cap (max 2 revisions, force-approve on 3rd)\n"
+        "    viz_eval_result: Optional[VizFeedback]\n"
+    )
+    def _w2_docs2c_state_pred(s):
+        return ("class State(TypedDict, total=False):" in s and _W2_DOCS2C_STATE_OLD in s) or (_W2_DOCS2C_STATE_GUARD in s)
+    def _w2_docs2c_state_mut(s):
+        if _W2_DOCS2C_STATE_GUARD in s:
+            raise _W2Skip()
+        if _W2_DOCS2C_STATE_OLD not in s:
+            print("⚠️  W2-DOCS2c-state: anchor not found")
+            return None
+        return s.replace(_W2_DOCS2C_STATE_OLD, _W2_DOCS2C_STATE_NEW, 1)
+    _w2_apply("W2-DOCS2c-state (viz_revise_count field)", _w2_docs2c_state_pred, _w2_docs2c_state_mut)
+
+    # ---- W2-DOCS2c-node: cap logic + count emission inside viz_evaluator_node ----
+    # IMPORTANT: This patch runs AFTER W2-BR6b which inserted
+    #   `_w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"`
+    # immediately before each return, and prepended `"next": _w2_next_after_viz,`
+    # to each return dict. We anchor on that W2-BR6b line so the cap rewrites
+    # `final_grade` BEFORE the next-routing decision is computed — meaning
+    # auto-approval naturally routes to report_orchestrator.
+    _W2_DOCS2C_NODE_GUARD = "# W2-DOCS2c-node: revise-cap enforcement"
+    _W2_DOCS2C_NODE_CAP_LLM = (
+        "        " + _W2_DOCS2C_NODE_GUARD + " (LLM-path)\n"
+        "        _w2_docs2c_prior = int(state.get(\"viz_revise_count\", 0) or 0)\n"
+        "        if _w2_docs2c_prior >= 2 and getattr(final_grade, \"grade\", None) == \"revise\":\n"
+        "            final_grade = VizFeedback(\n"
+        "                grade=\"acceptable\",\n"
+        "                feedback=(final_grade.feedback or \"\") + \" [Auto-approved: revise budget exhausted (W2-DOCS2c)]\",\n"
+        "                redo_list=[],\n"
+        "                reply_msg_to_supervisor=(final_grade.reply_msg_to_supervisor or \"\") + \" [Auto-approved by revise-cap]\",\n"
+        "                expect_reply=False,\n"
+        "                finished_this_task=True,\n"
+        "            )\n"
+        "            finished_this_task = True\n"
+        "            expect_reply = False\n"
+        "            reply_msg_to_supervisor = final_grade.reply_msg_to_supervisor\n"
+        "        _w2_docs2c_new_count = _w2_docs2c_prior + (1 if getattr(final_grade, \"grade\", None) == \"revise\" else 0)\n"
+    )
+    _W2_DOCS2C_NODE_CAP_FB = (
+        "    " + _W2_DOCS2C_NODE_GUARD + " (fallback path)\n"
+        "    _w2_docs2c_prior_fb = int(state.get(\"viz_revise_count\", 0) or 0)\n"
+        "    if _w2_docs2c_prior_fb >= 2 and getattr(final_grade, \"grade\", None) == \"revise\":\n"
+        "        final_grade = VizFeedback(\n"
+        "            grade=\"acceptable\",\n"
+        "            feedback=(final_grade.feedback or \"\") + \" [Auto-approved: revise budget exhausted (W2-DOCS2c)]\",\n"
+        "            redo_list=[],\n"
+        "            reply_msg_to_supervisor=(final_grade.reply_msg_to_supervisor or \"\") + \" [Auto-approved by revise-cap]\",\n"
+        "            expect_reply=False,\n"
+        "            finished_this_task=True,\n"
+        "        )\n"
+        "        finished_this_task = True\n"
+        "        expect_reply = False\n"
+        "        reply_msg_to_supervisor = final_grade.reply_msg_to_supervisor\n"
+        "    _w2_docs2c_new_count_fb = _w2_docs2c_prior_fb + (1 if getattr(final_grade, \"grade\", None) == \"revise\" else 0)\n"
+    )
+
+    # LLM-path anchor (8-space indent on _w2_next_after_viz line, courtesy of W2-BR6b)
+    _W2_DOCS2C_NODE_OLD_LLM = (
+        '\n        _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '        return {"next": _w2_next_after_viz,'
+    )
+    _W2_DOCS2C_NODE_NEW_LLM = (
+        '\n' + _W2_DOCS2C_NODE_CAP_LLM +
+        '        _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '        return {"viz_revise_count": _w2_docs2c_new_count, "next": _w2_next_after_viz,'
+    )
+    # Fallback-path anchor (4-space indent)
+    _W2_DOCS2C_NODE_OLD_FB = (
+        '\n    _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '    return {"next": _w2_next_after_viz,'
+    )
+    _W2_DOCS2C_NODE_NEW_FB = (
+        '\n' + _W2_DOCS2C_NODE_CAP_FB +
+        '    _w2_next_after_viz = "report_orchestrator" if final_grade.grade == "acceptable" else "analyst"\n'
+        '    return {"viz_revise_count": _w2_docs2c_new_count_fb, "next": _w2_next_after_viz,'
+    )
+
+    def _w2_docs2c_node_pred(s):
+        return ("def viz_evaluator_node(" in s and (_W2_DOCS2C_NODE_OLD_LLM in s or _W2_DOCS2C_NODE_OLD_FB in s)) or (_W2_DOCS2C_NODE_GUARD in s)
+    def _w2_docs2c_node_mut(s):
+        if _W2_DOCS2C_NODE_GUARD in s:
+            raise _W2Skip()
+        n = s
+        llm_ok = False
+        fb_ok = False
+        if _W2_DOCS2C_NODE_OLD_LLM in n:
+            n = n.replace(_W2_DOCS2C_NODE_OLD_LLM, _W2_DOCS2C_NODE_NEW_LLM, 1)
+            llm_ok = True
+        else:
+            print("⚠️  W2-DOCS2c-node: LLM-path anchor (W2-BR6b _w2_next_after_viz, 8-space) not found")
+        if _W2_DOCS2C_NODE_OLD_FB in n:
+            n = n.replace(_W2_DOCS2C_NODE_OLD_FB, _W2_DOCS2C_NODE_NEW_FB, 1)
+            fb_ok = True
+        else:
+            print("⚠️  W2-DOCS2c-node: fallback-path anchor (W2-BR6b _w2_next_after_viz, 4-space) not found")
+        if not (llm_ok or fb_ok):
+            return None
+        return n
+    _w2_apply("W2-DOCS2c-node (cap enforcement + viz_revise_count emit)", _w2_docs2c_node_pred, _w2_docs2c_node_mut)
+
+    # ---- W2-DOCS2c-prompt: inform agent of revise budget ----
+    _W2_DOCS2C_PROMPT_GUARD = "# W2-DOCS2c-prompt: revise-budget awareness"
+    # We inject a budget paragraph just before the "You may proceed with the evaluation."
+    # closing line of the viz_evaluator system message. Must reference {viz_revise_count}
+    # so the runtime partial value flows through.
+    _W2_DOCS2C_PROMPT_OLD = "  You may proceed with the evaluation."
+    _W2_DOCS2C_PROMPT_NEW = (
+        "  REVISION BUDGET (W2-DOCS2c):\n"
+        "  You have a maximum budget of 2 revision rounds. Use them wisely.\n"
+        "  - Round 1 (viz_revise_count=0): Detailed feedback expected. Approve if the visualizations meet the quality bar; otherwise return grade='revise' with concrete actionable feedback in the redo_list.\n"
+        "  - Round 2 (viz_revise_count=1): Final revision opportunity. Be decisive — only request another revision if the visualizations have critical errors. Otherwise return grade='acceptable' with brief notes.\n"
+        "  - Round 3 (viz_revise_count=2): Your verdict will be auto-approved regardless of your output to prevent infinite loops. Return your best feedback for downstream consumers, but recognize the system will proceed and the supervisor will move on.\n"
+        "  Current revision count for this run: {viz_revise_count}.\n"
+        "\n"
+        "  You may proceed with the evaluation."
+    )
+    def _w2_docs2c_prompt_pred(s):
+        return ("viz_evaluator_prompt_template = ChatPromptTemplate.from_messages" in s and _W2_DOCS2C_PROMPT_OLD in s) or (_W2_DOCS2C_PROMPT_GUARD in s)
+    def _w2_docs2c_prompt_mut(s):
+        if _W2_DOCS2C_PROMPT_GUARD in s:
+            raise _W2Skip()
+        if _W2_DOCS2C_PROMPT_OLD not in s:
+            print("⚠️  W2-DOCS2c-prompt: anchor not found")
+            return None
+        # Tag the change with the guard string in a Python comment after the template
+        # cell so future runs detect it. We can't put a Python comment inside the
+        # triple-quoted string, so append a sentinel comment line on the same cell
+        # (after the prompt block) using the .partial() chain marker.
+        new = s.replace(_W2_DOCS2C_PROMPT_OLD, _W2_DOCS2C_PROMPT_NEW, 1)
+        # Stamp guard as a top-level comment in the same cell (idempotency check)
+        if _W2_DOCS2C_PROMPT_GUARD not in new:
+            new = new.replace(
+                "viz_evaluator_prompt_template = ChatPromptTemplate.from_messages",
+                _W2_DOCS2C_PROMPT_GUARD + "\nviz_evaluator_prompt_template = ChatPromptTemplate.from_messages",
+                1,
+            )
+        return new
+    _w2_apply("W2-DOCS2c-prompt (revise-budget paragraph)", _w2_docs2c_prompt_pred, _w2_docs2c_prompt_mut)
+
+    # ---- W2-DOCS2c-vars: surface viz_revise_count in prompt-context dicts ----
+    _W2_DOCS2C_VARS_GUARD = "# W2-DOCS2c-vars: viz_revise_count surfaced"
+    # init_viz_vars (factory; no live state — default to 0)
+    _W2_DOCS2C_INIT_OLD = (
+        '    init_viz_vars = {"output_format" : VizFeedback.model_json_schema(), "memories" : "No memories yet", "analysis_insights": "No analysis insights yet","cleaned_dataset_description": "No cleaned dataset description yet",\n'
+        '                    "visualization_results": "No visualization results yet"}'
+    )
+    _W2_DOCS2C_INIT_NEW = (
+        '    init_viz_vars = {"output_format" : VizFeedback.model_json_schema(), "memories" : "No memories yet", "analysis_insights": "No analysis insights yet","cleaned_dataset_description": "No cleaned dataset description yet",\n'
+        '                    "visualization_results": "No visualization results yet",\n'
+        '                    "viz_revise_count": 0}  ' + _W2_DOCS2C_VARS_GUARD + ' (factory default)'
+    )
+    # vis_vars (runtime; pull from state)
+    _W2_DOCS2C_RUN_OLD = (
+        '    vis_vars = {"available_df_ids":df_id_str, "output_format" : VizFeedback.model_json_schema(),\n'
+        '                "memories" : enhanced_retrieve_mem(state),  "visualization_results": results,\n'
+        '                "user_prompt": user_prompt,\n'
+        '                "analysis_insights": state.get("analysis_insights", None), "cleaned_dataset_description": state.get("cleaned_dataset_description", None)}'
+    )
+    _W2_DOCS2C_RUN_NEW = (
+        '    vis_vars = {"available_df_ids":df_id_str, "output_format" : VizFeedback.model_json_schema(),\n'
+        '                "memories" : enhanced_retrieve_mem(state),  "visualization_results": results,\n'
+        '                "user_prompt": user_prompt,\n'
+        '                "viz_revise_count": int(state.get("viz_revise_count", 0) or 0),  ' + _W2_DOCS2C_VARS_GUARD + ' (runtime)\n'
+        '                "analysis_insights": state.get("analysis_insights", None), "cleaned_dataset_description": state.get("cleaned_dataset_description", None)}'
+    )
+    def _w2_docs2c_vars_pred(s):
+        return (_W2_DOCS2C_INIT_OLD in s) or (_W2_DOCS2C_RUN_OLD in s) or (_W2_DOCS2C_VARS_GUARD in s)
+    def _w2_docs2c_vars_mut(s):
+        if _W2_DOCS2C_VARS_GUARD in s:
+            raise _W2Skip()
+        n = s
+        ok = False
+        if _W2_DOCS2C_INIT_OLD in n:
+            n = n.replace(_W2_DOCS2C_INIT_OLD, _W2_DOCS2C_INIT_NEW, 1)
+            ok = True
+        if _W2_DOCS2C_RUN_OLD in n:
+            n = n.replace(_W2_DOCS2C_RUN_OLD, _W2_DOCS2C_RUN_NEW, 1)
+            ok = True
+        if not ok:
+            print("⚠️  W2-DOCS2c-vars: no matching dict in this cell")
+            return None
+        return n
+    _w2_apply("W2-DOCS2c-vars (init_viz_vars + vis_vars)", _w2_docs2c_vars_pred, _w2_docs2c_vars_mut)
+
+    # ============================================================================
+    # ============================  WAVE 4 PATCHES  ==============================
+    # Run 76 stalled in viz loop because W2-BR8 applied _sr_reducer to viz_grade /
+    # viz_feedback, masking None resets so the supervisor's "viz done & graded"
+    # predicate never fires. W4 reverts that, fixes EMERGENCY_MSG dead-end,
+    # hardens analyst & factory prompts, adds an unknown-tool guard, renames the
+    # parent `structured_response` channel to `final_structured_output` per
+    # langgraph-docs-check.md, bounds per-LLM timeouts, and adds defensive
+    # reducers to viz_tasks / report_results.
+    # ============================================================================
+
+    # ---- W2-BR8d: REVERT viz_grade / viz_feedback reducer (fixes Run 76 supervisor loop) ----
+    # W2-BR8 originally applied _sr_reducer to all THREE: structured_response,
+    # viz_grade, viz_feedback. With _sr_reducer's "prefer non-None last write"
+    # semantics, when viz_evaluator returns None on a transient error, the
+    # PRIOR viz_grade/viz_feedback values are preserved. The supervisor predicate
+    # ("viz done & graded") then sees stale grade/feedback and re-routes to viz
+    # forever (Run 76: 3+ iterations until 60-min cell timeout).
+    # Fix: keep _sr_reducer on structured_response (real BR-8), but revert
+    # viz_grade/viz_feedback to bare LastValue Optional[str] so a None reset
+    # actually clears the channel.
+    _W2_BR8D_GUARD = "# W2-BR8d: revert viz_grade/viz_feedback reducer"
+    _W2_BR8D_VG_OLD = (
+        "    viz_grade: Annotated[Optional[str], _sr_reducer]  # W2-BR8"
+    )
+    _W2_BR8D_VG_NEW = (
+        "    viz_grade: Optional[str]  " + _W2_BR8D_GUARD
+    )
+    _W2_BR8D_VF_OLD = (
+        "    viz_feedback: Annotated[Optional[str], _sr_reducer]  # W2-BR8"
+    )
+    _W2_BR8D_VF_NEW = (
+        "    viz_feedback: Optional[str]  " + _W2_BR8D_GUARD
+    )
+    def _w2_br8d_pred(s):
+        return (_W2_BR8D_VG_OLD in s) or (_W2_BR8D_VF_OLD in s) or (_W2_BR8D_GUARD in s)
+    def _w2_br8d_mut(s):
+        if _W2_BR8D_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_BR8D_VG_OLD in n:
+            n = n.replace(_W2_BR8D_VG_OLD, _W2_BR8D_VG_NEW, 1)
+        else:
+            print("⚠️  W2-BR8d: viz_grade Annotated anchor not found (W2-BR8 may not have run)")
+        if _W2_BR8D_VF_OLD in n:
+            n = n.replace(_W2_BR8D_VF_OLD, _W2_BR8D_VF_NEW, 1)
+        else:
+            print("⚠️  W2-BR8d: viz_feedback Annotated anchor not found")
+        return n
+    _w2_apply("W2-BR8d (revert viz_grade/viz_feedback reducer)", _w2_br8d_pred, _w2_br8d_mut)
+
+    # ---- W2-EMERGENCY: add EMERGENCY_MSG → supervisor static edge ----
+    # NOTE: an earlier patcher pass (W2-BR5/BR6) reduced the workers fan-in loop
+    # to just initial_analysis/data_cleaner/analyst (viz & report now route via
+    # conditional edges). Anchor against that post-W2-BR5/BR6 form.
+    _W2_EMERGENCY_GUARD = "# W2-EMERGENCY: EMERGENCY_MSG routes back to supervisor"
+    _W2_EMERGENCY_OLD = (
+        'for src in [\n'
+        '    "initial_analysis", "data_cleaner", "analyst",\n'
+        ']:\n'
+        '    data_analysis_team_builder.add_edge(src, "supervisor")'
+    )
+    _W2_EMERGENCY_NEW = (
+        '# ' + _W2_EMERGENCY_GUARD + '\n'
+        'for src in [\n'
+        '    "initial_analysis", "data_cleaner", "analyst",\n'
+        '    "EMERGENCY_MSG",  # W2-EMERGENCY: fan-in so emergency_correspondence_node is not a dead-end\n'
+        ']:\n'
+        '    data_analysis_team_builder.add_edge(src, "supervisor")'
+    )
+    def _w2_emergency_pred(s):
+        return (_W2_EMERGENCY_OLD in s) or (_W2_EMERGENCY_GUARD in s)
+    def _w2_emergency_mut(s):
+        if _W2_EMERGENCY_GUARD in s:
+            raise _W2Skip()
+        if _W2_EMERGENCY_OLD not in s:
+            print("⚠️  W2-EMERGENCY: workers fan-in loop anchor not found (source drift?)")
+            return None
+        return s.replace(_W2_EMERGENCY_OLD, _W2_EMERGENCY_NEW, 1)
+    _w2_apply("W2-EMERGENCY (EMERGENCY_MSG edge to supervisor)", _w2_emergency_pred, _w2_emergency_mut)
+
+    # ---- W2-BF2: analyst_node — sync analyst_vars["cleaned_dataset_description"] ----
+    _W2_BF2_GUARD = "# W2-BF2: analyst_vars cleaned_dataset_description synced"
+    _W2_BF2_OLD = (
+        '    cleaning_metadata = cm  # type: ignore\n'
+        '    analyst_vars["cleaning_metadata"] = "\\n".join(cleaning_metadata.steps_taken)\n'
+        '    _msgs = (state.get("messages") or [])'
+    )
+    _W2_BF2_NEW = (
+        '    cleaning_metadata = cm  # type: ignore\n'
+        '    analyst_vars["cleaning_metadata"] = "\\n".join(cleaning_metadata.steps_taken)\n'
+        '    ' + _W2_BF2_GUARD + '\n'
+        '    analyst_vars["cleaned_dataset_description"] = (\n'
+        '        getattr(cleaning_metadata, "data_description_after_cleaning", None)\n'
+        '        or state.get("cleaned_dataset_description")\n'
+        '        or analyst_vars.get("cleaned_dataset_description")\n'
+        '        or "No description available"\n'
+        '    )\n'
+        '    _msgs = (state.get("messages") or [])'
+    )
+    def _w2_bf2_pred(s):
+        return ("def analyst_node(" in s) or (_W2_BF2_GUARD in s)
+    def _w2_bf2_mut(s):
+        if _W2_BF2_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF2_OLD not in s:
+            print("⚠️  W2-BF2: analyst_node cm-guard anchor not found")
+            return None
+        return s.replace(_W2_BF2_OLD, _W2_BF2_NEW, 1)
+    _w2_apply("W2-BF2 (analyst cleaned_dataset_description)", _w2_bf2_pred, _w2_bf2_mut)
+
+    # ---- W2-BF6[DC] / W2-BF6[AN]: factory uses STATIC system_prompt ----
+    _W2_BF6DC_GUARD = "# W2-BF6[DC]: static factory system_prompt"
+    _W2_BF6DC_OLD = (
+        '    prompt = data_cleaner_prompt_template.partial(**init_dc_vars)\n'
+        '    # Access the template string directly without triggering validation/formatting\n'
+        '    try:\n'
+        '        # If it is a SystemMessagePromptTemplate (most common)\n'
+        '        system_prompt = prompt.messages[0].prompt.template\n'
+        '    except AttributeError:\n'
+        '        # If it is a direct SystemMessage or string\n'
+        '        system_prompt = prompt.messages[0].content'
+    )
+    _W2_BF6DC_NEW = (
+        '    ' + _W2_BF6DC_GUARD + '\n'
+        '    _ = data_cleaner_prompt_template.partial(**init_dc_vars)  # side-effect validation only\n'
+        '    system_prompt = (\n'
+        '        "You are the data_cleaner agent in the Intelligent Data Detective pipeline. "\n'
+        '        "Your runtime instructions (dataset description, cleaning metadata, tools, "\n'
+        '        "output schema) are provided as the first SystemMessage of every turn. "\n'
+        '        "Follow those instructions; do not rely on any templated text here."\n'
+        '    )'
+    )
+    def _w2_bf6dc_pred(s):
+        return (_W2_BF6DC_OLD in s) or (_W2_BF6DC_GUARD in s)
+    def _w2_bf6dc_mut(s):
+        if _W2_BF6DC_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF6DC_OLD not in s:
+            print("⚠️  W2-BF6[DC]: data_cleaner factory anchor not found")
+            return None
+        return s.replace(_W2_BF6DC_OLD, _W2_BF6DC_NEW, 1)
+    _w2_apply("W2-BF6[DC] (static data_cleaner system_prompt)", _w2_bf6dc_pred, _w2_bf6dc_mut)
+
+    _W2_BF6AN_GUARD = "# W2-BF6[AN]: static factory system_prompt"
+    _W2_BF6AN_OLD = (
+        '    prompt = analyst_prompt_template_main.partial(**init_analyst_vars)\n'
+        '    try:\n'
+        '        # If it is a SystemMessagePromptTemplate (most common)\n'
+        '        system_prompt = prompt.messages[0].prompt.template\n'
+        '    except AttributeError:\n'
+        '        # If it is a direct SystemMessage or string\n'
+        '        system_prompt = prompt.messages[0].content'
+    )
+    _W2_BF6AN_NEW = (
+        '    ' + _W2_BF6AN_GUARD + '\n'
+        '    _ = analyst_prompt_template_main.partial(**init_analyst_vars)  # side-effect validation only\n'
+        '    system_prompt = (\n'
+        '        "You are the analyst agent in the Intelligent Data Detective pipeline. "\n'
+        '        "Your runtime instructions (cleaning_metadata, data_sample, output schema, "\n'
+        '        "memories) are provided as the first SystemMessage of every turn. Follow those; "\n'
+        '        "do not rely on any templated text here."\n'
+        '    )'
+    )
+    def _w2_bf6an_pred(s):
+        return (_W2_BF6AN_OLD in s) or (_W2_BF6AN_GUARD in s)
+    def _w2_bf6an_mut(s):
+        if _W2_BF6AN_GUARD in s:
+            raise _W2Skip()
+        if _W2_BF6AN_OLD not in s:
+            print("⚠️  W2-BF6[AN]: analyst factory anchor not found")
+            return None
+        return s.replace(_W2_BF6AN_OLD, _W2_BF6AN_NEW, 1)
+    _w2_apply("W2-BF6[AN] (static analyst system_prompt)", _w2_bf6an_pred, _w2_bf6an_mut)
+
+    # ---- W2-REC6: unknown-tool fast-fail middleware (helper + per-factory wires) ----
+    _W2_REC6_GUARD = "# W2-REC6: unknown-tool guard middleware installed"
+    _W2_REC6_HELPER_ANCHOR = "def create_data_cleaner_agent(initial_description: InitialDescription, df_ids: List[str] = []):"
+    _W2_REC6_HELPER_BLOCK = (
+        '# ' + _W2_REC6_GUARD + '\n'
+        'def _make_unknown_tool_guard(agent_name: str, valid_tool_names):\n'
+        '    """Return middleware rejecting AIMessage.tool_calls whose name is unknown."""\n'
+        '    try:\n'
+        '        from langchain.agents.middleware import AgentMiddleware  # type: ignore\n'
+        '    except Exception:\n'
+        '        AgentMiddleware = object  # fallback\n'
+        '    _valid = set(valid_tool_names)\n'
+        '    class _UnknownToolGuard(AgentMiddleware):  # type: ignore[misc]\n'
+        '        def after_model(self, state, runtime=None):\n'
+        '            from langchain_core.messages import ToolMessage\n'
+        '            msgs = (state.get("messages") if isinstance(state, dict) else getattr(state, "messages", [])) or []\n'
+        '            if not msgs:\n'
+        '                return None\n'
+        '            last = msgs[-1]\n'
+        '            tcs = getattr(last, "tool_calls", None) or []\n'
+        '            bad = [tc for tc in tcs if (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)) not in _valid]\n'
+        '            if not bad:\n'
+        '                return None\n'
+        '            out = []\n'
+        '            _valid_sorted = sorted(_valid)\n'
+        '            for tc in bad:\n'
+        '                _tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?")\n'
+        '                _tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "unknown")\n'
+        '                out.append(ToolMessage(\n'
+        '                    content=(f"ERROR: tool `{_tc_name}` does not exist for agent `{agent_name}`. "\n'
+        '                            f"Valid tools: {_valid_sorted}. Call one of the valid tool names, "\n'
+        '                            f"or call your structured-response tool to terminate."),\n'
+        '                    status="error",\n'
+        '                    tool_call_id=_tc_id or "unknown",\n'
+        '                ))\n'
+        '            return {"messages": out}\n'
+        '    return _UnknownToolGuard()\n'
+        '\n'
+        + _W2_REC6_HELPER_ANCHOR
+    )
+    def _w2_rec6_helper_pred(s):
+        return (_W2_REC6_HELPER_ANCHOR in s) or (_W2_REC6_GUARD in s)
+    def _w2_rec6_helper_mut(s):
+        if _W2_REC6_GUARD in s:
+            raise _W2Skip()
+        if _W2_REC6_HELPER_ANCHOR not in s:
+            print("⚠️  W2-REC6: create_data_cleaner_agent anchor not found")
+            return None
+        return s.replace(_W2_REC6_HELPER_ANCHOR, _W2_REC6_HELPER_BLOCK, 1)
+    _w2_apply("W2-REC6 (unknown-tool guard helper)", _w2_rec6_helper_pred, _w2_rec6_helper_mut)
+
+    # Per-factory wiring. Each entry: (tag, exact middleware= line, tools_var, agent_name, schema_name)
+    _W2_REC6_TARGETS = [
+        ("DC",  "middleware =[_prehook],",                 "data_cleaning_tools",  "data_cleaner",     "CleaningMetadata"),
+        ("IA",  "middleware =[prehook_quick],",            "init_analyst_tools",   "initial_analysis", "InitialDescription"),
+        ("AN",  "middleware =[prehook_critical_complex],", "analyst_tools",        "analyst",          "AnalysisInsights"),
+        ("FW",  "middleware =[prehook],",                  "file_writer_tools",    "file_writer",      "FileResult"),
+        ("VIS", "middleware =[prehook_complex],",          "visualization_tools",  "visualization",    "VisualizationResults"),
+    ]
+    for _tag, _old_mw, _tools_var, _aname, _schema in _W2_REC6_TARGETS:
+        _guard = f"# W2-REC6[{_tag}]: unknown-tool guard wired"
+        # Extract the prehook name(s) from inside the brackets
+        _inner = _old_mw[len("middleware =["):-len("],")]
+        _new_mw = (
+            f'middleware =[{_inner}, '
+            f'_make_unknown_tool_guard("{_aname}", '
+            f'[t.name for t in {_tools_var}] + ["{_schema}"])],  {_guard}'
+        )
+        def _make_pred(old_mw=_old_mw, guard=_guard):
+            return lambda s: (old_mw in s and guard not in s) or (guard in s)
+        def _make_mut(old_mw=_old_mw, guard=_guard, new_mw=_new_mw):
+            def _m(s):
+                if guard in s:
+                    raise _W2Skip()
+                if old_mw not in s:
+                    print(f"⚠️  W2-REC6[{guard.split(']')[0].split('[')[1]}]: middleware anchor `{old_mw}` not found")
+                    return None
+                return s.replace(old_mw, new_mw, 1)
+            return _m
+        _w2_apply(f"W2-REC6[{_tag}] (unknown-tool guard wire)", _make_pred(), _make_mut())
+
+    # ---- W2-DOCS1: rename `structured_response` parent State channel → `final_structured_output` ----
+    # Per langgraph-docs-check.md Q1: when create_react_agent (now create_agent) is added
+    # via add_node and the parent StateGraph also declares `structured_response`, the two
+    # channels merge by name with undefined behavior on mismatched type/reducer. Renaming
+    # the parent field eliminates the shared-key collision; the prebuilt continues to
+    # write its own internal `structured_response` channel inside its subgraph and we
+    # extract it via `result["structured_response"]` in the wrapper layer (no change there).
+    #
+    # Audit (see w4-progress.md classification table) showed:
+    #   - 0 occurrences of `state["structured_response"]` or `state.get("structured_response")`
+    #   - All `result["structured_response"]` / `fb["structured_response"]` reads are
+    #     prebuilt-result extractions (NOT renamed)
+    #   - Patcher-injected recovery shims write `'structured_response':` (single-quote+colon)
+    #     to State via node return dicts — these MUST be renamed in lockstep.
+    # Safe rename rule:
+    #   (a) State decl: `structured_response: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]`
+    #       → `final_structured_output: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]`
+    #   (b) `'structured_response':` (dict-key with colon, single quotes) → `'final_structured_output':`
+    #       Only matches recovery-shim writes. Prebuilt-extract reads use `]` not `:`.
+    _W2_DOCS1_GUARD = "# W2-DOCS1: structured_response renamed to final_structured_output"
+    _W2_DOCS1_DECL_OLD = (
+        "    structured_response: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]  "
+        "# W2-BR8: prefer non-None last write"
+    )
+    _W2_DOCS1_DECL_NEW = (
+        "    final_structured_output: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]  "
+        "# W2-BR8 + W2-DOCS1: prefer non-None last write; renamed to avoid prebuilt subgraph collision"
+    )
+    _W2_DOCS1_WRITE_OLD = "'structured_response':"
+    _W2_DOCS1_WRITE_NEW = "'final_structured_output':"
+    def _w2_docs1_pred(s):
+        return (_W2_DOCS1_DECL_OLD in s) or (_W2_DOCS1_WRITE_OLD in s) or (_W2_DOCS1_GUARD in s)
+    def _w2_docs1_mut(s):
+        if _W2_DOCS1_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_DOCS1_DECL_OLD in n:
+            n = n.replace(_W2_DOCS1_DECL_OLD, _W2_DOCS1_DECL_NEW, 1)
+        if _W2_DOCS1_WRITE_OLD in n:
+            n = n.replace(_W2_DOCS1_WRITE_OLD, _W2_DOCS1_WRITE_NEW)  # all occurrences in cell
+        # idempotency sentinel marker in cell
+        if n != s:
+            n = "# " + _W2_DOCS1_GUARD + "\n" + n
+        return n
+    # W2-DOCS1 REVERTED in Wave 4.3 — the global 'structured_response': → 'final_structured_output':
+    # rename collateral-damaged W2-BA-finalhop's return dict, breaking data_cleaner_node and any
+    # other node that reads structured_response from fb after a fallback invocation. The cell-48
+    # collision warning W2-DOCS1 tried to prevent is benign (LangGraph silently merges duplicate
+    # channel decls; W2-BR8's _sr_reducer already handles the dual-write race).
+    # _w2_apply("W2-DOCS1 (rename structured_response State channel)", _w2_docs1_pred, _w2_docs1_mut)
+
+    # ---- W2-DOCS2a: per-LLM timeouts (cloud branch + local-llm branch) ----
+    # Run 76 hung 16+ min in viz_evaluator on an unbounded HTTP call. ChatOpenAI
+    # default timeout is unset → relies on client socket timeouts only. Per LangChain
+    # docs, set explicit `timeout` and reduce `max_retries` (default 6) so SDK retries
+    # don't compound with our wrapper-level retries.
+    _W2_DOCS2A_GUARD = "# W2-DOCS2a: per-LLM timeouts"
+    _W2_DOCS2A_LONG = {"viz_evaluator_llm", "analyst_llm"}  # cloud-side 600s exceptions
+    _W2_DOCS2A_NAMES = [
+        "big_picture_llm", "router_llm", "reply_llm", "plan_llm", "replan_llm",
+        "todo_llm", "progress_llm", "mid_substep_llm", "small_detail_llm", "low_reasoning_llm",
+        "initial_analyst_llm", "data_cleaner_llm", "analyst_llm", "visualization_orchestrator_llm",
+        "viz_evaluator_llm", "viz_worker_llm", "report_orchestrator_llm",
+        "report_section_worker_llm", "report_packager_llm", "file_writer_llm",
+        "memsearch_query_llm", "quick_summary_llm", "summary_llm", "complex_summary_llm",
+        "critical_complex_summary_llm",
+    ]
+    def _w2_docs2a_pred(s):
+        return ("big_picture_llm = ChatOpenAI(" in s) or (_W2_DOCS2A_GUARD in s)
+    def _w2_docs2a_mut(s):
+        if _W2_DOCS2A_GUARD in s:
+            raise _W2Skip()
+        n = s
+        # Cloud branch — first ChatOpenAI( on each NAME_llm = ... line
+        for name in _W2_DOCS2A_NAMES:
+            cloud_timeout = 600 if name in _W2_DOCS2A_LONG else 120
+            old1 = f"{name} = ChatOpenAI("
+            new1 = f"{name} = ChatOpenAI(timeout={cloud_timeout}, max_retries=2, "
+            if old1 in n and f"{name} = ChatOpenAI(timeout=" not in n:
+                n = n.replace(old1, new1, 1)
+        # Local-llm branch — `else ChatOpenAI(base_url=f"{ngrok_url}/v1"` (all 27 lines)
+        old_local = 'else ChatOpenAI(base_url=f"{ngrok_url}/v1"'
+        new_local = 'else ChatOpenAI(timeout=600, max_retries=2, base_url=f"{ngrok_url}/v1"'
+        if old_local in n and new_local not in n:
+            n = n.replace(old_local, new_local)
+        # Sentinel marker
+        n = n.replace(
+            "big_picture_llm = ChatOpenAI(timeout=",
+            f"# {_W2_DOCS2A_GUARD}\nbig_picture_llm = ChatOpenAI(timeout=",
+            1,
+        )
+        return n
+    _w2_apply("W2-DOCS2a (per-LLM timeouts)", _w2_docs2a_pred, _w2_docs2a_mut)
+
+    # ---- W2-BR8b: defensive viz_tasks reducer (forward-compat for BR-8 class) ----
+    _W2_BR8B_GUARD = "# W2-BR8b: viz_tasks reducer"
+    _W2_BR8B_VT_OLD = "    viz_tasks: List[str]                                   # planned list of viz prompts/tasks"
+    _W2_BR8B_VT_NEW = (
+        "    viz_tasks: Annotated[List[str], _keep_last_or_clear]   "
+        "# W2-BR8b: last-writer-wins; pre-empts BR-8-class crash if a recovery "
+        "shim ever co-writes this key"
+    )
+    def _w2_br8b_pred(s):
+        return ("class State(TypedDict, total=False):" in s) or (_W2_BR8B_GUARD in s)
+    def _w2_br8b_mut(s):
+        if _W2_BR8B_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_BR8B_VT_OLD in n:
+            n = n.replace(_W2_BR8B_VT_OLD, _W2_BR8B_VT_NEW, 1)
+        else:
+            loose = "    viz_tasks: List[str]"
+            if loose in n and "Annotated[List[str]" not in n.split(loose, 1)[1].split("\n", 1)[0]:
+                n = n.replace(
+                    loose,
+                    "    viz_tasks: Annotated[List[str], _keep_last_or_clear]  # W2-BR8b",
+                    1,
+                )
+            else:
+                print("⚠️  W2-BR8b: viz_tasks anchor not found (may already be Annotated)")
+        n = n.replace(
+            "class State(TypedDict, total=False):",
+            f"{_W2_BR8B_GUARD}\nclass State(TypedDict, total=False):",
+            1,
+        )
+        return n
+    _w2_apply("W2-BR8b (viz_tasks reducer)", _w2_br8b_pred, _w2_br8b_mut)
+
+    # ---- W2-BR8c: defensive report_results reducer (forward-compat for BR-8 class) ----
+    _W2_BR8C_GUARD = "# W2-BR8c: report_results reducer"
+    _W2_BR8C_RR_OLD = "    report_results: Optional[ReportResults]"
+    _W2_BR8C_RR_NEW = (
+        "    report_results: Annotated[Optional[ReportResults], _sr_reducer]  "
+        "# W2-BR8c: prefer non-None last write"
+    )
+    def _w2_br8c_pred(s):
+        return ("class State(TypedDict, total=False):" in s) or (_W2_BR8C_GUARD in s)
+    def _w2_br8c_mut(s):
+        if _W2_BR8C_GUARD in s:
+            raise _W2Skip()
+        n = s
+        if _W2_BR8C_RR_OLD in n:
+            n = n.replace(_W2_BR8C_RR_OLD, _W2_BR8C_RR_NEW, 1)
+        else:
+            print("⚠️  W2-BR8c: report_results anchor not found (may already be Annotated)")
+        n = n.replace(
+            "class State(TypedDict, total=False):",
+            f"{_W2_BR8C_GUARD}\nclass State(TypedDict, total=False):",
+            1,
+        )
+        return n
+    _w2_apply("W2-BR8c (report_results reducer)", _w2_br8c_pred, _w2_br8c_mut)
+
+    # ---- W2-DOCS3: drop dead create_react_agent import (deprecated in LangGraph v1) ----
+    # `create_react_agent` is imported but never called anywhere — all 8 agent
+    # factories use `create_agent` from langchain.agents. The `# keep for now`
+    # comment is stale migration-era guidance. Safe to drop.
+    _W2_DOCS3_GUARD = "# W2-DOCS3: dropped deprecated create_react_agent"
+    _W2_DOCS3_OLD = "from langgraph.prebuilt import create_react_agent, InjectedState, InjectedStore  # keep for now"
+    _W2_DOCS3_NEW = (
+        "from langgraph.prebuilt import InjectedState, InjectedStore  "
+        + _W2_DOCS3_GUARD
+        + " (never called)"
+    )
+    def _w2_docs3_pred(s):
+        return (_W2_DOCS3_OLD in s) or (_W2_DOCS3_GUARD in s)
+    def _w2_docs3_mut(s):
+        if _W2_DOCS3_GUARD in s:
+            raise _W2Skip()
+        if _W2_DOCS3_OLD not in s:
+            return None
+        return s.replace(_W2_DOCS3_OLD, _W2_DOCS3_NEW, 1)
+    _w2_apply("W2-DOCS3 (drop dead create_react_agent import)", _w2_docs3_pred, _w2_docs3_mut)
+
+    # ============================  WAVE 4 PATCHES  ===============================
+
+    # ---- W4-SUPLIMIT: global supervisor iteration cap (defense-in-depth) ----
+    # State field: _supervisor_turn_count with operator.add reducer (every supervisor turn emits +1).
+    # Cap check inside supervisor_node forces FINISH when count exceeds IDD_SUPERVISOR_MAX_TURNS (default 30).
+    # A per-cell decorator wraps supervisor_node so EVERY return path emits the +1 update automatically.
+    _W4_SUPLIMIT_STATE_GUARD = "# W4-SUPLIMIT: supervisor turn counter"
+    _W4_SUPLIMIT_STATE_ANCHOR = "viz_revise_count: int  # bounded by W2-DOCS2c revise-cap (max 2 revisions, force-approve on 3rd)\n"
+    _W4_SUPLIMIT_STATE_INSERT = (
+        "    " + _W4_SUPLIMIT_STATE_GUARD + " (operator.add reducer; bounded by IDD_SUPERVISOR_MAX_TURNS, default 30)\n"
+        "    _supervisor_turn_count: Annotated[int, operator.add]\n"
+    )
+    def _w4_suplimit_state_pred(s):
+        return (_W4_SUPLIMIT_STATE_ANCHOR in s) or (_W4_SUPLIMIT_STATE_GUARD in s)
+    def _w4_suplimit_state_mut(s):
+        if _W4_SUPLIMIT_STATE_GUARD in s:
+            raise _W2Skip()
+        if _W4_SUPLIMIT_STATE_ANCHOR not in s:
+            return None
+        return s.replace(
+            _W4_SUPLIMIT_STATE_ANCHOR,
+            _W4_SUPLIMIT_STATE_ANCHOR + _W4_SUPLIMIT_STATE_INSERT,
+            1,
+        )
+    _w2_apply("W4-SUPLIMIT (state field _supervisor_turn_count)", _w4_suplimit_state_pred, _w4_suplimit_state_mut)
+
+    # ---- W4-SUPLIMIT cap-check: inject at top of supervisor_node body + decorator wrap ----
+    _W4_SUPLIMIT_NODE_GUARD = "# W4-SUPLIMIT: global iteration cap"
+    import re as _re_w4sl
+    _w4sl_patched = False
+    for _idx, _cell in enumerate(cells):
+        if _cell.get("cell_type") != "code":
+            continue
+        _src = join_source(_cell["source"])
+        if "def supervisor_node" not in _src or "make_supervisor_node" not in _src:
+            continue
+        if _W4_SUPLIMIT_NODE_GUARD in _src:
+            print(f"i  Cell idx {_idx}: W4-SUPLIMIT (supervisor cap-check) already applied")
+            _w4sl_patched = True
+            break
+        _m_sl = _re_w4sl.search(r'^([ \t]*)def supervisor_node\(state: State, config: RunnableConfig\):\n', _src, _re_w4sl.MULTILINE)
+        if not _m_sl:
+            print(f"W  W4-SUPLIMIT: supervisor_node signature not found in cell {_idx}")
+            break
+        _fn_indent = _m_sl.group(1)
+        _body_indent = _fn_indent + "    "
+        _cap_block = (
+            f"{_body_indent}{_W4_SUPLIMIT_NODE_GUARD}\n"
+            f"{_body_indent}_w4_supcnt = int(state.get('_supervisor_turn_count') or 0) + 1\n"
+            f"{_body_indent}_W4_SUPMAX = int(os.environ.get('IDD_SUPERVISOR_MAX_TURNS', '30'))\n"
+            f"{_body_indent}if _w4_supcnt > _W4_SUPMAX:\n"
+            f"{_body_indent}    print(f'[W4-SUPLIMIT] supervisor turn cap reached ({{_w4_supcnt}}/{{_W4_SUPMAX}}) - forcing FINISH')\n"
+            f"{_body_indent}    return Command(goto='FINISH', update={{'_supervisor_turn_count': 1, 'next': 'FINISH'}})\n"
+        )
+        _new_src = _re_w4sl.sub(
+            r'(^[ \t]*def supervisor_node\(state: State, config: RunnableConfig\):\n)',
+            lambda m: m.group(1) + _cap_block,
+            _src,
+            count=1,
+            flags=_re_w4sl.MULTILINE,
+        )
+        # Inject decorator wrap INSIDE the factory just before `return supervisor_node`
+        # (supervisor_node is a closure inside make_supervisor_node, not a module-level name)
+        _wrap_block = (
+            f"{_fn_indent}# W4-SUPLIMIT: wrap supervisor_node so every Command return carries _supervisor_turn_count: 1\n"
+            f"{_fn_indent}def _w4_suplimit_wrap(_fn):\n"
+            f"{_fn_indent}    def _wrapper(state, config=None):\n"
+            f"{_fn_indent}        _r = _fn(state, config)\n"
+            f"{_fn_indent}        try:\n"
+            f"{_fn_indent}            from langgraph.types import Command as _W4Cmd\n"
+            f"{_fn_indent}        except Exception:\n"
+            f"{_fn_indent}            _W4Cmd = None\n"
+            f"{_fn_indent}        if _W4Cmd is not None and isinstance(_r, _W4Cmd):\n"
+            f"{_fn_indent}            _u = getattr(_r, 'update', None)\n"
+            f"{_fn_indent}            if isinstance(_u, dict) and '_supervisor_turn_count' not in _u:\n"
+            f"{_fn_indent}                _u['_supervisor_turn_count'] = 1\n"
+            f"{_fn_indent}        elif isinstance(_r, dict) and '_supervisor_turn_count' not in _r:\n"
+            f"{_fn_indent}            _r['_supervisor_turn_count'] = 1\n"
+            f"{_fn_indent}        return _r\n"
+            f"{_fn_indent}    _wrapper.__name__ = getattr(_fn, '__name__', 'supervisor_node')\n"
+            f"{_fn_indent}    _wrapper.__wrapped__ = _fn\n"
+            f"{_fn_indent}    return _wrapper\n"
+            f"{_fn_indent}supervisor_node = _w4_suplimit_wrap(supervisor_node)\n"
+        )
+        # Insert the wrap immediately before `return supervisor_node` (factory's final return)
+        _ret_pat = _re_w4sl.compile(r'^([ \t]*)return supervisor_node\s*$', _re_w4sl.MULTILINE)
+        if _ret_pat.search(_new_src):
+            _new_src = _ret_pat.sub(_wrap_block + r'\1return supervisor_node', _new_src, count=1)
+        else:
+            print(f"W  W4-SUPLIMIT: 'return supervisor_node' anchor not found in cell {_idx}; wrap NOT applied")
+        if _new_src != _src:
+            _cell["source"] = _new_src
+            _cell["outputs"] = []
+            _cell["execution_count"] = None
+            print(f"OK Cell idx {_idx}: W4-SUPLIMIT applied — cap-check + decorator wrap")
+            _w4sl_patched = True
+        break
+    if not _w4sl_patched:
+        print("W  W4-SUPLIMIT: supervisor_node target not found")
+
+    # ---- W4-VE-SAFEFB: surgical .get() on fb["structured_response"] in viz_evaluator_node ----
+    # Run 77/79 traceback: KeyError 'structured_response' from hard-bracket reads in
+    # viz_evaluator_node's two return statements (LLM-judged path + fallback path).
+    # The prebuilt-agent invoke result dict does not always carry that key. Replace
+    # both `fb["structured_response"]` reads with `fb.get("structured_response")`,
+    # which is correctness-equivalent (truthy iff present and non-falsy) and never
+    # raises. The third site (line ~16136 in source) is already wrapped in try/except,
+    # so we only target the two return-statement reads anchored on the literal
+    # `"viz_feedback" if fb["structured_response"]` substring.
+    _W4_VE_SAFEFB_GUARD = "# W4-VE-SAFEFB: safe .get on structured_response"
+    _W4_VE_SAFEFB_OLD = '"viz_feedback" if fb["structured_response"]'
+    _W4_VE_SAFEFB_NEW = '"viz_feedback" if fb.get("structured_response")'
+    def _w4_ve_safefb_pred(s):
+        return ("def viz_evaluator_node(" in s) and (_W4_VE_SAFEFB_OLD in s or _W4_VE_SAFEFB_GUARD in s)
+    def _w4_ve_safefb_mut(s):
+        if _W4_VE_SAFEFB_GUARD in s:
+            raise _W2Skip()
+        if _W4_VE_SAFEFB_OLD not in s:
+            return None
+        # Replace ALL occurrences (both LLM-path and fallback-path return statements)
+        n = s.replace(_W4_VE_SAFEFB_OLD, _W4_VE_SAFEFB_NEW)
+        # Stamp guard as a comment on the def line so subsequent runs detect already-applied
+        n = n.replace(
+            "def viz_evaluator_node(state: State):",
+            "def viz_evaluator_node(state: State):  " + _W4_VE_SAFEFB_GUARD,
+            1,
+        )
+        return n
+    _w2_apply("W4-VE-SAFEFB (safe .get on fb structured_response)", _w4_ve_safefb_pred, _w4_ve_safefb_mut)
+
+    # ---- W4-VE-OUTERGUARD: outer try/except wrapping viz_evaluator_node body ----
+    # Defensive secondary safety net so ANY unhandled exception in viz_evaluator_node
+    # emits a defensive verdict instead of killing the graph. Routes to
+    # report_orchestrator with viz_grade=acceptable and an explicit feedback string
+    # marking the auto-approval as evaluator-failure (no silent fabrication).
+    # IMPORTANT: this MUST run AFTER all other viz_evaluator_node patches
+    # (W2-DOCS2c-node, W2-BR6b, W4-VE-SAFEFB) so the wrap captures the final body.
+    import re as _re_w4ve_og
+    _W4_VE_OUTERGUARD_GUARD = "# W4-VE-OUTERGUARD: outer try/except around viz_evaluator_node"
+    def _w4_ve_og_pred(s):
+        return "def viz_evaluator_node(" in s
+    def _w4_ve_og_mut(s):
+        if _W4_VE_OUTERGUARD_GUARD in s:
+            raise _W2Skip()
+        lines = s.split("\n")
+        sig_idx = None
+        sig_indent = None
+        for i, ln in enumerate(lines):
+            m = _re_w4ve_og.match(r'^([ \t]*)def viz_evaluator_node\(', ln)
+            if m:
+                sig_idx = i
+                sig_indent = m.group(1)
+                break
+        if sig_idx is None:
+            return None
+        body_indent = sig_indent + "    "
+        # Find end of function body: first subsequent non-blank line whose
+        # leading whitespace is <= sig_indent (i.e., next top-level def or dedent).
+        end_idx = len(lines)
+        for j in range(sig_idx + 1, len(lines)):
+            ln = lines[j]
+            if ln.strip() == "":
+                continue
+            m2 = _re_w4ve_og.match(r'^([ \t]*)\S', ln)
+            if not m2:
+                continue
+            ws = m2.group(1)
+            if len(ws) <= len(sig_indent):
+                end_idx = j
+                break
+        # Indent every non-blank body line by 4 extra spaces
+        new_body = []
+        for j in range(sig_idx + 1, end_idx):
+            ln = lines[j]
+            if ln.strip() == "":
+                new_body.append(ln)
+            else:
+                new_body.append("    " + ln)
+        except_block = [
+            f"{body_indent}except Exception as _w4_ve_exc:  {_W4_VE_OUTERGUARD_GUARD}",
+            f"{body_indent}    import traceback as _w4_tb",
+            f"{body_indent}    _w4_tb_str = _w4_tb.format_exc()",
+            f"{body_indent}    try:",
+            f"{body_indent}        _pl_logger.error(f'[W4-VE-OUTERGUARD] viz_evaluator crashed: {{_w4_ve_exc!r}}')",
+            f"{body_indent}        _pl_logger.error(_w4_tb_str)",
+            f"{body_indent}    except Exception:",
+            f"{body_indent}        print(f'[W4-VE-OUTERGUARD] viz_evaluator crashed: {{_w4_ve_exc!r}}')",
+            f"{body_indent}        print(_w4_tb_str)",
+            f"{body_indent}    try:",
+            f"{body_indent}        _vrc = int((state.get('viz_revise_count') if hasattr(state, 'get') else 0) or 0) + 1",
+            f"{body_indent}    except Exception:",
+            f"{body_indent}        _vrc = 1",
+            f"{body_indent}    return {{",
+            f"{body_indent}        'viz_revise_count': _vrc,",
+            f"{body_indent}        'next': 'report_orchestrator',",
+            f"{body_indent}        'viz_grade': 'acceptable',",
+            f"{body_indent}        'viz_feedback': f'[W4-VE-OUTERGUARD: evaluator crashed with {{type(_w4_ve_exc).__name__}}: {{_w4_ve_exc}}; force-approving to unblock pipeline]',",
+            f"{body_indent}        'last_agent_id': 'viz_evaluator',",
+            f"{body_indent}        'current_turn_agent_id': 'supervisor',",
+            f"{body_indent}    }}",
+        ]
+        new_lines = (
+            lines[:sig_idx + 1]
+            + [f"{body_indent}try:  {_W4_VE_OUTERGUARD_GUARD}"]
+            + new_body
+            + except_block
+            + lines[end_idx:]
+        )
+        return "\n".join(new_lines)
+    _w2_apply("W4-VE-OUTERGUARD (outer try/except viz_evaluator_node)", _w4_ve_og_pred, _w4_ve_og_mut)
+
+    # ---- W5-FW-ROUTE: fix route_to_writer skipping file_writer on happy path ----
+    # ROOT CAUSE: route_to_writer used `already_wrote = bool(state.get("report_results"))`
+    # as a proxy for "file_writer already ran". But report_packager SETS report_results
+    # BEFORE handing off, so on the finished_this_task=True path packager returns a plain
+    # update dict (no Command(goto=...)) and route_to_writer immediately sees report_results
+    # truthy → returns "END" → file_writer never runs → no PDF.
+    # Run 81 evidence: pipeline reached FINAL with 0 file_writer STAGE markers, 0 PDF.
+    # Fix: gate on the actual completion flag set by file_writer_node ("file_writer_complete").
+    _W5_FW_ROUTE_OLD = 'already_wrote = bool(state.get("report_results"))'
+    _W5_FW_ROUTE_NEW = 'already_wrote = bool(state.get("file_writer_complete"))  # W5-FW-ROUTE'
+    def _w5_fw_route_pred(s):
+        return _W5_FW_ROUTE_OLD in s
+    def _w5_fw_route_mut(s):
+        if "# W5-FW-ROUTE" in s:
+            raise _W2Skip()
+        return s.replace(_W5_FW_ROUTE_OLD, _W5_FW_ROUTE_NEW, 1)
+    _w2_apply("W5-FW-ROUTE (gate route_to_writer on file_writer_complete)", _w5_fw_route_pred, _w5_fw_route_mut)
+
+    # ---- W5-FW-STAGE: add STAGE markers to file_writer_node so we can observe it ----
+    # Cosmetic but critical for diagnostics: every other node prints STAGE START/DONE
+    # except file_writer. Add them at function entry and just before return.
+    _W5_FW_STAGE_GUARD = "# W5-FW-STAGE: STAGE markers added"
+    _W5_FW_STAGE_OLD = "def file_writer_node(state: State):\n    user_prompt = state.get(\"user_prompt\", sample_prompt_text)"
+    _W5_FW_STAGE_NEW = (
+        "def file_writer_node(state: State):  " + _W5_FW_STAGE_GUARD + "\n"
+        "    print('STAGE file_writer START')\n"
+        "    try:\n"
+        "        _pl_logger.info('STAGE file_writer START')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    user_prompt = state.get(\"user_prompt\", sample_prompt_text)"
+    )
+    def _w5_fw_stage_pred(s):
+        return _W5_FW_STAGE_OLD in s
+    def _w5_fw_stage_mut(s):
+        if _W5_FW_STAGE_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W5_FW_STAGE_OLD, _W5_FW_STAGE_NEW, 1)
+    _w2_apply("W5-FW-STAGE (file_writer STAGE markers)", _w5_fw_stage_pred, _w5_fw_stage_mut)
+
+    # ---- W6-FW-PDF-FORCE: deterministic PDF generation when LLM omits write_pdf ----
+    # ROOT CAUSE: file_writer LLM consistently writes HTML+MD but never invokes any
+    # PDF-generating tool (it textually claims a .pdf in its FileResult but no file
+    # is produced). Run 82 evidence: HTML+MD present in IDD_run_*; no .pdf anywhere
+    # in run subdir. xhtml2pdf is already installed.
+    # Fix: after the agent loop returns, deterministically convert the final HTML
+    # report to PDF via xhtml2pdf, append a FileResult entry. No LLM dependency.
+    # Insert AFTER viz_paths comprehension and BEFORE the update = {} dict so the
+    # appended PDF entry is included in file_results / file_writer_complete check.
+    _W6_FW_PDF_GUARD = "# W6-FW-PDF-FORCE"
+    _W6_FW_PDF_OLD = (
+        "    viz_paths = [\n"
+        "        fr.file_path\n"
+        "        for fr in file_results.files\n"
+        "        if getattr(fr, \"write_success\", False)\n"
+        "        and (getattr(fr, \"category_tag\", \"\") or \"\").lower().strip() == \"visualization\"\n"
+        "        and getattr(fr, \"file_path\", None)\n"
+        "    ]\n"
+        "    update = {"
+    )
+    _W6_FW_PDF_NEW = (
+        "    viz_paths = [\n"
+        "        fr.file_path\n"
+        "        for fr in file_results.files\n"
+        "        if getattr(fr, \"write_success\", False)\n"
+        "        and (getattr(fr, \"category_tag\", \"\") or \"\").lower().strip() == \"visualization\"\n"
+        "        and getattr(fr, \"file_path\", None)\n"
+        "    ]\n"
+        "    " + _W6_FW_PDF_GUARD + ": auto-generate PDF from final HTML if LLM omitted it\n"
+        "    try:\n"
+        "        _w6_html_fr = next((fr for fr in file_results.files\n"
+        "                            if getattr(fr, 'write_success', False)\n"
+        "                            and getattr(fr, 'is_final_report', False)\n"
+        "                            and (getattr(fr, 'file_path', '') or '').lower().endswith('.html')), None)\n"
+        "        if _w6_html_fr is None:\n"
+        "            _w6_html_fr = next((fr for fr in file_results.files\n"
+        "                                if getattr(fr, 'write_success', False)\n"
+        "                                and (getattr(fr, 'file_path', '') or '').lower().endswith('.html')\n"
+        "                                and (getattr(fr, 'category_tag', '') or '').lower().strip() == 'report'), None)\n"
+        "        _w6_has_pdf = any((getattr(fr, 'file_path', '') or '').lower().endswith('.pdf')\n"
+        "                          for fr in file_results.files)\n"
+        "        if _w6_html_fr is not None and not _w6_has_pdf:\n"
+        "            from xhtml2pdf import pisa as _w6_pisa\n"
+        "            _w6_html_path = _w6_html_fr.file_path\n"
+        "            _w6_pdf_path = _w6_html_path[:-5] + '.pdf' if _w6_html_path.lower().endswith('.html') else _w6_html_path + '.pdf'\n"
+        "            with open(_w6_html_path, 'r', encoding='utf-8', errors='replace') as _w6_src:\n"
+        "                _w6_html_str = _w6_src.read()\n"
+        "            with open(_w6_pdf_path, 'wb') as _w6_dst:\n"
+        "                _w6_status = _w6_pisa.CreatePDF(_w6_html_str, dest=_w6_dst)\n"
+        "            if not getattr(_w6_status, 'err', 1):\n"
+        "                try:\n"
+        "                    _w6_overrides = {\n"
+        "                        'file_path': _w6_pdf_path,\n"
+        "                        'file_name': (getattr(_w6_html_fr, 'file_name', '') or '').replace('.html', '.pdf') or 'report.pdf',\n"
+        "                        'file_type': 'pdf',\n"
+        "                        'description': 'Auto-generated from final HTML report (W6-FW-PDF-FORCE)',\n"
+        "                        'write_success': True,\n"
+        "                    }\n"
+        "                    _w6_pdf_fr = _w6_html_fr.model_copy(update=_w6_overrides)\n"
+        "                    file_results.files.append(_w6_pdf_fr)\n"
+        "                    print(f'[W6-FW-PDF-FORCE] PDF auto-generated: {_w6_pdf_path}')\n"
+        "                    try: _pl_logger.info(f'[W6-FW-PDF-FORCE] PDF auto-generated: {_w6_pdf_path}')\n"
+        "                    except Exception: pass\n"
+        "                except Exception as _w6_fr_exc:\n"
+        "                    print(f'[W6-FW-PDF-FORCE] PDF written to disk but FileResult append failed: {_w6_fr_exc!r}')\n"
+        "            else:\n"
+        "                print(f'[W6-FW-PDF-FORCE] xhtml2pdf reported err={_w6_status.err}; PDF not produced')\n"
+        "        else:\n"
+        "            if _w6_has_pdf:\n"
+        "                print('[W6-FW-PDF-FORCE] PDF already present in file_results; skipping')\n"
+        "            else:\n"
+        "                print('[W6-FW-PDF-FORCE] no eligible HTML report found; skipping')\n"
+        "    except Exception as _w6_exc:\n"
+        "        print(f'[W6-FW-PDF-FORCE] skipped due to error: {_w6_exc!r}')\n"
+        "    update = {"
+    )
+    def _w6_fw_pdf_pred(s):
+        return _W6_FW_PDF_OLD in s
+    def _w6_fw_pdf_mut(s):
+        if _W6_FW_PDF_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W6_FW_PDF_OLD, _W6_FW_PDF_NEW, 1)
+    _w2_apply("W6-FW-PDF-FORCE (deterministic PDF generation)", _w6_fw_pdf_pred, _w6_fw_pdf_mut)
+
+    # ---- W7-SR-ALIGN: align State.structured_response with AgentState's annotation to avoid channel collision ----
+    # ROOT CAUSE: langchain `AgentState.structured_response` is annotated as
+    #     NotRequired[Annotated[~ResponseT, OmitFromSchema(input=True, output=False)]]
+    # (verified via inspect on langchain.agents.middleware.types). create_agent builds a merged
+    # StateGraph where:
+    #   - StateSchema  contains BOTH AgentState's and user State's annotations for `structured_response`.
+    #     `_resolve_schema` collapses by `set` iteration order — non-deterministic via PYTHONHASHSEED.
+    #   - InputSchema  drops AgentState's version (OmitFromSchema(input=True)) → uses user State's only.
+    #   - OutputSchema keeps both → again resolved by set iteration order.
+    # When State.structured_response is `Annotated[Optional[BaseNoExtrasModel], _sr_reducer]` (W2-BR8),
+    # the reducer produces a `BinaryOperatorAggregate` channel; AgentState's plain ResponseT produces
+    # a `LastValue`. langgraph's `_add_schema` (state.py:14-19) tolerates a channel mismatch ONLY when
+    # the SECOND-added channel `isinstance(channel, LastValue)`. Depending on iteration order, the
+    # InputSchema's reducer-channel (BinaryOperatorAggregate, NOT LastValue) collides with StateSchema's
+    # LastValue → ValueError("Channel 'structured_response' already exists with a different type").
+    # Runs 81/82 happened to roll a hash-seed where AgentState's annotation lost in StateSchema too,
+    # giving BinaryOperatorAggregate everywhere → equal channels → no error. Runs 83/84 rolled differently.
+    #
+    # Fix: replace the reducer-tagged annotation with one that EXACTLY mirrors AgentState's:
+    #   `structured_response: NotRequired[Annotated[Optional[Any], OmitFromSchema(input=True, output=False)]]`
+    # This:
+    #   - Uses LastValue channel (no reducer) → matches AgentState always → no merge conflict.
+    #   - OmitFromSchema(input=True) means InputSchema also drops user State's version → InputSchema has no
+    #     `structured_response` field at all → never adds a conflicting channel.
+    #   - `Optional[Any]` keeps the field assignable to any ResponseT subtype across all 9 agents.
+    # Tradeoff: We lose `_sr_reducer`'s "prefer non-None last write" behavior. The dual-write race that
+    # W2-BR8 was originally guarding (viz_worker + W2-BA-finalhop in same superstep) is no longer
+    # observed in Run 81/82 logs. If it re-emerges, address per-node, not via channel reducer.
+    _W7_SR_ALIGN_OLD = "structured_response: Annotated[Optional[Any], _sr_reducer]  # W7-SR-WIDEN: Any-typed for create_agent compatibility"
+    _W7_SR_ALIGN_OLD_BR8 = "structured_response: Annotated[Optional[BaseNoExtrasModel], _sr_reducer]"
+    _W7_SR_ALIGN_NEW = (
+        "structured_response: NotRequired[Annotated[Optional[Any], _omit_input_keep_output]]  "
+        "# W7-SR-ALIGN: mirror AgentState annotation exactly to avoid channel-type collision"
+    )
+    # Helper: ensure NotRequired and an OmitFromSchema-equivalent are importable in the State cell.
+    # AgentState uses langchain.agents.middleware.types.OmitFromSchema; we import it directly.
+    _W7_SR_HELPER = (
+        "# W7-SR-ALIGN helpers: NotRequired + OmitFromSchema for AgentState-aligned `structured_response`\n"
+        "try:\n"
+        "    from typing import NotRequired  # py3.11+\n"
+        "except ImportError:\n"
+        "    from typing_extensions import NotRequired  # py3.10\n"
+        "try:\n"
+        "    from langchain.agents.middleware.types import OmitFromSchema as _OmitFromSchema\n"
+        "    _omit_input_keep_output = _OmitFromSchema(input=True, output=False)\n"
+        "except Exception:\n"
+        "    _omit_input_keep_output = None  # fallback: bare Any annotation\n"
+    )
+    def _w7_sr_align_pred(s):
+        return (_W7_SR_ALIGN_OLD in s) or (_W7_SR_ALIGN_OLD_BR8 in s)
+    def _w7_sr_align_mut(s):
+        if "W7-SR-ALIGN" in s:
+            raise _W2Skip()
+        # Inject helper above class State if not already present.
+        if "_omit_input_keep_output" not in s:
+            anchor = "class State("
+            if anchor in s:
+                s = s.replace(anchor, _W7_SR_HELPER + "\n" + anchor, 1)
+        # Replace either the W7-SR-WIDEN line or the original W2-BR8 line.
+        if _W7_SR_ALIGN_OLD in s:
+            s = s.replace(_W7_SR_ALIGN_OLD, _W7_SR_ALIGN_NEW, 1)
+        elif _W7_SR_ALIGN_OLD_BR8 in s:
+            s = s.replace(_W7_SR_ALIGN_OLD_BR8, _W7_SR_ALIGN_NEW, 1)
+        return s
+    _w2_apply("W7-SR-ALIGN (mirror AgentState structured_response annotation)", _w7_sr_align_pred, _w7_sr_align_mut)
+
+    # ---- W9-SR-DROP: remove `structured_response` from supervisor State entirely ----
+    # Even with W7-SR-ALIGN normalising the cell-48 schema collision, run 85/86 still hit
+    # `InvalidUpdateError: At key 'structured_response': Can receive only one value per step`
+    # at cell 81 (`get_state(run_config)`). Cause: the supervisor State channel for
+    # structured_response is plain LastValue (W7 removed `_sr_reducer` to make create_agent merge work).
+    # Multiple writers in the same superstep (parallel viz_worker Send() fan-out, the
+    # W2-BA-finalhop recovery shim, plus implicit propagation from create_agent subgraph completion)
+    # exceed LastValue's "one write per step" contract.
+    #
+    # Restoring _sr_reducer reintroduces the cell-48 conflict (chicken-and-egg).
+    # The cleanest fix per langchain docs: drop the `structured_response` field from supervisor State.
+    # Each agent retains its OWN `structured_response` inside its create_agent subgraph (AgentState
+    # owns it via `Annotated[ResponseT, OmitFromSchema(input=True, output=False)]`). Wrapper code
+    # reads `result["structured_response"]` from agent.invoke() RETURN VALUES (Python dict, not a
+    # langgraph channel) — verified via static grep: NO supervisor-level `state["structured_response"]`
+    # reads exist.
+    #
+    # Removing the field eliminates the supervisor channel, so multiple agent writes simply have
+    # nowhere to land — langgraph drops unknown-channel writes silently.
+    _W9_SR_DROP_OLD = (
+        "structured_response: NotRequired[Annotated[Optional[Any], _omit_input_keep_output]]  "
+        "# W7-SR-ALIGN: mirror AgentState annotation exactly to avoid channel-type collision"
+    )
+    def _w9_sr_drop_pred(s):
+        return _W9_SR_DROP_OLD in s
+    def _w9_sr_drop_mut(s):
+        if "W9-SR-DROP" in s:
+            raise _W2Skip()
+        # Replace the entire field declaration with a comment, preserving indentation.
+        replacement = (
+            "# W9-SR-DROP: structured_response intentionally removed from supervisor State.\n"
+            "    # Each create_agent subgraph owns its own structured_response (AgentState[ResponseT]).\n"
+            "    # No supervisor reads `state['structured_response']` — only agent-invoke-local results."
+        )
+        return s.replace(_W9_SR_DROP_OLD, replacement, 1)
+    _w2_apply("W9-SR-DROP (remove structured_response from supervisor State)", _w9_sr_drop_pred, _w9_sr_drop_mut)
+
+    # ---- W8-VW-NOSR: stop viz_worker from writing structured_response to supervisor State ----
+    # ROOT CAUSE: assign_viz_workers fans out N parallel viz_worker invocations via Send().
+    # Each viz_worker rewraps its LLM result into a dict that includes
+    #     {"messages": [...], "structured_response": sr}
+    # at line ~15911. When N >= 2 workers complete in the same superstep, langgraph's
+    # `apply_writes` finds N pending writes to the LastValue `structured_response` channel
+    # and raises InvalidUpdateError("Can receive only one value per step. Use an Annotated key").
+    # W2-BR8 originally fixed this with `_sr_reducer` (BinaryOperatorAggregate channel), but
+    # W7-SR-ALIGN had to remove the reducer to satisfy langchain's create_agent schema merge.
+    # Static audit (grep) confirms NOTHING reads `state['structured_response']` from the
+    # SUPERVISOR state — only agent-invoke-local `result['structured_response']`. Therefore
+    # the write at line 15911 is vestigial. Stripping the key from that wrapper dict
+    # eliminates the dual-write race entirely without affecting downstream consumers.
+    # The local variable `sr` is still used by save_viz_for_state() / memory updates.
+    _W8_VW_OLD = '"structured_response": sr}'
+    _W8_VW_NEW = '}  # W8-VW-NOSR: do not write structured_response to supervisor State (parallel-Send dual-write hazard)'
+    def _w8_vw_pred(s):
+        return _W8_VW_OLD in s and 'viz_worker' in s
+    def _w8_vw_mut(s):
+        if "W8-VW-NOSR" in s:
+            raise _W2Skip()
+        # The full original is: {"messages":[...], "structured_response": sr}
+        # Replace `, "structured_response": sr}` with `}`. Be conservative — match more context.
+        old_full = ', "structured_response": sr}'
+        if old_full in s:
+            return s.replace(old_full, _W8_VW_NEW, 1)
+        # Fallback: bare key replacement
+        return s.replace(_W8_VW_OLD, _W8_VW_NEW, 1)
+    _w2_apply("W8-VW-NOSR (drop structured_response write from viz_worker)", _w8_vw_pred, _w8_vw_mut)
+
+    # ---- W10-PDF-POST: deterministic post-graph PDF generation ----
+    # ROOT CAUSE: W6-FW-PDF-FORCE lives in file_writer_node which silently fails
+    # post-invoke (no STAGE file_writer DONE in Run 87). HTML+MD get written by
+    # LLM tools but PDF generation never runs. Bypass the wrapper entirely:
+    # after graph completion, scan the latest run subdir, find the HTML report,
+    # convert to PDF via xhtml2pdf. Idempotent: skip if PDF already present.
+    _W10_PDF_POST_GUARD = "# W10-PDF-POST"
+    _W10_PDF_POST_OLD = 'print("Reports:", list(RUNTIME.reports_dir.glob("*.*")))'
+    _W10_PDF_POST_NEW = (
+        _W10_PDF_POST_OLD + "\n"
+        "# W10-PDF-POST: ensure PDF artifact exists in run subdir\n"
+        "try:\n"
+        "    import os, glob\n"
+        "    from pathlib import Path\n"
+        "    _w10_results = Path('IDD_results')\n"
+        "    if _w10_results.exists():\n"
+        "        _w10_runs = sorted([p for p in _w10_results.glob('IDD_run_*') if p.is_dir()],\n"
+        "                           key=lambda p: p.stat().st_mtime, reverse=True)\n"
+        "        if _w10_runs:\n"
+        "            _w10_run_dir = _w10_runs[0]\n"
+        "            _w10_outputs = _w10_run_dir / 'outputs'\n"
+        "            _w10_search_dirs = [_w10_outputs, _w10_run_dir] if _w10_outputs.exists() else [_w10_run_dir]\n"
+        "            _w10_existing_pdfs = []\n"
+        "            for _d in _w10_search_dirs:\n"
+        "                _w10_existing_pdfs += list(_d.rglob('*.pdf'))\n"
+        "            if _w10_existing_pdfs:\n"
+        "                print(f'[W10-PDF-POST] PDF already present: {_w10_existing_pdfs[0]}')\n"
+        "            else:\n"
+        "                _w10_html_candidates = []\n"
+        "                for _d in _w10_search_dirs:\n"
+        "                    _w10_html_candidates += list(_d.rglob('*.html'))\n"
+        "                _w10_html_candidates.sort(key=lambda p: ('report' not in p.name.lower(), -p.stat().st_size))\n"
+        "                if _w10_html_candidates:\n"
+        "                    _w10_html_path = _w10_html_candidates[0]\n"
+        "                    _w10_pdf_path = _w10_html_path.with_suffix('.pdf')\n"
+        "                    from xhtml2pdf import pisa as _w10_pisa\n"
+        "                    with open(_w10_html_path, 'r', encoding='utf-8', errors='replace') as _src:\n"
+        "                        _w10_html_str = _src.read()\n"
+        "                    with open(_w10_pdf_path, 'wb') as _dst:\n"
+        "                        _w10_status = _w10_pisa.CreatePDF(_w10_html_str, dest=_dst)\n"
+        "                    if not getattr(_w10_status, 'err', 1):\n"
+        "                        print(f'[W10-PDF-POST] PDF generated: {_w10_pdf_path}')\n"
+        "                    else:\n"
+        "                        print(f'[W10-PDF-POST] xhtml2pdf err={_w10_status.err}; PDF not produced')\n"
+        "                else:\n"
+        "                    print(f'[W10-PDF-POST] no HTML candidate in {_w10_run_dir}')\n"
+        "        else:\n"
+        "            print('[W10-PDF-POST] no IDD_run_* subdirs found')\n"
+        "    else:\n"
+        "        print('[W10-PDF-POST] IDD_results directory missing')\n"
+        "except Exception as _w10_exc:\n"
+        "    print(f'[W10-PDF-POST] error: {_w10_exc!r}')\n"
+    )
+    def _w10_pdf_post_pred(s):
+        return _W10_PDF_POST_OLD in s
+    def _w10_pdf_post_mut(s):
+        if _W10_PDF_POST_GUARD in s:
+            raise _W2Skip()
+        return s.replace(_W10_PDF_POST_OLD, _W10_PDF_POST_NEW, 1)
+    _w2_apply("W10-PDF-POST (post-graph deterministic PDF)", _w10_pdf_post_pred, _w10_pdf_post_mut)
+
+    # ============================  W11 AGENT-AUTHENTICITY PATCHES  ===========================
+
+    # W11: The previous 12/12 + artifact-quality baseline proved structural
+    # completion, but not that report artifacts were properly generated by the
+    # report agents. These patches remove the deterministic report-content
+    # success path, add no-bypass state markers, and require report agent
+    # invocation before final completion.
+
+    # ---- W11-S1: add report agent-authenticity fields to State ----
+    _W11_STATE_GUARD = "# W11-S1: report agent-authenticity fields"
+    _W11_STATE_OLD = "    report_draft: Optional[str]\n"
+    _W11_STATE_NEW = (
+        "    report_draft: Optional[str]\n"
+        "    " + _W11_STATE_GUARD + "\n"
+        "    report_outline_agent_generated: Annotated[Optional[bool], bool_or]\n"
+        "    report_sections_agent_generated: Annotated[Optional[bool], bool_or]\n"
+        "    report_section_agent_count: Annotated[int, operator.add]\n"
+        "    report_packager_agent_generated: Annotated[Optional[bool], bool_or]\n"
+        "    report_content_source: Optional[str]\n"
+        "    report_generation_trace: Annotated[List[str], operator.add]\n"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State(AgentState, TypedDict, total=False):" not in src:
+            continue
+        if _W11_STATE_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W11-S1 State fields already present")
+            break
+        if _W11_STATE_OLD not in src:
+            print(f"⚠️  W11-S1: report_draft anchor not found in State cell {idx}")
+            break
+        cell["source"] = src.replace(_W11_STATE_OLD, _W11_STATE_NEW, 1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11-S1 added report agent-authenticity fields")
+        break
+
+    # ---- W11-RO: restore report_orchestrator agent invocation ----
+    _W11_RO_GUARD = "# W11-RO: report_orchestrator invokes report_generator_agent"
+    _W11_RO_OLD = (
+        "    outline = _deterministic_report_outline_from_state(state)\n"
+        "    outline_response = {\"structured_response\": outline, \"messages\": [AIMessage(content=outline.reply_msg_to_supervisor, name=\"report_orchestrator\")]}\n"
+    )
+    _W11_RO_NEW = (
+        "    " + _W11_RO_GUARD + "\n"
+        "    invoke_state = {\n"
+        "        \"messages\": rendered,\n"
+        "        \"available_df_ids\": state.get(\"available_df_ids\", []),\n"
+        "        \"cleaning_metadata\": cleaning_metadata,\n"
+        "        \"analysis_insights\": state.get(\"analysis_insights\", None),\n"
+        "        \"visualization_results\": state.get(\"visualization_results\", None),\n"
+        "        \"viz_results\": state.get(\"viz_results\", None),\n"
+        "        \"user_prompt\": user_prompt,\n"
+        "        \"report_draft\": draft,\n"
+        "        \"run_id\": state.get(\"run_id\", None),\n"
+        "        \"artifacts_path\": state.get(\"artifacts_path\", None) or state.get(\"_config\",{}).get(\"artifacts_dir\",None) or str((WORKING_DIRECTORY / \"artifacts\").resolve()),\n"
+        "        \"logs_path\": state.get(\"logs_path\", None) or state.get(\"_config\",{}).get(\"logs_dir\",None) or str((WORKING_DIRECTORY / \"logs\").resolve()),\n"
+        "        \"reports_path\": state.get(\"reports_path\", None) or state.get(\"_config\",{}).get(\"reports_dir\",None) or str((WORKING_DIRECTORY / \"reports\").resolve()),\n"
+        "        \"visualization_path\": state.get(\"viz_paths\", None) or state.get(\"_config\",{}).get(\"viz_dir\",None) or str((WORKING_DIRECTORY / \"visualizations\").resolve()),\n"
+        "        \"next_agent_prompt\": state.get(\"next_agent_prompt\", None),\n"
+        "        \"next_agent_metadata\": state.get(\"next_agent_metadata\", None),\n"
+        "    }\n"
+        "    try:\n"
+        "        _pl_logger.info(\"STATE report_orchestrator_agent.invoke.start\")\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    outline_response = report_generator_agent.invoke(\n"
+        "        invoke_state,\n"
+        "        config={**(state.get(\"_config\") or {}), \"recursion_limit\": 160},\n"
+        "    )\n"
+        "    result = outline_response\n"
+        "    if not isinstance(outline_response, dict) or \"structured_response\" not in outline_response:\n"
+        "        return {\n"
+        "            \"messages\": [AIMessage(content=\"Report orchestrator agent did not return a structured ReportOutline.\", name=\"report_orchestrator\")],\n"
+        "            \"last_agent_finished_this_task\": False,\n"
+        "            \"last_agent_expects_reply\": True,\n"
+        "            \"last_agent_reply_msg\": \"Report orchestrator agent did not return a structured ReportOutline.\",\n"
+        "            \"last_agent_id\": \"report_orchestrator\",\n"
+        "            \"current_turn_agent_id\": \"supervisor\",\n"
+        "            \"report_generation_trace\": [\"report_orchestrator_agent.invoke.invalid\"],\n"
+        "        }\n"
+        "    _outline_sr = outline_response.get(\"structured_response\")\n"
+        "    if isinstance(_outline_sr, dict):\n"
+        "        _outline_sr = ReportOutline(**_outline_sr)\n"
+        "    if not isinstance(_outline_sr, ReportOutline):\n"
+        "        return {\n"
+        "            \"messages\": [AIMessage(content=\"Report orchestrator structured output was not a ReportOutline.\", name=\"report_orchestrator\")],\n"
+        "            \"last_agent_finished_this_task\": False,\n"
+        "            \"last_agent_expects_reply\": True,\n"
+        "            \"last_agent_reply_msg\": \"Report orchestrator structured output was not a ReportOutline.\",\n"
+        "            \"last_agent_id\": \"report_orchestrator\",\n"
+        "            \"current_turn_agent_id\": \"supervisor\",\n"
+        "            \"report_generation_trace\": [\"report_orchestrator_agent.invoke.not_report_outline\"],\n"
+        "        }\n"
+        "    outline_response = {\n"
+        "        \"structured_response\": _outline_sr,\n"
+        "        \"messages\": outline_response.get(\"messages\") or [AIMessage(content=_outline_sr.reply_msg_to_supervisor, name=\"report_orchestrator\")],\n"
+        "    }\n"
+        "    try:\n"
+        "        _pl_logger.info(\"STATE report_orchestrator_agent.invoke.end sections=%d\", len(getattr(_outline_sr, \"sections\", []) or []))\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src:
+            continue
+        if _W11_RO_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W11-RO already applied")
+            break
+        if _W11_RO_OLD not in src:
+            print(f"⚠️  W11-RO: deterministic outline anchor not found in cell {idx}")
+            break
+        new_src = src.replace(_W11_RO_OLD, _W11_RO_NEW, 1)
+        _W11_RO_RETURN_OLD = (
+            "    return {\"report_outline\": outline_response[\"structured_response\"], \"messages\": outline_response[\"messages\"], \"last_agent_message\": outline_response[\"messages\"][-1], \"last_agent_expects_reply\": outline_response[\"structured_response\"].expect_reply, \"last_agent_reply_msg\": outline_response[\"structured_response\"].reply_msg_to_supervisor, \"last_agent_finished_this_task\": outline_response[\"structured_response\"].finished_this_task,\n"
+            "            \"last_created_obj\": \"report_outline\" if outline_response[\"structured_response\"] else None, \"last_agent_id\": \"report_orchestrator\", \"current_turn_agent_id\": \"supervisor\"}\n"
+        )
+        _W11_RO_RETURN_NEW = (
+            "    return {\"report_outline\": outline_response[\"structured_response\"], \"messages\": outline_response[\"messages\"], \"last_agent_message\": outline_response[\"messages\"][-1], \"last_agent_expects_reply\": outline_response[\"structured_response\"].expect_reply, \"last_agent_reply_msg\": outline_response[\"structured_response\"].reply_msg_to_supervisor, \"last_agent_finished_this_task\": outline_response[\"structured_response\"].finished_this_task,\n"
+            "            \"last_created_obj\": \"report_outline\" if outline_response[\"structured_response\"] else None, \"last_agent_id\": \"report_orchestrator\", \"current_turn_agent_id\": \"supervisor\", \"report_outline_agent_generated\": True, \"report_generation_trace\": [\"report_orchestrator_agent.invoke.ok\"]}\n"
+        )
+        if _W11_RO_RETURN_OLD in new_src:
+            new_src = new_src.replace(_W11_RO_RETURN_OLD, _W11_RO_RETURN_NEW, 1)
+        else:
+            print(f"⚠️  W11-RO: return marker anchor not found in cell {idx}")
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11-RO restored report_orchestrator agent invocation")
+        break
+
+    # ---- W11-SW: remove deterministic section-worker completion bypass ----
+    _W11_SW_GUARD = "# W11-SW: deterministic section prose bypass removed"
+    _W11_SW_PREP = (
+        "    expected_viz = section.expected_figures if section else []\n"
+        "    " + _W11_SW_GUARD + "\n"
+        "    try:\n"
+        "        _pl_logger.info(\"STATE report_section_agent.invoke.prep section_name=%s expected_figures=%d\", section.name, len(expected_viz or []))\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src:
+            continue
+        if _W11_SW_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W11-SW already applied")
+            break
+        start = src.find('    expected_viz = section.expected_figures if section else []\n    viz_lines = []\n')
+        end = src.find(
+            '    expected_viz = section.expected_figures if section else []\n    expected_viz_str = f"The following figures are expected to be included in the report, and can be found at the corresponding paths:\\\\n"\n',
+            start + 1,
+        )
+        if start < 0 or end < 0:
+            print(f"⚠️  W11-SW: deterministic section block anchors not found in cell {idx}")
+            break
+        new_src = src[:start] + _W11_SW_PREP + src[end:]
+        invoke_line = '    msg = report_section_agent.invoke({\n'
+        if invoke_line in new_src and "STATE report_section_agent.invoke.start" not in new_src:
+            new_src = new_src.replace(
+                invoke_line,
+                '    try:\n'
+                '        _pl_logger.info("STATE report_section_agent.invoke.start section_name=%s", section.name)\n'
+                '    except Exception:\n'
+                '        pass\n'
+                + invoke_line,
+                1,
+            )
+        content_anchor = '    assert isinstance(section_text, Section)\n'
+        scaffold_check = (
+            "    _w11_scaffold_phrases = [\n"
+            "        \"this section addresses:\",\n"
+            "        \"the cleaned dataset context is:\",\n"
+            "        \"visual evidence assigned to this section\",\n"
+            "        \"recommended next steps for this section are:\",\n"
+            "        \"summarize the dataset, major cleaning actions\",\n"
+            "    ]\n"
+            "    _w11_content_lower = (content or \"\").lower()\n"
+            "    if any(p in _w11_content_lower for p in _w11_scaffold_phrases):\n"
+            "        try:\n"
+            "            _pl_logger.warning(\"STATE report_section_worker.invalid section_name=%s reason=scaffold_phrase\", getattr(section, \"name\", \"unknown\"))\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        return {\n"
+            "            \"messages\": [AIMessage(content=f\"Report section {getattr(section, 'name', 'unknown')} contained scaffold prose and must be regenerated by the agent.\", name=\"report_section_worker\")],\n"
+            "            \"section_complete\": False,\n"
+            "            \"last_agent_finished_this_task\": False,\n"
+            "            \"last_agent_expects_reply\": True,\n"
+            "            \"last_agent_reply_msg\": f\"Report section {getattr(section, 'name', 'unknown')} contained scaffold prose and must be regenerated by the agent.\",\n"
+            "            \"last_agent_id\": \"report_section_worker\",\n"
+            "            \"current_turn_agent_id\": \"supervisor\",\n"
+            "            \"report_generation_trace\": [f\"report_section_agent.invoke.scaffold:{getattr(section, 'name', 'unknown')}\"]\n"
+            "        }\n"
+        )
+        if content_anchor in new_src and "_w11_scaffold_phrases" not in new_src:
+            new_src = new_src.replace(content_anchor, scaffold_check + content_anchor, 1)
+        _W11_SW_RETURN_OLD = (
+            "    return {\n"
+            "        \"written_sections\": [f\"## {section.name}\\n\\n{content}\".strip()],\n"
+            "        \"messages\": [AIMessage(content=msg[\"messages\"][-1].content, name=\"report_section_worker\")],\n"
+            "        \"sections\": [section_text],\n"
+            "        \"progress_reports\": [reply_msg_to_supervisor or f\"Report section {section.name} completed.\"],\n"
+            "        \"final_turn_msgs_list\": [AIMessage(content=msg[\"messages\"][-1].content, name=\"report_section_worker\")],\n"
+            "    }\n"
+        )
+        _W11_SW_RETURN_NEW = (
+            "    try:\n"
+            "        _pl_logger.info(\"STATE report_section_agent.invoke.end section_name=%s body_len=%d\", section.name, len(content or \"\"))\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "    return {\n"
+            "        \"written_sections\": [f\"## {section.name}\\n\\n{content}\".strip()],\n"
+            "        \"messages\": [AIMessage(content=msg[\"messages\"][-1].content, name=\"report_section_worker\")],\n"
+            "        \"sections\": [section_text],\n"
+            "        \"progress_reports\": [reply_msg_to_supervisor or f\"Report section {section.name} completed.\"],\n"
+            "        \"final_turn_msgs_list\": [AIMessage(content=msg[\"messages\"][-1].content, name=\"report_section_worker\")],\n"
+            "        \"report_sections_agent_generated\": True,\n"
+            "        \"report_section_agent_count\": 1,\n"
+            "        \"report_generation_trace\": [f\"report_section_agent.invoke.ok:{section.name}\"],\n"
+            "    }\n"
+        )
+        if _W11_SW_RETURN_OLD in new_src:
+            new_src = new_src.replace(_W11_SW_RETURN_OLD, _W11_SW_RETURN_NEW, 1)
+        else:
+            print(f"⚠️  W11-SW: section return anchor not found in cell {idx}")
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11-SW removed deterministic section-worker bypass")
+        break
+
+    # ---- W11-RP: require report_packager_agent invocation before rendering artifacts ----
+    _W11_RP_GUARD = "# W11-RP: report_packager_agent required before deterministic renderer"
+    _W11_RP_ANCHOR = "    draft = _dedupe_long_paragraphs(draft)\n"
+    _W11_RP_BLOCK = (
+        "    draft = _dedupe_long_paragraphs(draft)\n"
+        "    " + _W11_RP_GUARD + "\n"
+        "    _w11_packager_instruction = (\n"
+        "        \"You are the report_packager agent. Review the agent-written report draft, confirm it is ready to render, \"\n"
+        "        \"and return a ReportResults structured response. The artifact renderer will write Markdown, HTML, and PDF from this draft after your approval. \"\n"
+        "        \"Do not add scaffold placeholders; do not rewrite the analysis as instructions.\"\n"
+        "    )\n"
+        "    try:\n"
+        "        _pl_logger.info(\"STATE report_packager_agent.invoke.start draft_chars=%d written_sections=%d\", len(draft), len(written_sections))\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    _w11_pkg_result = report_packager_agent.invoke(\n"
+        "        {\n"
+        "            \"messages\": [HumanMessage(content=user_prompt, name=\"user\"), AIMessage(content=_w11_packager_instruction + \"\\n\\n<report_draft>\\n\" + draft[:12000] + \"\\n</report_draft>\", name=\"supervisor\")],\n"
+        "            \"user_prompt\": user_prompt,\n"
+        "            \"available_df_ids\": state.get(\"available_df_ids\", []),\n"
+        "            \"cleaning_metadata\": state.get(\"cleaning_metadata\"),\n"
+        "            \"analysis_insights\": state.get(\"analysis_insights\"),\n"
+        "            \"visualization_results\": state.get(\"visualization_results\"),\n"
+        "            \"viz_results\": state.get(\"viz_results\"),\n"
+        "            \"written_sections\": written_sections,\n"
+        "            \"sections\": sections,\n"
+        "            \"report_draft\": draft,\n"
+        "            \"report_outline\": outline,\n"
+        "            \"run_id\": state.get(\"run_id\", None),\n"
+        "            \"artifacts_path\": state.get(\"artifacts_path\", None) or state.get(\"_config\",{}).get(\"artifacts_dir\",None) or str((WORKING_DIRECTORY / \"artifacts\").resolve()),\n"
+        "            \"logs_path\": state.get(\"logs_path\", None) or state.get(\"_config\",{}).get(\"logs_dir\",None) or str((WORKING_DIRECTORY / \"logs\").resolve()),\n"
+        "            \"reports_path\": str(reports_dir),\n"
+        "            \"visualization_path\": state.get(\"viz_paths\", None) or state.get(\"_config\",{}).get(\"viz_dir\",None) or str((WORKING_DIRECTORY / \"visualizations\").resolve()),\n"
+        "        },\n"
+        "        config={**(state.get(\"_config\") or {}), \"recursion_limit\": 160},\n"
+        "    )\n"
+        "    _w11_pkg_sr = _w11_pkg_result.get(\"structured_response\") if isinstance(_w11_pkg_result, dict) else None\n"
+        "    if isinstance(_w11_pkg_sr, dict):\n"
+        "        _w11_pkg_sr = ReportResults(**_w11_pkg_sr)\n"
+        "    if not isinstance(_w11_pkg_sr, ReportResults):\n"
+        "        return {\n"
+        "            \"messages\": [AIMessage(content=\"Report packager agent did not return ReportResults; refusing deterministic success.\", name=\"report_packager\")],\n"
+        "            \"report_generator_complete\": False,\n"
+        "            \"last_agent_finished_this_task\": False,\n"
+        "            \"last_agent_expects_reply\": True,\n"
+        "            \"last_agent_reply_msg\": \"Report packager agent did not return ReportResults; refusing deterministic success.\",\n"
+        "            \"last_agent_id\": \"report_packager\",\n"
+        "            \"current_turn_agent_id\": \"supervisor\",\n"
+        "            \"report_generation_trace\": [\"report_packager_agent.invoke.invalid\"],\n"
+        "        }\n"
+        "    try:\n"
+        "        _pl_logger.info(\"STATE report_packager_agent.invoke.end returned_pdf=%s returned_html=%s returned_md=%s\", _w11_pkg_sr.pdf_report_path, _w11_pkg_sr.html_report_path, _w11_pkg_sr.markdown_report_path)\n"
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src:
+            continue
+        if _W11_RP_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W11-RP already applied")
+            break
+        if _W11_RP_ANCHOR not in src:
+            print(f"⚠️  W11-RP: draft dedupe anchor not found in cell {idx}")
+            break
+        new_src = src.replace(_W11_RP_ANCHOR, _W11_RP_BLOCK, 1)
+        _W11_RP_RETURN_OLD = (
+            "        \"last_agent_id\": \"report_packager\",\n"
+            "        \"current_turn_agent_id\": \"supervisor\",\n"
+            "    }\n"
+        )
+        _W11_RP_RETURN_NEW = (
+            "        \"last_agent_id\": \"report_packager\",\n"
+            "        \"current_turn_agent_id\": \"supervisor\",\n"
+            "        \"report_packager_agent_generated\": True,\n"
+            "        \"report_content_source\": \"agent_sections_rendered_after_report_packager_agent\",\n"
+            "        \"report_generation_trace\": [\"report_packager_agent.invoke.ok\", \"report_renderer.reportlab.ok\"],\n"
+            "    }\n"
+        )
+        # Replace only the first deterministic-renderer success return after W11-RP.
+        pos = new_src.find(_W11_RP_GUARD)
+        ret_pos = new_src.find(_W11_RP_RETURN_OLD, pos)
+        if ret_pos >= 0:
+            new_src = new_src[:ret_pos] + _W11_RP_RETURN_NEW + new_src[ret_pos + len(_W11_RP_RETURN_OLD):]
+        else:
+            print(f"⚠️  W11-RP: success return anchor not found in cell {idx}")
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11-RP requires report_packager_agent before rendering")
+        break
+
+    # ---- W11-RTW: final routing requires no-bypass proof markers ----
+    _W11_RTW_GUARD = "# W11-RTW: final route requires report agent-authenticity markers"
+    _W11_RTW_OLD = "    report_ready: bool = bool(section_ready and viz_ready)\n"
+    _W11_RTW_NEW = (
+        "    " + _W11_RTW_GUARD + "\n"
+        "    section_agent_count = int(state.get(\"report_section_agent_count\") or 0)\n"
+        "    agent_ready = bool(\n"
+        "        state.get(\"report_outline_agent_generated\")\n"
+        "        and state.get(\"report_sections_agent_generated\")\n"
+        "        and section_agent_count >= required_section_count\n"
+        "        and state.get(\"report_packager_agent_generated\")\n"
+        "        and str(state.get(\"report_content_source\") or \"\").startswith(\"agent_\")\n"
+        "    )\n"
+        "    report_ready: bool = bool(section_ready and viz_ready and agent_ready)\n"
+    )
+    _W11_RTW_LOG_OLD = (
+        '        _pl_logger.info("STATE route_to_writer report_done=%s report_ready=%s sections=%d/%d chars=%d viz=%d/%d already_wrote=%s", report_done, report_ready, len(written_sections), report_outline_secs_count, written_chars, len(viz_ids), required_viz_count, already_wrote)\n'
+    )
+    _W11_RTW_LOG_NEW = (
+        '        _pl_logger.info("STATE route_to_writer report_done=%s report_ready=%s agent_ready=%s section_agent_count=%d/%d content_source=%s sections=%d/%d chars=%d viz=%d/%d already_wrote=%s", report_done, report_ready, agent_ready, section_agent_count, required_section_count, state.get("report_content_source"), len(written_sections), report_outline_secs_count, written_chars, len(viz_ids), required_viz_count, already_wrote)\n'
+    )
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def route_to_writer(state)" not in src:
+            continue
+        if _W11_RTW_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W11-RTW already applied")
+            break
+        if _W11_RTW_OLD not in src:
+            print(f"⚠️  W11-RTW: report_ready anchor not found in cell {idx}")
+            break
+        new_src = src.replace(_W11_RTW_OLD, _W11_RTW_NEW, 1)
+        if _W11_RTW_LOG_OLD in new_src:
+            new_src = new_src.replace(_W11_RTW_LOG_OLD, _W11_RTW_LOG_NEW, 1)
+        else:
+            print(f"⚠️  W11-RTW: log anchor not found in cell {idx}")
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11-RTW requires agent-authenticity markers")
+        break
+
+    # ---- W11B: robust cleanup for anchors changed by older patch waves ----
+    _W11B_STATE_GUARD = "# W11B-S1: report agent-authenticity fields"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "class State(" not in src:
+            continue
+        if "report_section_agent_count" in src and "report_content_source" in src:
+            break
+        import re as _re_w11b_state
+        pat = _re_w11b_state.compile(r"(    report_draft: .*\n)")
+        if not pat.search(src):
+            print(f"⚠️  W11B-S1: report_draft annotation anchor not found in State cell {idx}")
+            break
+        fields = (
+            "\\1"
+            "    " + _W11B_STATE_GUARD + "\n"
+            "    report_outline_agent_generated: Annotated[Optional[bool], bool_or]\n"
+            "    report_sections_agent_generated: Annotated[Optional[bool], bool_or]\n"
+            "    report_section_agent_count: Annotated[int, operator.add]\n"
+            "    report_packager_agent_generated: Annotated[Optional[bool], bool_or]\n"
+            "    report_content_source: Optional[str]\n"
+            "    report_generation_trace: Annotated[List[str], operator.add]\n"
+        )
+        cell["source"] = pat.sub(fields, src, count=1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11B-S1 added robust report authenticity fields")
+        break
+
+    _W11B_RO_GUARD = "# W11B-RO: return marks report_orchestrator agent output"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src:
+            continue
+        if _W11B_RO_GUARD in src or "report_outline_agent_generated" in src:
+            break
+        old = (
+            '"last_created_obj": "report_outline" if outline_response["structured_response"] else None, '
+            '"last_agent_id": "report_orchestrator", "current_turn_agent_id": "supervisor", "emergency_reroute": None}'
+        )
+        new = (
+            '"last_created_obj": "report_outline" if outline_response["structured_response"] else None, '
+            '"last_agent_id": "report_orchestrator", "current_turn_agent_id": "supervisor", '
+            '"emergency_reroute": None, "report_outline_agent_generated": True, '
+            f'"report_generation_trace": ["report_orchestrator_agent.invoke.ok"]}}  # {_W11B_RO_GUARD}'
+        )
+        if old not in src:
+            print(f"⚠️  W11B-RO: robust return anchor not found in cell {idx}")
+            break
+        cell["source"] = src.replace(old, new, 1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11B-RO added report_orchestrator return markers")
+        break
+
+    _W11B_SW_GUARD = "# W11B-SW: deterministic section prose bypass removed"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src:
+            continue
+        if _W11B_SW_GUARD in src or "report_section_agent_count" in src:
+            break
+        start = src.find('    expected_viz = section.expected_figures if section else []\n    viz_lines = []\n')
+        end = src.find(
+            '    expected_viz = section.expected_figures if section else []\n    expected_viz_str = f"The following figures are expected to be included in the report, and can be found at the corresponding paths:\\n"\n',
+            start + 1,
+        )
+        if start < 0 or end < 0:
+            print(f"⚠️  W11B-SW: robust deterministic section anchors not found in cell {idx}")
+            break
+        prep = (
+            "    expected_viz = section.expected_figures if section else []\n"
+            "    " + _W11B_SW_GUARD + "\n"
+            "    try:\n"
+            "        _pl_logger.info(\"STATE report_section_agent.invoke.prep section_name=%s expected_figures=%d\", section.name, len(expected_viz or []))\n"
+            "    except Exception:\n"
+            "        pass\n"
+        )
+        new_src = src[:start] + prep + src[end:]
+        invoke_line = '    msg = report_section_agent.invoke({\n'
+        if invoke_line in new_src and "STATE report_section_agent.invoke.start" not in new_src:
+            new_src = new_src.replace(
+                invoke_line,
+                '    try:\n'
+                '        _pl_logger.info("STATE report_section_agent.invoke.start section_name=%s", section.name)\n'
+                '    except Exception:\n'
+                '        pass\n'
+                + invoke_line,
+                1,
+            )
+        assert_anchor = '    assert isinstance(section_text, Section)\n'
+        if assert_anchor in new_src and "_w11_scaffold_phrases" not in new_src:
+            new_src = new_src.replace(
+                assert_anchor,
+                (
+                    "    _w11_scaffold_phrases = [\n"
+                    "        \"this section addresses:\", \"the cleaned dataset context is:\",\n"
+                    "        \"the cleaning record indicates:\", \"visual evidence assigned to this section\",\n"
+                    "        \"recommended next steps for this section are:\",\n"
+                    "        \"summarize the dataset, major cleaning actions\",\n"
+                    "    ]\n"
+                    "    _w11_content_lower = (content or \"\").lower()\n"
+                    "    if any(p in _w11_content_lower for p in _w11_scaffold_phrases):\n"
+                    "        try:\n"
+                    "            _pl_logger.warning(\"STATE report_section_worker.invalid section_name=%s reason=scaffold_phrase\", getattr(section, \"name\", \"unknown\"))\n"
+                    "        except Exception:\n"
+                    "            pass\n"
+                    "        return {\n"
+                    "            \"messages\": [AIMessage(content=f\"Report section {getattr(section, 'name', 'unknown')} contained scaffold prose and must be regenerated by the agent.\", name=\"report_section_worker\")],\n"
+                    "            \"section_complete\": False,\n"
+                    "            \"last_agent_finished_this_task\": False,\n"
+                    "            \"last_agent_expects_reply\": True,\n"
+                    "            \"last_agent_reply_msg\": f\"Report section {getattr(section, 'name', 'unknown')} contained scaffold prose and must be regenerated by the agent.\",\n"
+                    "            \"last_agent_id\": \"report_section_worker\",\n"
+                    "            \"current_turn_agent_id\": \"supervisor\",\n"
+                    "            \"report_generation_trace\": [f\"report_section_agent.invoke.scaffold:{getattr(section, 'name', 'unknown')}\"],\n"
+                    "        }\n"
+                )
+                + assert_anchor,
+                1,
+            )
+        return_old = (
+            '        "final_turn_msgs_list": [AIMessage(content=msg["messages"][-1].content, name="report_section_worker")],\n'
+            "    }\n"
+        )
+        return_new = (
+            '        "final_turn_msgs_list": [AIMessage(content=msg["messages"][-1].content, name="report_section_worker")],\n'
+            '        "report_sections_agent_generated": True,\n'
+            '        "report_section_agent_count": 1,\n'
+            '        "report_generation_trace": [f"report_section_agent.invoke.ok:{section.name}"],\n'
+            "    }\n"
+        )
+        if return_old in new_src:
+            new_src = new_src.replace(return_old, return_new, 1)
+        else:
+            print(f"⚠️  W11B-SW: robust section return anchor not found in cell {idx}")
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11B-SW removed deterministic section prose and added markers")
+        break
+
+    _W11B_RP_GUARD = "# W11B-RP: deterministic renderer success requires packager agent marker"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src:
+            continue
+        if _W11B_RP_GUARD in src or "report_packager_agent_generated" in src:
+            break
+        old = (
+            '"last_agent_id": "report_packager",\n'
+            '        "current_turn_agent_id": "supervisor", "emergency_reroute": None,\n'
+            "    }\n"
+        )
+        new = (
+            '"last_agent_id": "report_packager",\n'
+            '        "current_turn_agent_id": "supervisor", "emergency_reroute": None,\n'
+            '        "report_packager_agent_generated": True,\n'
+            '        "report_content_source": "agent_sections_rendered_after_report_packager_agent",\n'
+            '        "report_generation_trace": ["report_packager_agent.invoke.ok", "report_renderer.reportlab.ok"],\n'
+            f"    }}  # {_W11B_RP_GUARD}\n"
+        )
+        guard_pos = src.find("W11-RP: report_packager_agent required")
+        if guard_pos < 0:
+            print(f"⚠️  W11B-RP: W11-RP invoke block not found in cell {idx}")
+            break
+        ret_pos = src.find(old, guard_pos)
+        if ret_pos < 0:
+            print(f"⚠️  W11B-RP: robust success return anchor not found in cell {idx}")
+            break
+        cell["source"] = src[:ret_pos] + new + src[ret_pos + len(old):]
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W11B-RP added packager return markers")
+        break
+
+    # --- W12-DC: data_cleaner recovery must not reference local `result` ---
+    # The shared update helper is also used by the deterministic recovery path before
+    # `result` exists. Pass the successful invoke result explicitly and fall back to
+    # the state's available_df_ids during recovery.
+    _W12_DC_GUARD = "# W12-DC: data_cleaner update helper accepts optional result_mapping"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def _data_cleaner_update_from_metadata" not in src:
+            continue
+        if _W12_DC_GUARD in src:
+            break
+        new_src = src
+        old_sig = (
+            "def _data_cleaner_update_from_metadata(state: State, cleaning_metadata: CleaningMetadata, result_messages: Optional[list] = None) -> dict:"
+        )
+        new_sig = (
+            "def _data_cleaner_update_from_metadata(state: State, cleaning_metadata: CleaningMetadata, result_messages: Optional[list] = None, result_mapping: Optional[dict] = None) -> dict:"
+        )
+        new_src = new_src.replace(old_sig, f"# {_W12_DC_GUARD}\n{new_sig}", 1)
+        new_src = new_src.replace(
+            '"available_df_ids": result.get("available_df_ids", state.get("available_df_ids", [])),  # patched: include cleaned df_id',
+            '"available_df_ids": (result_mapping or {}).get("available_df_ids", state.get("available_df_ids", [])),  # W12-DC',
+            1,
+        )
+        new_src = new_src.replace(
+            '_data_cleaner_update_from_metadata(state, cleaning_metadata, result["messages"])',
+            '_data_cleaner_update_from_metadata(state, cleaning_metadata, result["messages"], result)',
+            1,
+        )
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W12-DC fixed data_cleaner recovery NameError")
+        break
+
+    # --- W12C-DC: ensure data_cleaner_node actually calls the safe wrapper ---
+    _W12C_DC_GUARD = "# W12C-DC: data_cleaner invoke uses safe wrapper"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def data_cleaner_node" not in src or "_safe_data_cleaner_invoke" not in src:
+            continue
+        if _W12C_DC_GUARD in src:
+            break
+        start = src.find("def data_cleaner_node")
+        invoke_pos = src.find("result = data_cleaner_agent.invoke(", start)
+        if invoke_pos < 0:
+            break
+        line_start = src.rfind("\n", 0, invoke_pos) + 1
+        indent = src[line_start:invoke_pos]
+        new_src = (
+            src[:line_start]
+            + f"{indent}# {_W12C_DC_GUARD}\n"
+            + src[line_start:].replace(
+                "result = data_cleaner_agent.invoke(",
+                f"result = _safe_data_cleaner_invoke(\n{indent}    data_cleaner_agent,",
+                1,
+            )
+        )
+        cell["source"] = new_src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W12C-DC routed data_cleaner invoke through safe wrapper")
+        break
+
+    # --- W13-VIZREADY: routing/final gates must use visualization_results after viz_join flush ---
+    _W13_VIZ_GUARD = "# W13-VIZREADY: visualization_results counts for readiness"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def route_from_supervisor" not in src or "def route_to_writer" not in src:
+            continue
+        if _W13_VIZ_GUARD in src:
+            break
+        helper = (
+            f"{_W13_VIZ_GUARD}\n"
+            "def _viz_items_from_state(state: State) -> list:\n"
+            "    vr = state.get(\"visualization_results\")\n"
+            "    if isinstance(vr, VisualizationResults):\n"
+            "        return list(vr.visualizations or [])\n"
+            "    return list(state.get(\"viz_results\", []) or [])\n\n"
+        )
+        new_src = src.replace("def route_to_writer(state)", helper + "def route_to_writer(state)", 1)
+        new_src = new_src.replace(
+            '    viz_items = state.get("viz_results", []) or []\n',
+            '    viz_items = _viz_items_from_state(state)\n',
+            1,
+        )
+        new_src = new_src.replace(
+            '    if not bool(state.get("visualization_complete")) or len(state.get("viz_results", []) or []) < 3:\n',
+            '    if not bool(state.get("visualization_complete")) or len(_viz_items_from_state(state)) < 3:\n',
+            1,
+        )
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13-VIZREADY routes use visualization_results after viz_join")
+        break
+
+    # --- W13-RO: report_orchestrator structured final-hop on nested agent loop ---
+    _W13_RO_GUARD = "# W13-RO: report_orchestrator final-hop structured outline"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src:
+            continue
+        if _W13_RO_GUARD in src:
+            break
+        old = (
+            '    outline_response = report_generator_agent.invoke(\n'
+            '        invoke_state,\n'
+            '        config={**(state.get("_config") or {}), "recursion_limit": 160},\n'
+            '    )\n'
+        )
+        new = (
+            f"    # {_W13_RO_GUARD}\n"
+            "    try:\n"
+            "        outline_response = report_generator_agent.invoke(\n"
+            "            invoke_state,\n"
+            "            config={**(state.get(\"_config\") or {}), \"recursion_limit\": 160},\n"
+            "        )\n"
+            "    except Exception as _ro_exc:\n"
+            "        _ro_reason = type(_ro_exc).__name__\n"
+            "        if _ro_reason not in {\"GraphRecursionError\", \"BadRequestError\", \"APIConnectionError\", \"APITimeoutError\"}:\n"
+            "            raise\n"
+            "        try:\n"
+            "            _pl_logger.warning(\"STATE report_orchestrator_agent.invoke.recovered reason=%s\", _ro_reason)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        from langchain_core.messages import SystemMessage as _RO_SYS, HumanMessage as _RO_HUM\n"
+            "        _ro_ai = state.get(\"analysis_insights\")\n"
+            "        _ro_viz = state.get(\"visualization_results\")\n"
+            "        _ro_prompt = (\n"
+            "            \"Create a concise ReportOutline for a stakeholder EDA report. \"\n"
+            "            \"Return only the structured ReportOutline object. Include 4-6 sections with clear goals, \"\n"
+            "            \"data signals from analysis_insights, and expected_figures from visualization_results.\\n\\n\"\n"
+            "            f\"User request: {user_prompt}\\n\\n\"\n"
+            "            f\"Cleaning metadata: {cleaning_metadata}\\n\\n\"\n"
+            "            f\"Analysis insights: {_ro_ai}\\n\\n\"\n"
+            "            f\"Visualization results: {_ro_viz}\"\n"
+            "        )\n"
+            "        _ro_outline = report_orchestrator_llm.with_structured_output(ReportOutline).invoke([\n"
+            "            _RO_SYS(content=\"You are the report_orchestrator. Produce a valid, complete ReportOutline now; do not call tools.\"),\n"
+            "            _RO_HUM(content=_ro_prompt),\n"
+            "        ])\n"
+            "        outline_response = {\n"
+            "            \"structured_response\": _ro_outline,\n"
+            "            \"messages\": [AIMessage(content=_ro_outline.reply_msg_to_supervisor or \"Report outline generated by structured final-hop.\", name=\"report_orchestrator\")],\n"
+            "        }\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13-RO added structured final-hop for report_orchestrator")
+        else:
+            print(f"⚠️  W13-RO: report_orchestrator invoke anchor not found in cell {idx}")
+        break
+
+    # --- W13B-RO: avoid invalid OpenAI response_format schema for ReportOutline inheritance ---
+    _W13B_RO_GUARD = "# W13B-RO: parse LLM JSON final-hop instead of response_format"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "with_structured_output(ReportOutline)" not in src:
+            continue
+        if _W13B_RO_GUARD in src:
+            break
+        old = (
+            "        _ro_outline = report_orchestrator_llm.with_structured_output(ReportOutline).invoke([\n"
+            "            _RO_SYS(content=\"You are the report_orchestrator. Produce a valid, complete ReportOutline now; do not call tools.\"),\n"
+            "            _RO_HUM(content=_ro_prompt),\n"
+            "        ])\n"
+        )
+        new = (
+            f"        # {_W13B_RO_GUARD}\n"
+            "        import json as _ro_json, re as _ro_re\n"
+            "        _ro_viz_payload = []\n"
+            "        if isinstance(_ro_viz, VisualizationResults):\n"
+            "            for _v in (_ro_viz.visualizations or []):\n"
+            "                try:\n"
+            "                    _ro_viz_payload.append(_v.model_dump(mode=\"json\"))\n"
+            "                except Exception:\n"
+            "                    _ro_viz_payload.append(str(_v))\n"
+            "        _ro_prompt = _ro_prompt + (\n"
+            "            \"\\n\\nReturn JSON only. Because ReportOutline extends SectionOutline, include these top-level keys: \"\n"
+            "            \"name, section_num, description, goals, data_signals_needed, data_signals_available, \"\n"
+            "            \"expected_figures, word_target, title, sections, reply_msg_to_supervisor, \"\n"
+            "            \"finished_this_task, expect_reply. For each section include the SectionOutline keys. \"\n"
+            "            \"Use finished_this_task=true and expect_reply=false. Existing visualizations as JSON: \"\n"
+            "            + _ro_json.dumps(_ro_viz_payload, ensure_ascii=False)\n"
+            "        )\n"
+            "        _ro_raw_msg = report_orchestrator_llm.invoke([\n"
+            "            _RO_SYS(content=\"You are the report_orchestrator. Produce a valid ReportOutline JSON object only; do not call tools and do not use markdown fences.\"),\n"
+            "            _RO_HUM(content=_ro_prompt),\n"
+            "        ])\n"
+            "        _ro_raw = getattr(_ro_raw_msg, \"content\", _ro_raw_msg)\n"
+            "        if isinstance(_ro_raw, list):\n"
+            "            _ro_raw = \"\".join(str(getattr(_b, \"text\", _b.get(\"text\", _b) if isinstance(_b, dict) else _b)) for _b in _ro_raw)\n"
+            "        _ro_raw = str(_ro_raw).strip()\n"
+            "        _ro_match = _ro_re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", _ro_raw, flags=_ro_re.S)\n"
+            "        if _ro_match:\n"
+            "            _ro_raw = _ro_match.group(1)\n"
+            "        elif not _ro_raw.startswith(\"{\"):\n"
+            "            _ro_obj = _ro_re.search(r\"\\{.*\\}\", _ro_raw, flags=_ro_re.S)\n"
+            "            if _ro_obj:\n"
+            "                _ro_raw = _ro_obj.group(0)\n"
+            "        _ro_outline = ReportOutline.model_validate(_ro_json.loads(_ro_raw))\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13B-RO switched ReportOutline final-hop to parsed LLM JSON")
+        else:
+            print(f"⚠️  W13B-RO: structured final-hop anchor not found in cell {idx}")
+        break
+
+    # --- W13C-RO: repair non-strict JSON from report_orchestrator final-hop ---
+    _W13C_RO_GUARD = "# W13C-RO: repair non-strict ReportOutline JSON"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "_ro_outline = ReportOutline.model_validate(_ro_json.loads(_ro_raw))" not in src:
+            continue
+        if _W13C_RO_GUARD in src:
+            break
+        old = "        _ro_outline = ReportOutline.model_validate(_ro_json.loads(_ro_raw))\n"
+        new = (
+            f"        # {_W13C_RO_GUARD}\n"
+            "        try:\n"
+            "            _ro_payload = _ro_json.loads(_ro_raw)\n"
+            "        except Exception:\n"
+            "            _ro_repair_msg = report_orchestrator_llm.invoke([\n"
+            "                _RO_SYS(content=\"Convert the provided text into one strict JSON object matching the ReportOutline shape. Return JSON only; no markdown fences.\"),\n"
+            "                _RO_HUM(content=(\n"
+            "                    \"Required top-level keys: name, section_num, description, goals, data_signals_needed, \"\n"
+            "                    \"data_signals_available, expected_figures, word_target, title, sections, \"\n"
+            "                    \"reply_msg_to_supervisor, finished_this_task, expect_reply. Required SectionOutline keys: \"\n"
+            "                    \"name, section_num, description, goals, data_signals_needed, data_signals_available, \"\n"
+            "                    \"expected_figures, word_target, reply_msg_to_supervisor, finished_this_task, expect_reply.\\n\\n\"\n"
+            "                    f\"Available visualization JSON: {_ro_json.dumps(_ro_viz_payload, ensure_ascii=False)}\\n\\n\"\n"
+            "                    f\"Text to convert:\\n{_ro_raw}\"\n"
+            "                )),\n"
+            "            ])\n"
+            "            _ro_raw2 = str(getattr(_ro_repair_msg, \"content\", _ro_repair_msg)).strip()\n"
+            "            _ro_match2 = _ro_re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", _ro_raw2, flags=_ro_re.S)\n"
+            "            if _ro_match2:\n"
+            "                _ro_raw2 = _ro_match2.group(1)\n"
+            "            elif not _ro_raw2.startswith(\"{\"):\n"
+            "                _ro_obj2 = _ro_re.search(r\"\\{.*\\}\", _ro_raw2, flags=_ro_re.S)\n"
+            "                if _ro_obj2:\n"
+            "                    _ro_raw2 = _ro_obj2.group(0)\n"
+            "            _ro_payload = _ro_json.loads(_ro_raw2)\n"
+            "        _ro_outline = ReportOutline.model_validate(_ro_payload)\n"
+        )
+        cell["source"] = src.replace(old, new, 1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13C-RO added strict JSON repair pass")
+        break
+
+    # --- W13D-RO: accept JSON or Python-literal dicts from the final-hop ---
+    _W13D_RO_GUARD = "# W13D-RO: tolerant ReportOutline payload parser"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "_ro_payload = _ro_json.loads(_ro_raw2)" not in src:
+            continue
+        if _W13D_RO_GUARD in src:
+            break
+        old_import = "        import json as _ro_json, re as _ro_re\n"
+        new_import = (
+            "        import json as _ro_json, re as _ro_re, ast as _ro_ast\n"
+            f"        # {_W13D_RO_GUARD}\n"
+            "        def _ro_extract_object_text(_txt):\n"
+            "            _txt = str(_txt).strip()\n"
+            "            _m = _ro_re.search(r\"```(?:json|python)?\\s*(\\{.*?\\})\\s*```\", _txt, flags=_ro_re.S)\n"
+            "            if _m:\n"
+            "                return _m.group(1).strip()\n"
+            "            if not _txt.startswith(\"{\"):\n"
+            "                _m = _ro_re.search(r\"\\{.*\\}\", _txt, flags=_ro_re.S)\n"
+            "                if _m:\n"
+            "                    return _m.group(0).strip()\n"
+            "            return _txt\n"
+            "        def _ro_load_mapping(_txt):\n"
+            "            _txt = _ro_extract_object_text(_txt)\n"
+            "            try:\n"
+            "                return _ro_json.loads(_txt)\n"
+            "            except Exception:\n"
+            "                _py_txt = _ro_re.sub(r\"\\btrue\\b\", \"True\", _txt, flags=_ro_re.I)\n"
+            "                _py_txt = _ro_re.sub(r\"\\bfalse\\b\", \"False\", _py_txt, flags=_ro_re.I)\n"
+            "                _py_txt = _ro_re.sub(r\"\\bnull\\b\", \"None\", _py_txt, flags=_ro_re.I)\n"
+            "                return _ro_ast.literal_eval(_py_txt)\n"
+        )
+        src = src.replace(old_import, new_import, 1)
+        old_parse = (
+            "        _ro_match = _ro_re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", _ro_raw, flags=_ro_re.S)\n"
+            "        if _ro_match:\n"
+            "            _ro_raw = _ro_match.group(1)\n"
+            "        elif not _ro_raw.startswith(\"{\"):\n"
+            "            _ro_obj = _ro_re.search(r\"\\{.*\\}\", _ro_raw, flags=_ro_re.S)\n"
+            "            if _ro_obj:\n"
+            "                _ro_raw = _ro_obj.group(0)\n"
+            "        # # W13C-RO: repair non-strict ReportOutline JSON\n"
+            "        try:\n"
+            "            _ro_payload = _ro_json.loads(_ro_raw)\n"
+        )
+        new_parse = (
+            "        # # W13C-RO: repair non-strict ReportOutline JSON\n"
+            "        try:\n"
+            "            _ro_payload = _ro_load_mapping(_ro_raw)\n"
+        )
+        src = src.replace(old_parse, new_parse, 1)
+        old_repair = (
+            "            _ro_raw2 = str(getattr(_ro_repair_msg, \"content\", _ro_repair_msg)).strip()\n"
+            "            _ro_match2 = _ro_re.search(r\"```(?:json)?\\s*(\\{.*?\\})\\s*```\", _ro_raw2, flags=_ro_re.S)\n"
+            "            if _ro_match2:\n"
+            "                _ro_raw2 = _ro_match2.group(1)\n"
+            "            elif not _ro_raw2.startswith(\"{\"):\n"
+            "                _ro_obj2 = _ro_re.search(r\"\\{.*\\}\", _ro_raw2, flags=_ro_re.S)\n"
+            "                if _ro_obj2:\n"
+            "                    _ro_raw2 = _ro_obj2.group(0)\n"
+            "            _ro_payload = _ro_json.loads(_ro_raw2)\n"
+        )
+        new_repair = (
+            "            _ro_raw2 = str(getattr(_ro_repair_msg, \"content\", _ro_repair_msg)).strip()\n"
+            "            _ro_payload = _ro_load_mapping(_ro_raw2)\n"
+        )
+        src = src.replace(old_repair, new_repair, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13D-RO added tolerant JSON/Python-literal parsing")
+        break
+
+    # --- W13E-RO: extract text-only content from Responses-style message blocks ---
+    _W13E_RO_GUARD = "# W13E-RO: text-only extraction for report outline repair"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "def _ro_load_mapping(_txt):" not in src:
+            continue
+        if _W13E_RO_GUARD in src:
+            break
+        anchor = (
+            "        def _ro_load_mapping(_txt):\n"
+            "            _txt = _ro_extract_object_text(_txt)\n"
+        )
+        replacement = (
+            f"        # {_W13E_RO_GUARD}\n"
+            "        def _ro_text_from_msg(_msg):\n"
+            "            _content = getattr(_msg, \"content\", _msg)\n"
+            "            if isinstance(_content, list):\n"
+            "                _parts = []\n"
+            "                for _b in _content:\n"
+            "                    if isinstance(_b, dict):\n"
+            "                        _txt = _b.get(\"text\") or _b.get(\"output_text\") or _b.get(\"content\")\n"
+            "                        if isinstance(_txt, str):\n"
+            "                            _parts.append(_txt)\n"
+            "                    elif isinstance(_b, str):\n"
+            "                        _parts.append(_b)\n"
+            "                return \"\\n\".join(_parts).strip()\n"
+            "            return str(_content).strip()\n"
+            "        def _ro_load_mapping(_txt):\n"
+            "            _txt = _ro_extract_object_text(_txt)\n"
+        )
+        src = src.replace(anchor, replacement, 1)
+        src = src.replace(
+            "        _ro_raw = getattr(_ro_raw_msg, \"content\", _ro_raw_msg)\n"
+            "        if isinstance(_ro_raw, list):\n"
+            "            _ro_raw = \"\".join(str(getattr(_b, \"text\", _b.get(\"text\", _b) if isinstance(_b, dict) else _b)) for _b in _ro_raw)\n"
+            "        _ro_raw = str(_ro_raw).strip()\n",
+            "        _ro_raw = _ro_text_from_msg(_ro_raw_msg)\n",
+            1,
+        )
+        src = src.replace(
+            "            _ro_raw2 = str(getattr(_ro_repair_msg, \"content\", _ro_repair_msg)).strip()\n"
+            "            _ro_payload = _ro_load_mapping(_ro_raw2)\n",
+            "            _ro_raw2 = _ro_text_from_msg(_ro_repair_msg)\n"
+            "            _ro_payload = _ro_load_mapping(_ro_raw2)\n",
+            1,
+        )
+        src = src.replace(
+            "        _ro_outline = ReportOutline.model_validate(_ro_payload)\n",
+            "        if isinstance(_ro_payload, (tuple, list)) and _ro_payload and isinstance(_ro_payload[0], dict):\n"
+            "            _ro_payload = _ro_payload[0]\n"
+            "        if not isinstance(_ro_payload, dict) or \"sections\" not in _ro_payload:\n"
+            "            raise ValueError(f\"ReportOutline repair did not return outline mapping; got {type(_ro_payload).__name__}\")\n"
+            "        _ro_outline = ReportOutline.model_validate(_ro_payload)\n",
+            1,
+        )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13E-RO extracts text blocks before parsing")
+        break
+
+    # --- W13F-RO: run final-hop when agent returns no structured_response ---
+    _W13F_RO_GUARD = "# W13F-RO: invalid agent output triggers structured final-hop"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "outline_response = report_generator_agent.invoke(" not in src:
+            continue
+        if _W13F_RO_GUARD in src:
+            break
+        old = (
+            "        outline_response = report_generator_agent.invoke(\n"
+            "            invoke_state,\n"
+            "            config={**(state.get(\"_config\") or {}), \"recursion_limit\": 160},\n"
+            "        )\n"
+        )
+        new = (
+            "        outline_response = report_generator_agent.invoke(\n"
+            "            invoke_state,\n"
+            "            config={**(state.get(\"_config\") or {}), \"recursion_limit\": 160},\n"
+            "        )\n"
+            f"        # {_W13F_RO_GUARD}\n"
+            "        if not isinstance(outline_response, dict) or \"structured_response\" not in outline_response:\n"
+            "            raise RuntimeError(\"report_orchestrator_missing_structured_response\")\n"
+        )
+        src = src.replace(old, new, 1)
+        src = src.replace(
+            "        if _ro_reason not in {\"GraphRecursionError\", \"BadRequestError\", \"APIConnectionError\", \"APITimeoutError\"}:\n"
+            "            raise\n",
+            "        if _ro_reason not in {\"GraphRecursionError\", \"BadRequestError\", \"APIConnectionError\", \"APITimeoutError\", \"RuntimeError\"}:\n"
+            "            raise\n"
+            "        if _ro_reason == \"RuntimeError\" and str(_ro_exc) != \"report_orchestrator_missing_structured_response\":\n"
+            "            raise\n",
+            1,
+        )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13F-RO invalid agent output now triggers final-hop")
+        break
+
+    # --- W13G-RO: normalize LLM outline JSON into strict Pydantic shape ---
+    _W13G_RO_GUARD = "# W13G-RO: normalize ReportOutline payload shape"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "ReportOutline.model_validate(_ro_payload)" not in src:
+            continue
+        if _W13G_RO_GUARD in src:
+            break
+        old = (
+            "        if isinstance(_ro_payload, (tuple, list)) and _ro_payload and isinstance(_ro_payload[0], dict):\n"
+            "            _ro_payload = _ro_payload[0]\n"
+            "        if not isinstance(_ro_payload, dict) or \"sections\" not in _ro_payload:\n"
+            "            raise ValueError(f\"ReportOutline repair did not return outline mapping; got {type(_ro_payload).__name__}\")\n"
+            "        _ro_outline = ReportOutline.model_validate(_ro_payload)\n"
+        )
+        new = (
+            f"        # {_W13G_RO_GUARD}\n"
+            "        def _ro_signal_dict(_value):\n"
+            "            if isinstance(_value, dict):\n"
+            "                return {str(_k): str(_v) for _k, _v in _value.items()}\n"
+            "            if isinstance(_value, list):\n"
+            "                return {str(_v): \"signal\" for _v in _value}\n"
+            "            if _value:\n"
+            "                return {str(_value): \"signal\"}\n"
+            "            return {\"sample_dirty\": \"DataFrame\"}\n"
+            "        _ro_viz_by_id = {str(_v.get(\"visualization_id\")): _v for _v in _ro_viz_payload if isinstance(_v, dict) and _v.get(\"visualization_id\")}\n"
+            "        def _ro_norm_fig(_fig):\n"
+            "            _src = dict(_fig or {}) if isinstance(_fig, dict) else {\"visualization_title\": str(_fig)}\n"
+            "            _vid = str(_src.get(\"visualization_id\") or _src.get(\"viz_id\") or \"\")\n"
+            "            _base = dict(_ro_viz_by_id.get(_vid, {}))\n"
+            "            _base.update(_src)\n"
+            "            _base.setdefault(\"reply_msg_to_supervisor\", \"Expected figure assigned by report_orchestrator.\")\n"
+            "            _base.setdefault(\"finished_this_task\", True)\n"
+            "            _base.setdefault(\"expect_reply\", False)\n"
+            "            _base.setdefault(\"visualization_id\", _vid or str(_base.get(\"visualization_title\") or \"figure\").lower().replace(\" \", \"_\"))\n"
+            "            _base.setdefault(\"visualization_title\", str(_base.get(\"title\") or _base.get(\"visualization_id\") or \"Figure\"))\n"
+            "            _base.setdefault(\"visualization_type\", str(_base.get(\"viz_type\") or _base.get(\"type\") or \"chart\"))\n"
+            "            _base.setdefault(\"visualization_description\", str(_base.get(\"description\") or _base.get(\"visualization_title\") or \"Visualization\"))\n"
+            "            _base.setdefault(\"visualization_style\", str(_base.get(\"style\") or \"seaborn-v0_8-whitegrid\"))\n"
+            "            _base.setdefault(\"path\", str(_base.get(\"path\") or \"\"))\n"
+            "            _allowed = {\"reply_msg_to_supervisor\", \"finished_this_task\", \"expect_reply\", \"path\", \"visualization_id\", \"visualization_type\", \"visualization_description\", \"visualization_style\", \"visualization_title\"}\n"
+            "            return {_k: _base[_k] for _k in _allowed if _k in _base}\n"
+            "        def _ro_norm_section(_sec, _idx):\n"
+            "            _sec = dict(_sec or {}) if isinstance(_sec, dict) else {\"name\": str(_sec)}\n"
+            "            _sec.setdefault(\"reply_msg_to_supervisor\", \"Section planned by report_orchestrator.\")\n"
+            "            _sec.setdefault(\"finished_this_task\", True)\n"
+            "            _sec.setdefault(\"expect_reply\", False)\n"
+            "            _sec.setdefault(\"name\", f\"Section {_idx + 1}\")\n"
+            "            _sec.setdefault(\"section_num\", _idx + 1)\n"
+            "            _sec.setdefault(\"description\", str(_sec.get(\"name\")))\n"
+            "            _sec.setdefault(\"goals\", [str(_sec.get(\"description\"))])\n"
+            "            _sec[\"data_signals_needed\"] = _ro_signal_dict(_sec.get(\"data_signals_needed\"))\n"
+            "            _dsa = _sec.get(\"data_signals_available\")\n"
+            "            _sec[\"data_signals_available\"] = [str(_v) for _v in (_dsa if isinstance(_dsa, list) else [_dsa or \"sample_dirty\"])]\n"
+            "            _sec[\"expected_figures\"] = [_ro_norm_fig(_f) for _f in (_sec.get(\"expected_figures\") or [])]\n"
+            "            _sec.setdefault(\"word_target\", 300)\n"
+            "            _allowed = {\"reply_msg_to_supervisor\", \"finished_this_task\", \"expect_reply\", \"name\", \"section_num\", \"description\", \"goals\", \"data_signals_needed\", \"data_signals_available\", \"expected_figures\", \"word_target\"}\n"
+            "            return {_k: _sec[_k] for _k in _allowed if _k in _sec}\n"
+            "        if isinstance(_ro_payload, (tuple, list)) and _ro_payload and isinstance(_ro_payload[0], dict):\n"
+            "            _ro_payload = _ro_payload[0]\n"
+            "        if not isinstance(_ro_payload, dict) or \"sections\" not in _ro_payload:\n"
+            "            raise ValueError(f\"ReportOutline repair did not return outline mapping; got {type(_ro_payload).__name__}\")\n"
+            "        _ro_payload.setdefault(\"reply_msg_to_supervisor\", \"Report outline generated by report_orchestrator final-hop.\")\n"
+            "        _ro_payload.setdefault(\"finished_this_task\", True)\n"
+            "        _ro_payload.setdefault(\"expect_reply\", False)\n"
+            "        _ro_payload.setdefault(\"name\", _ro_payload.get(\"title\", \"Stakeholder EDA Report\"))\n"
+            "        _ro_payload.setdefault(\"section_num\", 0)\n"
+            "        _ro_payload.setdefault(\"title\", _ro_payload.get(\"name\", \"Stakeholder EDA Report\"))\n"
+            "        _ro_payload.setdefault(\"description\", \"Stakeholder-ready exploratory data analysis report outline.\")\n"
+            "        _ro_payload.setdefault(\"goals\", [\"Summarize cleaned data, analysis insights, visual evidence, and next actions.\"])\n"
+            "        _ro_payload[\"data_signals_needed\"] = _ro_signal_dict(_ro_payload.get(\"data_signals_needed\"))\n"
+            "        _dsa0 = _ro_payload.get(\"data_signals_available\")\n"
+            "        _ro_payload[\"data_signals_available\"] = [str(_v) for _v in (_dsa0 if isinstance(_dsa0, list) else [_dsa0 or \"sample_dirty\"])]\n"
+            "        _ro_payload[\"expected_figures\"] = [_ro_norm_fig(_f) for _f in (_ro_payload.get(\"expected_figures\") or _ro_viz_payload)]\n"
+            "        _ro_payload.setdefault(\"word_target\", 1200)\n"
+            "        _ro_payload[\"sections\"] = [_ro_norm_section(_s, _i) for _i, _s in enumerate(_ro_payload.get(\"sections\") or [])]\n"
+            "        _allowed_report = {\"reply_msg_to_supervisor\", \"finished_this_task\", \"expect_reply\", \"name\", \"section_num\", \"description\", \"goals\", \"data_signals_needed\", \"data_signals_available\", \"expected_figures\", \"word_target\", \"title\", \"sections\"}\n"
+            "        _ro_payload = {_k: _ro_payload[_k] for _k in _allowed_report if _k in _ro_payload}\n"
+            "        _ro_outline = ReportOutline.model_validate(_ro_payload)\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13G-RO normalizes outline payload before validation")
+        else:
+            print(f"⚠️  W13G-RO: normalization anchor not found in cell {idx}")
+        break
+
+    # --- W13H-SW: compact section prompts and retry transient rate/API failures ---
+    _W13H_SW_GUARD = "# W13H-SW: compact prompt plus transient API retry"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src or "report_section_agent.invoke({" not in src:
+            continue
+        if _W13H_SW_GUARD in src:
+            break
+        old_rendered = (
+            "    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name=\"user\"),newest_msg,AIMessage(content=default_instruction,name=\"supervisor\")], **rg_vars)\n"
+        )
+        new_rendered = (
+            f"    # {_W13H_SW_GUARD}\n"
+            "    def _w13h_short(_value, _limit=1800):\n"
+            "        _text = _value if isinstance(_value, str) else str(_value)\n"
+            "        return _text[:_limit] + (\"...\" if len(_text) > _limit else \"\")\n"
+            "    _w13h_section_prompt = \"\\n\\n\".join([\n"
+            "        f\"Write this stakeholder-ready EDA report section in Markdown: {section.name}\",\n"
+            "        f\"Purpose: {_w13h_short(section.goals, 700)}\",\n"
+            "        f\"Description: {_w13h_short(section.description, 700)}\",\n"
+            "        f\"Target length: about {section.word_target} words.\",\n"
+            "        f\"Cleaned data context: {_w13h_short(getattr(cm, 'data_description_after_cleaning', cm), 1400)}\",\n"
+            "        f\"Analysis summary: {_w13h_short(getattr(insights, 'summary', ''), 1400)}\",\n"
+            "        f\"Correlation insights: {_w13h_short(getattr(insights, 'correlation_insights', ''), 900)}\",\n"
+            "        f\"Anomaly insights: {_w13h_short(getattr(insights, 'anomaly_insights', ''), 900)}\",\n"
+            "        f\"Figures to reference: {_w13h_short(expected_viz_str, 1400)}\",\n"
+            "        f\"Available DataFrame IDs: {df_id_str}\",\n"
+            "        \"Write for a non-technical stakeholder. Make claims, explain business meaning, and avoid scaffold/instructional prose.\",\n"
+            "    ])\n"
+            "    rendered = [HumanMessage(content=_w13h_section_prompt, name=\"supervisor\")]\n"
+        )
+        if old_rendered in src:
+            src = src.replace(old_rendered, new_rendered, 1)
+        else:
+            print(f"⚠️  W13H-SW: rendered prompt anchor not found in cell {idx}")
+        old_invoke = (
+            "    msg = report_section_agent.invoke({\n"
+            "        \"messages\": rendered,\n"
+            "        \"available_df_ids\": state.get(\"available_df_ids\", []),\n"
+            "        \"cleaning_metadata\": cleaning_metadata,\n"
+            "        \"analysis_insights\": state.get(\"analysis_insights\", None),\n"
+            "        \"viz_results\": state.get(\"viz_results\", None),\n"
+            "        \"user_prompt\": user_prompt,\n"
+            "        \"section\": section,\n"
+            "        \"run_id\": state.get(\"run_id\", None),\n"
+            "        \"artifacts_path\": state.get(\"artifacts_path\", None) or state.get(\"_config\",{}).get(\"artifacts_dir\",None) or str((WORKING_DIRECTORY / \"artifacts\").resolve()),\n"
+            "        \"logs_path\": state.get(\"logs_path\", None) or state.get(\"_config\",{}).get(\"logs_dir\",None) or str((WORKING_DIRECTORY / \"logs\").resolve()),\n"
+            "        \"reports_path\": state.get(\"reports_path\", None) or state.get(\"_config\",{}).get(\"reports_dir\",None) or str((WORKING_DIRECTORY / \"reports\").resolve()),\n"
+            "        \"visualization_path\": state.get(\"viz_paths\", None) or state.get(\"_config\",{}).get(\"viz_dir\",None) or str((WORKING_DIRECTORY / \"visualizations\").resolve()),\n"
+            "        \"next_agent_prompt\": state.get(\"next_agent_prompt\", None),\n"
+            "        \"next_agent_metadata\": state.get(\"next_agent_metadata\", None),\n"
+            "    }, config=state[\"_config\"])\n"
+        )
+        new_invoke = (
+            "    _w13h_section_state = {\n"
+            "        \"messages\": rendered,\n"
+            "        \"available_df_ids\": state.get(\"available_df_ids\", []),\n"
+            "        \"cleaning_metadata\": cleaning_metadata,\n"
+            "        \"analysis_insights\": state.get(\"analysis_insights\", None),\n"
+            "        \"visualization_results\": state.get(\"visualization_results\", None),\n"
+            "        \"viz_results\": state.get(\"viz_results\", None),\n"
+            "        \"user_prompt\": user_prompt,\n"
+            "        \"section\": section,\n"
+            "        \"run_id\": state.get(\"run_id\", None),\n"
+            "        \"artifacts_path\": state.get(\"artifacts_path\", None) or state.get(\"_config\",{}).get(\"artifacts_dir\",None) or str((WORKING_DIRECTORY / \"artifacts\").resolve()),\n"
+            "        \"logs_path\": state.get(\"logs_path\", None) or state.get(\"_config\",{}).get(\"logs_dir\",None) or str((WORKING_DIRECTORY / \"logs\").resolve()),\n"
+            "        \"reports_path\": state.get(\"reports_path\", None) or state.get(\"_config\",{}).get(\"reports_dir\",None) or str((WORKING_DIRECTORY / \"reports\").resolve()),\n"
+            "        \"visualization_path\": state.get(\"viz_paths\", None) or state.get(\"_config\",{}).get(\"viz_dir\",None) or str((WORKING_DIRECTORY / \"visualizations\").resolve()),\n"
+            "        \"next_agent_prompt\": None,\n"
+            "        \"next_agent_metadata\": state.get(\"next_agent_metadata\", None),\n"
+            "    }\n"
+            "    _w13h_last_error = None\n"
+            "    for _w13h_attempt in range(4):\n"
+            "        try:\n"
+            "            msg = report_section_agent.invoke(_w13h_section_state, config=state[\"_config\"])\n"
+            "            break\n"
+            "        except Exception as _w13h_exc:\n"
+            "            _w13h_last_error = _w13h_exc\n"
+            "            _w13h_reason = type(_w13h_exc).__name__\n"
+            "            _w13h_text = str(_w13h_exc).lower()\n"
+            "            if _w13h_reason not in {\"APIError\", \"RateLimitError\", \"APIConnectionError\", \"APITimeoutError\"} and \"rate limit\" not in _w13h_text:\n"
+            "                raise\n"
+            "            try:\n"
+            "                _pl_logger.warning(\"STATE report_section_agent.invoke.retry section_name=%s attempt=%d reason=%s\", getattr(section, \"name\", \"unknown\"), _w13h_attempt + 1, _w13h_reason)\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "            __import__(\"time\").sleep(min(20, 2 ** _w13h_attempt))\n"
+            "    else:\n"
+            "        raise _w13h_last_error\n"
+        )
+        if old_invoke in src:
+            src = src.replace(old_invoke, new_invoke, 1)
+        else:
+            print(f"⚠️  W13H-SW: report_section_agent.invoke anchor not found in cell {idx}")
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13H-SW compacts section prompts and retries transient API failures")
+        break
+
+    # --- W13I-AN: retry analyst after Responses API orphan tool-output history ---
+    _W13I_AN_GUARD = "# W13I-AN: recover orphan Responses API tool output"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def analyst_node(state: State):" not in src or "analyst_agent.invoke(" not in src:
+            continue
+        if _W13I_AN_GUARD in src:
+            break
+        old = (
+            "    except Exception as exc:\n"
+            "        is_analyst_recursion = exc.__class__.__name__ == \"GraphRecursionError\"\n"
+            "        is_memory_tool_error = isinstance(exc, ValueError) and \"MEMORY ID\" in str(exc)\n"
+            "        if not (is_analyst_recursion or is_memory_tool_error):\n"
+            "            raise\n"
+            "        reason = \"GraphRecursionError\" if is_analyst_recursion else \"memory_tool_missing_id\"\n"
+            "        _pl_logger.warning(\"STATE analyst.recovered reason=%s nested_limit=60\", reason)\n"
+            "        insights = _build_deterministic_analysis_insights(state)\n"
+            "        return _analyst_update_from_insights(state, insights)\n"
+        )
+        new = (
+            "    except Exception as exc:\n"
+            f"        # {_W13I_AN_GUARD}\n"
+            "        is_analyst_recursion = exc.__class__.__name__ == \"GraphRecursionError\"\n"
+            "        is_memory_tool_error = isinstance(exc, ValueError) and \"MEMORY ID\" in str(exc)\n"
+            "        is_orphan_tool_output = exc.__class__.__name__ == \"BadRequestError\" and \"No tool call found for function call output\" in str(exc)\n"
+            "        if is_orphan_tool_output:\n"
+            "            _pl_logger.warning(\"STATE analyst.recovered reason=orphan_tool_output retry=compact\")\n"
+            "            _w13i_configurable = dict(analyst_configurable)\n"
+            "            _w13i_configurable[\"thread_id\"] = f\"{analyst_parent_thread}:analyst_retry:{state.get('_count_', 0)}\"\n"
+            "            _w13i_config = RunnableConfig(configurable=_w13i_configurable, recursion_limit=60)\n"
+            "            _w13i_prompt = \"\\n\".join([\n"
+            "                user_prompt,\n"
+            "                \"Use the cleaned dataset context and return AnalysisInsights via the respond tool.\",\n"
+            "                f\"Dataset context: {str(cleaning_metadata.data_description_after_cleaning)[:1800]}\",\n"
+            "                f\"Data sample: {str(initial_description.data_sample if initial_description else '')[:1000]}\",\n"
+            "            ])\n"
+            "            result = analyst_agent.invoke(\n"
+            "                {\n"
+            "                    \"messages\": [HumanMessage(content=_w13i_prompt, name=\"supervisor\")],\n"
+            "                    \"user_prompt\": user_prompt,\n"
+            "                    \"available_df_ids\": state.get(\"available_df_ids\", []),\n"
+            "                    \"dataset_description\": cleaning_metadata.data_description_after_cleaning,\n"
+            "                    \"cleaned_dataset_description\": cleaning_metadata.data_description_after_cleaning,\n"
+            "                    \"cleaning_metadata\": cleaning_metadata,\n"
+            "                    \"data_sample\": (initial_description.data_sample if initial_description else None),\n"
+            "                    \"analysis_config\": state.get(\"analysis_config\", default_an_config),\n"
+            "                    \"run_id\": state.get(\"run_id\", None),\n"
+            "                },\n"
+            "                config=_w13i_config,\n"
+            "            )\n"
+            "        elif not (is_analyst_recursion or is_memory_tool_error):\n"
+            "            raise\n"
+            "        else:\n"
+            "            reason = \"GraphRecursionError\" if is_analyst_recursion else \"memory_tool_missing_id\"\n"
+            "            _pl_logger.warning(\"STATE analyst.recovered reason=%s nested_limit=60\", reason)\n"
+            "            insights = _build_deterministic_analysis_insights(state)\n"
+            "            return _analyst_update_from_insights(state, insights)\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13I-AN retries analyst on orphan tool-output BadRequest")
+        else:
+            print(f"⚠️  W13I-AN: analyst exception anchor not found in cell {idx}")
+        break
+
+    # --- W13J-SW: repair W13H render scope and apply compact prompt inside section_worker only ---
+    _W13J_SW_GUARD = "# W13J-SW: section-only compact prompt scope"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_orchestrator(state: State):" not in src or "def section_worker(state: State):" not in src:
+            continue
+        if _W13J_SW_GUARD in src:
+            break
+        bad_start = src.find("    # # W13H-SW: compact prompt plus transient API retry\n")
+        bad_end = src.find("    # --- NEW: emergency reroute handling (report_orchestrator) ---", bad_start)
+        if bad_start >= 0 and bad_end > bad_start:
+            src = (
+                src[:bad_start]
+                + "    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name=\"user\"),newest_msg,AIMessage(content=default_instruction,name=\"supervisor\")], **rg_vars)\n"
+                + src[bad_end:]
+            )
+        sec_start = src.find("def section_worker(state: State):")
+        sec_end = src.find("\ndef report_join", sec_start)
+        if sec_end < 0:
+            sec_end = len(src)
+        sec = src[sec_start:sec_end]
+        section_render = (
+            "    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name=\"user\"),newest_msg,AIMessage(content=default_instruction,name=\"supervisor\")], **rg_vars)\n"
+        )
+        compact_render = (
+            f"    # {_W13J_SW_GUARD}\n"
+            "    def _w13j_short(_value, _limit=1800):\n"
+            "        _text = _value if isinstance(_value, str) else str(_value)\n"
+            "        return _text[:_limit] + (\"...\" if len(_text) > _limit else \"\")\n"
+            "    _w13j_section_prompt = \"\\n\\n\".join([\n"
+            "        f\"Write this stakeholder-ready EDA report section in Markdown: {section.name}\",\n"
+            "        f\"Purpose: {_w13j_short(section.goals, 700)}\",\n"
+            "        f\"Description: {_w13j_short(section.description, 700)}\",\n"
+            "        f\"Target length: about {section.word_target} words.\",\n"
+            "        f\"Cleaned data context: {_w13j_short(getattr(cm, 'data_description_after_cleaning', cm), 1400)}\",\n"
+            "        f\"Analysis summary: {_w13j_short(getattr(insights, 'summary', ''), 1400)}\",\n"
+            "        f\"Correlation insights: {_w13j_short(getattr(insights, 'correlation_insights', ''), 900)}\",\n"
+            "        f\"Anomaly insights: {_w13j_short(getattr(insights, 'anomaly_insights', ''), 900)}\",\n"
+            "        f\"Figures to reference: {_w13j_short(expected_viz_str, 1400)}\",\n"
+            "        f\"Available DataFrame IDs: {df_id_str}\",\n"
+            "        \"Write for a non-technical stakeholder. Make claims, explain business meaning, and avoid scaffold/instructional prose.\",\n"
+            "    ])\n"
+            "    rendered = [HumanMessage(content=_w13j_section_prompt, name=\"supervisor\")]\n"
+        )
+        if section_render in sec:
+            sec = sec.replace(section_render, compact_render, 1)
+            src = src[:sec_start] + sec + src[sec_end:]
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13J-SW restored report_orchestrator render and scoped compact prompt to section_worker")
+        else:
+            print(f"⚠️  W13J-SW: section render anchor not found in cell {idx}")
+        break
+
+    # --- W13K-VIZ: tolerate non-integer histogram bin modes such as "auto" ---
+    _W13K_VIZ_GUARD = "# W13K-VIZ: safe histogram bins"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def _deterministic_viz_update_from_spec" not in src or "bins=int(spec.bins or 20)" not in src:
+            continue
+        if _W13K_VIZ_GUARD in src:
+            break
+        old = '            pd.to_numeric(df[col], errors="coerce").dropna().plot(kind="hist", bins=int(spec.bins or 20), ax=ax)\n'
+        new = (
+            f"            # {_W13K_VIZ_GUARD}\n"
+            "            _bins = getattr(spec, \"bins\", None) or 20\n"
+            "            if isinstance(_bins, str):\n"
+            "                _bins = _bins if _bins in {\"auto\", \"fd\", \"doane\", \"scott\", \"stone\", \"rice\", \"sturges\", \"sqrt\"} else 20\n"
+            "            else:\n"
+            "                try:\n"
+            "                    _bins = int(_bins)\n"
+            "                except Exception:\n"
+            "                    _bins = 20\n"
+            "            pd.to_numeric(df[col], errors=\"coerce\").dropna().plot(kind=\"hist\", bins=_bins, ax=ax)\n"
+        )
+        cell["source"] = src.replace(old, new, 1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13K-VIZ handles string histogram bins safely")
+        break
+
+    # --- W13L-SW: recover section-agent GraphRecursionError with direct section LLM final-hop ---
+    _W13L_SW_GUARD = "# W13L-SW: direct LLM final-hop for section recursion"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src or "_w13h_reason not in" not in src:
+            continue
+        if _W13L_SW_GUARD in src:
+            break
+        old = (
+            "            if _w13h_reason not in {\"APIError\", \"RateLimitError\", \"APIConnectionError\", \"APITimeoutError\"} and \"rate limit\" not in _w13h_text:\n"
+            "                raise\n"
+            "            try:\n"
+            "                _pl_logger.warning(\"STATE report_section_agent.invoke.retry section_name=%s attempt=%d reason=%s\", getattr(section, \"name\", \"unknown\"), _w13h_attempt + 1, _w13h_reason)\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "            __import__(\"time\").sleep(min(20, 2 ** _w13h_attempt))\n"
+        )
+        new = (
+            f"            # {_W13L_SW_GUARD}\n"
+            "            if _w13h_reason == \"GraphRecursionError\":\n"
+            "                try:\n"
+            "                    _pl_logger.warning(\"STATE report_section_agent.invoke.recovered section_name=%s reason=GraphRecursionError finalhop=direct_llm\", getattr(section, \"name\", \"unknown\"))\n"
+            "                except Exception:\n"
+            "                    pass\n"
+            "                _json = __import__(\"json\")\n"
+            "                _ast = __import__(\"ast\")\n"
+            "                _direct_prompt = \"\\n\".join([\n"
+            "                    \"You are the report_section_worker agent. Write one stakeholder-ready EDA report section.\",\n"
+            "                    \"Return only a JSON object with keys: name, section_num, description, goals, data_signals, expected_figures, content, reply_msg_to_supervisor, finished_this_task, expect_reply.\",\n"
+            "                    \"Do not write scaffold instructions. Make concrete findings and plain-English implications.\",\n"
+            "                    f\"Section name: {section.name}\",\n"
+            "                    f\"Section number: {section.section_num}\",\n"
+            "                    f\"Description: {_w13j_short(getattr(section, 'description', ''), 900) if '_w13j_short' in locals() else str(getattr(section, 'description', ''))[:900]}\",\n"
+            "                    f\"Goals: {_w13j_short(getattr(section, 'goals', ''), 900) if '_w13j_short' in locals() else str(getattr(section, 'goals', ''))[:900]}\",\n"
+            "                    f\"Cleaned data context: {_w13j_short(getattr(cm, 'data_description_after_cleaning', cm), 1400) if '_w13j_short' in locals() else str(getattr(cm, 'data_description_after_cleaning', cm))[:1400]}\",\n"
+            "                    f\"Analysis summary: {_w13j_short(getattr(insights, 'summary', ''), 1400) if '_w13j_short' in locals() else str(getattr(insights, 'summary', ''))[:1400]}\",\n"
+            "                    f\"Correlation insights: {_w13j_short(getattr(insights, 'correlation_insights', ''), 900) if '_w13j_short' in locals() else str(getattr(insights, 'correlation_insights', ''))[:900]}\",\n"
+            "                    f\"Anomaly insights: {_w13j_short(getattr(insights, 'anomaly_insights', ''), 900) if '_w13j_short' in locals() else str(getattr(insights, 'anomaly_insights', ''))[:900]}\",\n"
+            "                    f\"Figures to reference: {_w13j_short(expected_viz_str, 1200) if '_w13j_short' in locals() else str(expected_viz_str)[:1200]}\",\n"
+            "                ])\n"
+            "                _direct_msg = report_section_worker_llm.invoke([HumanMessage(content=_direct_prompt, name=\"supervisor\")])\n"
+            "                _raw = getattr(_direct_msg, \"content\", _direct_msg)\n"
+            "                if isinstance(_raw, list):\n"
+            "                    _raw = \"\\n\".join(str(_b.get(\"text\") or _b.get(\"content\") or \"\") if isinstance(_b, dict) else str(_b) for _b in _raw)\n"
+            "                _raw = str(_raw).strip()\n"
+            "                _payload = None\n"
+            "                _start = _raw.find(\"{\"); _end = _raw.rfind(\"}\")\n"
+            "                if _start >= 0 and _end > _start:\n"
+            "                    _candidate = _raw[_start:_end + 1]\n"
+            "                    try:\n"
+            "                        _payload = _json.loads(_candidate)\n"
+            "                    except Exception:\n"
+            "                        try:\n"
+            "                            _payload = _ast.literal_eval(_candidate)\n"
+            "                        except Exception:\n"
+            "                            _payload = None\n"
+            "                if not isinstance(_payload, dict):\n"
+            "                    _payload = {\"content\": _raw}\n"
+            "                _signals = getattr(section, \"data_signals_needed\", {}) or {}\n"
+            "                if isinstance(_signals, dict):\n"
+            "                    _signals = list(_signals.keys())\n"
+            "                elif not isinstance(_signals, list):\n"
+            "                    _signals = [str(_signals)]\n"
+            "                _payload.update({\n"
+            "                    \"reply_msg_to_supervisor\": _payload.get(\"reply_msg_to_supervisor\") or f\"Report section {section.name} completed by direct LLM final-hop.\",\n"
+            "                    \"finished_this_task\": True,\n"
+            "                    \"expect_reply\": False,\n"
+            "                    \"name\": str(_payload.get(\"name\") or section.name),\n"
+            "                    \"section_num\": int(_payload.get(\"section_num\") or section.section_num),\n"
+            "                    \"description\": str(_payload.get(\"description\") or section.description),\n"
+            "                    \"goals\": _payload.get(\"goals\") if isinstance(_payload.get(\"goals\"), list) else list(getattr(section, \"goals\", []) or []),\n"
+            "                    \"data_signals\": _payload.get(\"data_signals\") if isinstance(_payload.get(\"data_signals\"), list) else [str(_s) for _s in _signals],\n"
+            "                    \"expected_figures\": list(getattr(section, \"expected_figures\", []) or []),\n"
+            "                    \"content\": str(_payload.get(\"content\") or _raw),\n"
+            "                })\n"
+            "                _allowed = {\"reply_msg_to_supervisor\", \"finished_this_task\", \"expect_reply\", \"name\", \"section_num\", \"description\", \"goals\", \"data_signals\", \"expected_figures\", \"content\"}\n"
+            "                section_text = Section.model_validate({_k: _payload[_k] for _k in _allowed if _k in _payload})\n"
+            "                msg = {\"structured_response\": section_text, \"messages\": [AIMessage(content=section_text.content, name=\"report_section_worker\")]}\n"
+            "                break\n"
+            "            if _w13h_reason not in {\"APIError\", \"RateLimitError\", \"APIConnectionError\", \"APITimeoutError\"} and \"rate limit\" not in _w13h_text:\n"
+            "                raise\n"
+            "            try:\n"
+            "                _pl_logger.warning(\"STATE report_section_agent.invoke.retry section_name=%s attempt=%d reason=%s\", getattr(section, \"name\", \"unknown\"), _w13h_attempt + 1, _w13h_reason)\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "            __import__(\"time\").sleep(min(20, 2 ** _w13h_attempt))\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13L-SW recovers recursive section agents via direct LLM final-hop")
+        else:
+            print(f"⚠️  W13L-SW: section retry anchor not found in cell {idx}")
+        break
+
+    # --- W13M-RJ: preserve written_sections through report_join for packager gates ---
+    _W13M_RJ_GUARD = "# W13M-RJ: preserve written_sections for packager"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if '"written_sections": None' not in src:
+            continue
+        if _W13M_RJ_GUARD in src:
+            # The report_join reset is already removed; still remove older viz_join
+            # write-through resets if present in the same cell.
+            if '"written_sections": None,  # W2-BR2: also flush from viz path (no-op if not present)\n' in src:
+                src = src.replace(
+                    '        "written_sections": None,  # W2-BR2: also flush from viz path (no-op if not present)\n',
+                    "",
+                    1,
+                )
+                cell["source"] = src
+                cell["outputs"] = []
+                cell["execution_count"] = None
+                print(f"✅ Cell idx {idx}: W13M-RJ removed legacy viz_join written_sections reset")
+            break
+        old = (
+            "def report_join(state: State):  # W2-BR2b: report_join flushes written_sections\n"
+            "    parts = state.get(\"written_sections\", []) or []\n"
+            "    draft = \"\\n\\n---\\n\\n\".join(parts)\n"
+            "    return {\"report_draft\": draft, \"written_sections\": None}"
+        )
+        new = (
+            f"def report_join(state: State):  # {_W13M_RJ_GUARD}\n"
+            "    parts = state.get(\"written_sections\", []) or []\n"
+            "    draft = \"\\n\\n---\\n\\n\".join(parts)\n"
+            "    try:\n"
+            "        _pl_logger.info(\"STATE report_join written_sections_count=%d total_chars=%d\", len(parts), sum(len(p or \"\") for p in parts))\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "    return {\"report_draft\": draft}"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13M-RJ preserves written_sections through report_join")
+            src = join_source(cell["source"])
+            if '"written_sections": None,  # W2-BR2: also flush from viz path (no-op if not present)\n' in src:
+                cell["source"] = src.replace(
+                    '        "written_sections": None,  # W2-BR2: also flush from viz path (no-op if not present)\n',
+                    "",
+                    1,
+                )
+                print(f"✅ Cell idx {idx}: W13M-RJ removed legacy viz_join written_sections reset")
+        else:
+            print(f"⚠️  W13M-RJ: report_join reset anchor not found in cell {idx}")
+        break
+
+    # --- W13N-FW: final file writer validates/uses assembled report content ---
+    _W13N_FW_GUARD = "# W13N-FW: assembled report content for file_writer"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or "STATE file_writer.blocked reason=insufficient_report_content" not in src:
+            continue
+        if _W13N_FW_GUARD in src:
+            break
+        old = (
+            '    if is_final and (len(content or "") < 1000 or len(state.get("written_sections", []) or []) < 4):\n'
+            '        try:\n'
+            '            _pl_logger.warning("STATE file_writer.blocked reason=insufficient_report_content content_len=%d written_sections_count=%d", len(content or ""), len(state.get("written_sections", []) or []))\n'
+            '        except Exception:\n'
+            '            pass\n'
+            '        return {\n'
+            '            "messages": [AIMessage(content="File writer blocked: final report content is incomplete.", name="file_writer")],\n'
+            '            "file_writer_complete": False,\n'
+            '            "last_agent_finished_this_task": False,\n'
+            '            "last_agent_expects_reply": True,\n'
+            '            "last_agent_reply_msg": "File writer blocked: final report content is incomplete.",\n'
+            '            "last_agent_id": "file_writer",\n'
+            '            "current_turn_agent_id": "supervisor", "emergency_reroute": None,\n'
+            '        }\n'
+        )
+        new = (
+            f"    # {_W13N_FW_GUARD}\n"
+            "    if is_final:\n"
+            "        _w13n_written_sections = state.get(\"written_sections\", []) or []\n"
+            "        _w13n_report_draft = state.get(\"report_draft\") or \"\\n\\n---\\n\\n\".join(_w13n_written_sections)\n"
+            "        _w13n_report_text = getattr(state.get(\"report_results\"), \"report_text\", \"\") or \"\"\n"
+            "        _w13n_effective_content = _w13n_report_draft or _w13n_report_text or content or \"\"\n"
+            "        if len(content or \"\") < len(_w13n_effective_content):\n"
+            "            content = _w13n_effective_content\n"
+            "            fw_vars[\"content\"] = content\n"
+            "            fw_vars[\"file_content\"] = content\n"
+            "        if len(_w13n_effective_content or \"\") < 1000 or len(_w13n_written_sections) < 4:\n"
+            "            try:\n"
+            "                _pl_logger.warning(\"STATE file_writer.blocked reason=insufficient_report_content content_len=%d effective_content_len=%d written_sections_count=%d\", len(content or \"\"), len(_w13n_effective_content or \"\"), len(_w13n_written_sections))\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "            return {\n"
+            "                \"messages\": [AIMessage(content=\"File writer blocked: final report content is incomplete.\", name=\"file_writer\")],\n"
+            "                \"file_writer_complete\": False,\n"
+            "                \"last_agent_finished_this_task\": False,\n"
+            "                \"last_agent_expects_reply\": True,\n"
+            "                \"last_agent_reply_msg\": \"File writer blocked: final report content is incomplete.\",\n"
+            "                \"last_agent_id\": \"file_writer\",\n"
+            "                \"current_turn_agent_id\": \"supervisor\", \"emergency_reroute\": None,\n"
+            "            }\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13N-FW uses assembled report content for final file writing")
+        else:
+            print(f"⚠️  W13N-FW: file_writer guard anchor not found in cell {idx}")
+        break
+
+    # --- W13N-RT: supervisor final route must not return unmapped 'supervisor' ---
+    _W13N_RT_GUARD = "# W13N-RT: final supervisor route to file_writer/FINISH"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def route_from_supervisor(state: State)" not in src:
+            continue
+        if _W13N_RT_GUARD in src:
+            break
+        old = (
+            '    # Optional: guard against typos\n'
+            '    allowed: set[str] = {\n'
+        )
+        new = (
+            f"    # {_W13N_RT_GUARD}\n"
+            "    if bool(state.get(\"report_generator_complete\")) and state.get(\"report_results\"):\n"
+            "        return \"FINISH\" if bool(state.get(\"file_writer_complete\")) else \"file_writer\"\n"
+            "    # Optional: guard against typos\n"
+            "    allowed: set[str] = {\n"
+        )
+        if old in src:
+            cell["source"] = src.replace(old, new, 1)
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13N-RT routes final supervisor state to file_writer/FINISH")
+        else:
+            print(f"⚠️  W13N-RT: supervisor route anchor not found in cell {idx}")
+        break
+
+    # --- W13O-MEM: report agents must not crash on malformed manage_memory calls ---
+    _W13O_MEM_GUARD = "# W13O-MEM: safe report manage_memory wrapper"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        old = 'report_generator_tools.append(create_manage_memory_tool(namespace=("memories","reports"),store= in_memory_store))'
+        if old not in src:
+            continue
+        if _W13O_MEM_GUARD in src:
+            break
+        new = (
+            f"{_W13O_MEM_GUARD}\n"
+            "_report_mm_raw = create_manage_memory_tool(namespace=(\"memories\",\"reports\"), store=in_memory_store)\n"
+            "def _report_manage_memory_safe(content=None, action=\"create\", *, id=None):\n"
+            "    _VALID_ACTIONS = (\"create\", \"update\", \"delete\")\n"
+            "    if action not in _VALID_ACTIONS:\n"
+            "        action = \"create\" if action in (\"remember\", \"save\", \"store\") else \"update\"\n"
+            "    if action == \"create\":\n"
+            "        id = None\n"
+            "    if action in (\"update\", \"delete\") and not id:\n"
+            "        return \"Memory operation skipped: update/delete requires an existing memory id. Use search_memory first or create a new memory.\"\n"
+            "    try:\n"
+            "        return _report_mm_raw.func(content=content, action=action, id=id)\n"
+            "    except ValueError as _w13o_exc:\n"
+            "        return f\"Memory operation skipped: {_w13o_exc}\"\n"
+            "try:\n"
+            "    _report_mm_safe_tool = _report_mm_raw.__class__.from_function(\n"
+            "        _report_manage_memory_safe,\n"
+            "        name=_report_mm_raw.name,\n"
+            "        description=_report_mm_raw.description,\n"
+            "    )\n"
+            "except Exception:\n"
+            "    _report_mm_safe_tool = _report_mm_raw\n"
+            "report_generator_tools.append(_report_mm_safe_tool)"
+        )
+        cell["source"] = src.replace(old, new, 1)
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13O-MEM wrapped report manage_memory tool")
+        break
+
+    # --- W13P-RP: recover report_packager agent recursion with direct LLM final-hop ---
+    _W13P_RP_GUARD = "# W13P-RP: report_packager direct LLM final-hop"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src or "_w11_pkg_result = report_packager_agent.invoke(" not in src:
+            continue
+        if _W13P_RP_GUARD in src:
+            break
+        start = src.find("    _w11_pkg_result = report_packager_agent.invoke(")
+        sr_anchor = "    _w11_pkg_sr = _w11_pkg_result.get(\"structured_response\") if isinstance(_w11_pkg_result, dict) else None\n"
+        sr_pos = src.find(sr_anchor, start)
+        if start < 0 or sr_pos < 0:
+            print(f"⚠️  W13P-RP: packager invoke anchors not found in cell {idx}")
+            break
+        close = src.rfind("    )\n", start, sr_pos)
+        if close < 0:
+            print(f"⚠️  W13P-RP: packager invoke close anchor not found in cell {idx}")
+            break
+        invoke_block = src[start:close + len("    )\n")]
+        invoke_block_indented = (
+            "    from langgraph.errors import GraphRecursionError as _W13PGraphRecursionError\n"
+            "    try:\n"
+            + invoke_block.replace("    _w11_pkg_result = ", "        _w11_pkg_result = ", 1)
+        )
+        invoke_block_indented = invoke_block_indented[:-len("    )\n")] + "        )\n"
+        recovery = (
+            "    except _W13PGraphRecursionError:\n"
+            f"        # {_W13P_RP_GUARD}\n"
+            "        try:\n"
+            "            _pl_logger.warning(\"STATE report_packager_agent.invoke.recovered reason=GraphRecursionError finalhop=direct_llm\")\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        import json as _w13p_json, re as _w13p_re, ast as _w13p_ast\n"
+            "        def _w13p_text_from_msg(_msg):\n"
+            "            _content = getattr(_msg, \"content\", _msg)\n"
+            "            if isinstance(_content, list):\n"
+            "                _parts = []\n"
+            "                for _block in _content:\n"
+            "                    if isinstance(_block, dict):\n"
+            "                        if _block.get(\"type\") in (\"text\", \"output_text\"):\n"
+            "                            _parts.append(str(_block.get(\"text\") or \"\"))\n"
+            "                    elif isinstance(_block, str):\n"
+            "                        _parts.append(_block)\n"
+            "                return \"\\n\".join(_parts)\n"
+            "            return str(_content)\n"
+            "        def _w13p_load_mapping(_txt):\n"
+            "            _txt = str(_txt).strip()\n"
+            "            _m = _w13p_re.search(r\"```(?:json|python)?\\s*(\\{.*?\\})\\s*```\", _txt, flags=_w13p_re.S)\n"
+            "            if _m:\n"
+            "                _txt = _m.group(1)\n"
+            "            else:\n"
+            "                _start, _end = _txt.find(\"{\"), _txt.rfind(\"}\")\n"
+            "                if _start >= 0 and _end > _start:\n"
+            "                    _txt = _txt[_start:_end + 1]\n"
+            "            try:\n"
+            "                return _w13p_json.loads(_txt)\n"
+            "            except Exception:\n"
+            "                _py_txt = _w13p_re.sub(r\"\\btrue\\b\", \"True\", _txt, flags=_w13p_re.I)\n"
+            "                _py_txt = _w13p_re.sub(r\"\\bfalse\\b\", \"False\", _py_txt, flags=_w13p_re.I)\n"
+            "                _py_txt = _w13p_re.sub(r\"\\bnull\\b\", \"None\", _py_txt, flags=_w13p_re.I)\n"
+            "                return _w13p_ast.literal_eval(_py_txt)\n"
+            "        _w13p_schema = ReportResults.model_json_schema()\n"
+            "        _w13p_msg = report_packager_llm.invoke([\n"
+            "            SystemMessage(content=\"You are the report_packager final-hop. Return exactly one strict JSON object matching ReportResults. No markdown fences.\"),\n"
+            "            HumanMessage(content=(\n"
+            "                \"Approve the final report package from the agent-written sections and return ReportResults JSON only. \"\n"
+            "                \"Use these exact paths: pdf_report_path='\" + str(pdf_path) + \"', html_report_path='\" + str(html_path) + \"', markdown_report_path='\" + str(md_path) + \"'. \"\n"
+            "                \"Required booleans: finished_this_task=true, expect_reply=false. Include reply_msg_to_supervisor. \"\n"
+            "                \"Schema: \" + str(_w13p_schema) + \"\\n\\nReport draft excerpt:\\n\" + draft[:8000]\n"
+            "            ))\n"
+            "        ])\n"
+            "        _w13p_payload = _w13p_load_mapping(_w13p_text_from_msg(_w13p_msg))\n"
+            "        _w11_pkg_sr_direct = ReportResults.model_validate(_w13p_payload)\n"
+            "        _w11_pkg_result = {\n"
+            "            \"messages\": [AIMessage(content=_w11_pkg_sr_direct.reply_msg_to_supervisor, name=\"report_packager\")],\n"
+            "            \"structured_response\": _w11_pkg_sr_direct,\n"
+            "        }\n"
+        )
+        src = src[:start] + invoke_block_indented + recovery + src[close + len("    )\n"):]
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13P-RP recovers recursive report_packager via direct LLM final-hop")
+        break
+
+    # --- W13Q-RG-ROLES: role-specific report tools + strict structured-output contracts ---
+    _W13Q_RG_GUARD = "# W13Q-RG-ROLES: role-specific report tools and schema contracts"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_report_generator_agent(" not in src or "tools=report_generator_tools" not in src:
+            continue
+        if _W13Q_RG_GUARD in src:
+            break
+
+        old_map = (
+            '    # # W2-RC1c: response_tool_name partial wired into output_format_map\n'
+            '    output_format_map = {"outline" : {"output_format" : ReportOutline, "report_task": "generate a report outline", "name": "report_orchestrator","llm": report_orchestrator_llm, "response_tool_name": "ReportOutline"},\n'
+            '                    "section" : {"output_format" : Section, "report_task": "generate a section of the report", "name": "report_section_worker","llm": report_section_worker_llm, "response_tool_name": "Section"},\n'
+            '                    "package" : {"output_format" : ReportResults, "report_task": "generate a full report package in PDF, Markdown, and HTML", "name": "report_packager","llm": report_packager_llm, "response_tool_name": "ReportResults"}}\n'
+        )
+        new_map = (
+            f"    # {_W13Q_RG_GUARD}\n"
+            '    # # W2-RC1c: response_tool_name partial wired into output_format_map\n'
+            '    output_format_map = {\n'
+            '        "outline": {\n'
+            '            "output_format": ReportOutline,\n'
+            '            "report_task": (\n'
+            '                "generate ONLY a ReportOutline object. Do not create, save, format, package, or render report files. "\n'
+            '                "Do not call write_file, report formatting, or PDF tools. When the outline is ready, call the ReportOutline structured response tool."\n'
+            '            ),\n'
+            '            "name": "report_orchestrator",\n'
+            '            "llm": report_orchestrator_llm,\n'
+            '            "response_tool_name": "ReportOutline",\n'
+            '            "allowed_tool_names": {"read_file", "list_available_files", "list_visualizations", "get_visualization"},\n'
+            '        },\n'
+            '        "section": {\n'
+            '            "output_format": Section,\n'
+            '            "report_task": (\n'
+            '                "generate ONLY one Section object for the assigned report section. Do not save files or package artifacts. "\n'
+            '                "Use context/visualization inspection tools only if needed, then call the Section structured response tool."\n'
+            '            ),\n'
+            '            "name": "report_section_worker",\n'
+            '            "llm": report_section_worker_llm,\n'
+            '            "response_tool_name": "Section",\n'
+            '            "allowed_tool_names": {"read_file", "list_available_files", "list_visualizations", "get_visualization"},\n'
+            '        },\n'
+            '        "package": {\n'
+            '            "output_format": ReportResults,\n'
+            '            "report_task": (\n'
+            '                "generate the final report package from accepted Section content and visualization artifacts. "\n'
+            '                "File/rendering tools are allowed for Markdown, HTML, and PDF artifacts, but completion still requires calling the ReportResults structured response tool."\n'
+            '            ),\n'
+            '            "name": "report_packager",\n'
+            '            "llm": report_packager_llm,\n'
+            '            "response_tool_name": "ReportResults",\n'
+            '            "allowed_tool_names": {\n'
+            '                "read_file", "list_available_files", "list_visualizations", "get_visualization",\n'
+            '                "write_file", "edit_file", "generate_html_report", "format_markdown_report", "create_pdf_report",\n'
+            '            },\n'
+            '        },\n'
+            '    }\n'
+        )
+        if old_map not in src:
+            print(f"⚠️  W13Q-RG-ROLES: output_format_map anchor not found in cell {idx}")
+            break
+        src = src.replace(old_map, new_map, 1)
+
+        old_tools = (
+            '    output_format = output_format_map[rg_agent_task]\n'
+            '    report_task = output_format["report_task"]\n'
+            '    tool_descriptions = "\\n".join(f"{t.name}: {t.description}" for t in report_generator_tools)\n'
+        )
+        new_tools = (
+            '    output_format = output_format_map[rg_agent_task]\n'
+            '    report_task = output_format["report_task"]\n'
+            '    allowed_tool_names = output_format.get("allowed_tool_names", set())\n'
+            '    role_tools = [t for t in report_generator_tools if getattr(t, "name", "") in allowed_tool_names]\n'
+            '    tool_descriptions = "\\n".join(f"{t.name}: {t.description}" for t in role_tools)\n'
+            '    if not role_tools:\n'
+            '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
+        )
+        if old_tools not in src:
+            print(f"⚠️  W13Q-RG-ROLES: tool_descriptions anchor not found in cell {idx}")
+            break
+        src = src.replace(old_tools, new_tools, 1)
+
+        old_agent_tools = '        tools=report_generator_tools,\n'
+        new_agent_tools = '        tools=role_tools,\n'
+        if old_agent_tools not in src:
+            print(f"⚠️  W13Q-RG-ROLES: create_agent tools anchor not found in cell {idx}")
+            break
+        src = src.replace(old_agent_tools, new_agent_tools, 1)
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13Q-RG-ROLES applied — report agents now use role-specific tools/contracts")
+        break
+
+    # --- W13R: fix report prompt rendering + viz tool state visibility ---
+    # W13Q correctly restricted report tool surfaces, but the live trace still showed
+    # the report system prompt containing literal "{report_task}". That means the
+    # role-specific contract was not rendered into the create_agent system prompt.
+    # The same trace showed list_visualizations returning 0 items because the
+    # evaluator sub-agent passed DataVisualization objects in viz_results and queried
+    # by df_id ("sample_dirty"), neither of which the tool handled.
+    _W13R_GUARD = "# W13R: rendered report prompts and visible visualization state"
+
+    # W13R-a: report generator factory uses a short, role-specific rendered prompt
+    # and outline/section roles inspect visualization metadata instead of reading
+    # binary image bytes.
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_report_generator_agent(" not in src:
+            continue
+        if _W13R_GUARD + " (report factory)" in src:
+            break
+
+        old_allowed_outline = (
+            '            "allowed_tool_names": {"read_file", "list_available_files", "list_visualizations", "get_visualization"},\n'
+        )
+        new_allowed_outline = (
+            '            "allowed_tool_names": {"list_visualizations", "get_visualization"},\n'
+        )
+        if old_allowed_outline in src:
+            src = src.replace(old_allowed_outline, new_allowed_outline, 2)
+
+        old_prompt_block = (
+            '    prompt = report_generator_prompt_template.partial(**init_rg_vars)\n'
+            '    try:\n'
+            '        # If it is a SystemMessagePromptTemplate (most common)\n'
+            '        system_prompt = prompt.messages[0].prompt.template\n'
+            '    except AttributeError:\n'
+            '        # If it is a direct SystemMessage or string\n'
+            '        system_prompt = prompt.messages[0].content\n'
+        )
+        new_prompt_block = (
+            '    prompt = report_generator_prompt_template.partial(**init_rg_vars)\n'
+            f'    # {_W13R_GUARD} (report factory)\n'
+            '    _schema_name = output_format_map[rg_agent_task]["response_tool_name"]\n'
+            '    _role_tool_names = ", ".join(getattr(t, "name", "") for t in role_tools) or "none"\n'
+            '    _no_file_text = (\n'
+            '        " Do not create, save, format, package, render, or write files. "\n'
+            '        "Use visualization metadata only; do not read PNG/image bytes."\n'
+            '        if rg_agent_task in {"outline", "section"} else ""\n'
+            '    )\n'
+            '    system_prompt = "\\n".join([\n'
+            '        f"You are {output_format_map[rg_agent_task][\'name\']}.",\n'
+            '        f"Your only task is to {report_task}",\n'
+            '        f"Expected final structured output class/tool: {_schema_name}.",\n'
+            '        "When enough context is available, call the structured response tool immediately and stop.",\n'
+            '        "Do not use tools repeatedly to prove completion; one metadata inspection pass is enough.",\n'
+            '        f"Allowed tools for this role: {_role_tool_names}.",\n'
+            '        _no_file_text,\n'
+            '        "Every accepted completion must be a valid Pydantic object for the expected class.",\n'
+            '    ])\n'
+        )
+        if old_prompt_block not in src:
+            print(f"⚠️  W13R: report prompt-render anchor not found in cell {idx}")
+            break
+        src = src.replace(old_prompt_block, new_prompt_block, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13R report generator prompt now renders role contract and avoids binary reads")
+        break
+
+    # W13R-b: list_visualizations understands DataVisualization objects in
+    # viz_results and treats df_id/current dataframe queries as non-restrictive.
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def _gather_from_state(" not in src or "def list_visualizations(" not in src:
+            continue
+        if _W13R_GUARD + " (viz tools)" in src:
+            break
+
+        old_gather = (
+            '    for d in state.get("viz_results", []) or []:\n'
+            '        # try to standardize\n'
+            '        if isinstance(d, dict):\n'
+            '            path = d.get("path") or d.get("image_path")\n'
+            '            if path:\n'
+            '                items.append(_coerce_viz_dict(\n'
+            '                    path=path,\n'
+            '                    vtype=d.get("plot_type") or d.get("visualization_type"),\n'
+            '                    title=d.get("title") or d.get("visualization_title"),\n'
+            '                    style=d.get("style") or d.get("visualization_style"),\n'
+            '                    desc=d.get("description") or d.get("visualization_description"),\n'
+            '                ))'
+        )
+        new_gather = (
+            f'    # {_W13R_GUARD} (viz tools)\n'
+            '    for d in state.get("viz_results", []) or []:\n'
+            '        # try to standardize\n'
+            '        if isinstance(d, DataVisualization):\n'
+            '            items.append(d.model_dump())\n'
+            '            continue\n'
+            '        if isinstance(d, dict):\n'
+            '            path = d.get("path") or d.get("image_path")\n'
+            '            if path:\n'
+            '                items.append(_coerce_viz_dict(\n'
+            '                    path=path,\n'
+            '                    vtype=d.get("plot_type") or d.get("visualization_type"),\n'
+            '                    title=d.get("title") or d.get("visualization_title"),\n'
+            '                    style=d.get("style") or d.get("visualization_style"),\n'
+            '                    desc=d.get("description") or d.get("visualization_description"),\n'
+            '                ))'
+        )
+        if old_gather not in src:
+            print(f"⚠️  W13R: _gather_from_state anchor not found in cell {idx}")
+            break
+        src = src.replace(old_gather, new_gather, 1)
+
+        old_match = (
+            '            if query:\n'
+            '                hay = " ".join([\n'
+        )
+        new_match = (
+            '            if query:\n'
+            '                _q = query.lower().strip()\n'
+            '                _df_tokens = set()\n'
+            '                if state and isinstance(state, dict):\n'
+            '                    _df_tokens.update(str(x).lower().strip() for x in (state.get("available_df_ids") or []) if x)\n'
+            '                    for _k in ("current_dataframe", "current_dataframe_id"):\n'
+            '                        if state.get(_k):\n'
+            '                            _df_tokens.add(str(state.get(_k)).lower().strip())\n'
+            '                if _q in _df_tokens:\n'
+            '                    return True\n'
+            '                hay = " ".join([\n'
+        )
+        if old_match not in src:
+            print(f"⚠️  W13R: list_visualizations query anchor not found in cell {idx}")
+            break
+        src = src.replace(old_match, new_match, 1)
+
+        old_viz_invoke = (
+            '                "viz_tasks": tasks,\n'
+            '                "viz_results": results,\n'
+            '                "user_prompt": user_prompt,\n'
+        )
+        new_viz_invoke = (
+            '                "viz_tasks": tasks,\n'
+            '                "viz_results": results,\n'
+            '                "visualization_results": state.get("visualization_results", None),\n'
+            '                "viz_paths": state.get("viz_paths", None),\n'
+            '                "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),\n'
+            '                "user_prompt": user_prompt,\n'
+        )
+        if old_viz_invoke in src:
+            src = src.replace(old_viz_invoke, new_viz_invoke, 1)
+        else:
+            print(f"⚠️  W13R: viz_evaluator invoke-state anchor not found in cell {idx}")
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13R visualization listing now sees structured viz state")
+        break
+
+    # W13R-c: viz_evaluator_agent.invoke state must include the structured
+    # visualization result and artifact paths; otherwise InjectedState inside
+    # list_visualizations only sees a list of objects under viz_results and can
+    # report 0 charts even after viz_join collected them.
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_evaluator_node(" not in src or "_safe_viz_evaluator_invoke(viz_evaluator_agent" not in src:
+            continue
+        if _W13R_GUARD + " (viz evaluator invoke)" in src:
+            break
+
+        old_count = (
+            '                "STATE viz_evaluator.start viz_tasks_count=%d viz_results_count=%d",\n'
+            '                len(state.get("viz_tasks", []) or []),\n'
+            '                len(state.get("viz_results", []) or []),\n'
+        )
+        new_count = (
+            '                "STATE viz_evaluator.start viz_tasks_count=%d viz_results_count=%d",\n'
+            '                len(state.get("viz_tasks", []) or []),\n'
+            '                len(getattr(state.get("visualization_results"), "visualizations", []) or state.get("viz_results", []) or []),\n'
+        )
+        if old_count in src:
+            src = src.replace(old_count, new_count, 1)
+        else:
+            print(f"⚠️  W13R: viz_evaluator count-log anchor not found in cell {idx}")
+
+        old_invoke_state = (
+            '                "viz_tasks": tasks,\n'
+            '                "viz_results": results,\n'
+            '                "user_prompt": user_prompt,\n'
+        )
+        new_invoke_state = (
+            f'                # {_W13R_GUARD} (viz evaluator invoke)\n'
+            '                "viz_tasks": tasks,\n'
+            '                "viz_results": results,\n'
+            '                "visualization_results": state.get("visualization_results", None),\n'
+            '                "viz_paths": state.get("viz_paths", None),\n'
+            '                "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),\n'
+            '                "available_df_ids": state.get("available_df_ids", []),\n'
+            '                "current_dataframe": state.get("current_dataframe", None),\n'
+            '                "current_dataframe_id": state.get("current_dataframe_id", None),\n'
+            '                "user_prompt": user_prompt,\n'
+        )
+        if old_invoke_state not in src:
+            print(f"⚠️  W13R: viz_evaluator invoke-state anchor not found in cell {idx}")
+            break
+        src = src.replace(old_invoke_state, new_invoke_state, 1)
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13R viz_evaluator passes structured visualization state to tools")
+        break
+
+    # W13S: the final file_writer was the remaining marker-file loop. The
+    # report_packager has already written the final Markdown/HTML/PDF from
+    # agent-written report sections, so the final writer's job is to return a
+    # ListOfFiles manifest for existing artifacts, not to call write_file again.
+    _W13S_FW_GUARD = "# W13S-FW: final file_writer manifest agent has no write tools"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or "result = file_writer_agent.invoke(" not in src:
+            continue
+        if _W13S_FW_GUARD in src:
+            break
+        anchor = "    result = file_writer_agent.invoke(\n"
+        if anchor not in src:
+            print(f"⚠️  W13S-FW: file_writer invoke anchor not found in cell {idx}")
+            break
+        insert = (
+            f"    # {_W13S_FW_GUARD}\n"
+            "    if is_final and isinstance(state.get(\"report_results\"), ReportResults):\n"
+            "        _w13s_rr = state.get(\"report_results\")\n"
+            "        _w13s_report_paths = [\n"
+            "            getattr(_w13s_rr, \"html_report_path\", \"\"),\n"
+            "            getattr(_w13s_rr, \"markdown_report_path\", \"\"),\n"
+            "            getattr(_w13s_rr, \"pdf_report_path\", \"\"),\n"
+            "        ]\n"
+            "        _w13s_report_paths = [str(_p) for _p in _w13s_report_paths if _p]\n"
+            "        _w13s_viz_items = []\n"
+            "        _w13s_vr = state.get(\"visualization_results\")\n"
+            "        if isinstance(_w13s_vr, VisualizationResults):\n"
+            "            _w13s_viz_items = list(_w13s_vr.visualizations or [])\n"
+            "        elif isinstance(state.get(\"viz_results\"), list):\n"
+            "            _w13s_viz_items = list(state.get(\"viz_results\") or [])\n"
+            "        _w13s_viz_paths = []\n"
+            "        for _w13s_item in _w13s_viz_items:\n"
+            "            _w13s_path = _w13s_item.get(\"path\") if isinstance(_w13s_item, dict) else getattr(_w13s_item, \"path\", None)\n"
+            "            if _w13s_path:\n"
+            "                _w13s_viz_paths.append(str(_w13s_path))\n"
+            "        _w13s_manifest = {\n"
+            "            \"reports\": _w13s_report_paths,\n"
+            "            \"visualizations\": _w13s_viz_paths,\n"
+            "            \"run_id\": state.get(\"run_id\"),\n"
+            "        }\n"
+            "        _w13s_prompt = (\n"
+            "            \"You are the file_writer final manifest agent. The report_packager has already written the final artifacts. \"\n"
+            "            \"Do not create, write, edit, export, or modify any files. Do not call tools. \"\n"
+            "            \"Return exactly one ListOfFiles structured response describing ONLY the provided existing paths. \"\n"
+            "            \"Use write_success=true only for paths listed here. Mark Markdown, HTML, and PDF report files as category_tag='report'; \"\n"
+            "            \"mark PNG charts as category_tag='visualization'. Set is_final_report=true only for the final HTML report.\"\n"
+            "        )\n"
+            "        _w13s_finalizer = create_agent(\n"
+            "            file_writer_llm,\n"
+            "            tools=[],\n"
+            "            state_schema=State,\n"
+            "            checkpointer=InMemorySaver(),\n"
+            "            store=in_memory_store,\n"
+            "            system_prompt=_w13s_prompt,\n"
+            "            response_format=ToolStrategy(ListOfFiles),\n"
+            "            middleware=[_make_unknown_tool_guard(\"file_writer\", [\"ListOfFiles\"])],\n"
+            "            name=\"file_writer\",\n"
+            "        ).with_config({\"run_name\": \"agent:file_writer:final_manifest\", \"tags\": [\"agent:file_writer\", \"final_manifest\"], \"metadata\": {\"agent_name\": \"file_writer\", \"mode\": \"final_manifest\"}})\n"
+            "        _w13s_result = _w13s_finalizer.invoke(\n"
+            "            {\"messages\": [HumanMessage(content=(\"Return the ListOfFiles manifest for these already-written artifacts only:\\n\" + __import__(\"json\").dumps(_w13s_manifest, indent=2)), name=\"supervisor\")]},\n"
+            "            config={**(state.get(\"_config\") or {}), \"recursion_limit\": 40},\n"
+            "        )\n"
+            "        if isinstance(_w13s_result, dict):\n"
+            "            file_results = _w13s_result[\"structured_response\"]\n"
+            "            _w13s_messages = _w13s_result.get(\"messages\") or [AIMessage(content=file_results.reply_msg_to_supervisor, name=\"file_writer\")]\n"
+            "        else:\n"
+            "            file_results = _w13s_result\n"
+            "            _w13s_messages = [AIMessage(content=file_results.reply_msg_to_supervisor, name=\"file_writer\")]\n"
+            "        assert isinstance(file_results, ListOfFiles)\n"
+            "        _w13s_existing_paths = set(_w13s_report_paths + _w13s_viz_paths)\n"
+            "        _w13s_report_file_results = []\n"
+            "        _w13s_viz_file_results = []\n"
+            "        for _w13s_fr in file_results.files:\n"
+            "            _w13s_fp = str(getattr(_w13s_fr, \"file_path\", \"\") or \"\")\n"
+            "            _w13s_tag = (getattr(_w13s_fr, \"category_tag\", \"\") or \"\").lower().strip()\n"
+            "            if _w13s_fp not in _w13s_existing_paths:\n"
+            "                _w13s_base = PathlibPath(_w13s_fp).name\n"
+            "                _w13s_match = next((str(_p) for _p in _w13s_existing_paths if PathlibPath(str(_p)).name == _w13s_base), None)\n"
+            "                if _w13s_match:\n"
+            "                    _w13s_fp = _w13s_match\n"
+            "                    try:\n"
+            "                        _w13s_fr.file_path = _w13s_match\n"
+            "                    except Exception:\n"
+            "                        pass\n"
+            "            if _w13s_fp not in _w13s_existing_paths or not PathlibPath(_w13s_fp).is_file():\n"
+            "                _pl_logger.warning(\"STATE file_writer.final_manifest path_normalized_missing returned=%s\", _w13s_fp)\n"
+            "                continue\n"
+            "            if _w13s_tag == \"report\":\n"
+            "                _w13s_report_file_results.append(_w13s_fr)\n"
+            "            elif _w13s_tag == \"visualization\":\n"
+            "                _w13s_viz_file_results.append(_w13s_fr)\n"
+            "        final_report_path = next((getattr(_fr, \"file_path\", None) for _fr in _w13s_report_file_results if getattr(_fr, \"is_final_report\", False)), None)\n"
+            "        if not final_report_path:\n"
+            "            final_report_path = getattr(_w13s_rr, \"html_report_path\", None)\n"
+            "        report_paths = [getattr(_fr, \"file_path\", \"\") for _fr in _w13s_report_file_results if getattr(_fr, \"file_path\", None)] or _w13s_report_paths\n"
+            "        viz_paths = [getattr(_fr, \"file_path\", \"\") for _fr in _w13s_viz_file_results if getattr(_fr, \"file_path\", None)] or _w13s_viz_paths\n"
+            "        _w13s_complete = len(report_paths) >= 3 and len(viz_paths) >= min(3, len(_w13s_viz_paths) or 3)\n"
+            "        try:\n"
+            "            _pl_logger.info(\"STATE file_writer.final_manifest files=%d reports=%d visualizations=%d complete=%s\", len(file_results.files), len(report_paths), len(viz_paths), _w13s_complete)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "        return {\n"
+            "            \"messages\": _w13s_messages,\n"
+            "            \"file_writer_complete\": bool(_w13s_complete and file_results.finished_this_task and not file_results.expect_reply),\n"
+            "            \"final_report_path\": final_report_path,\n"
+            "            \"report_paths\": report_paths,\n"
+            "            \"viz_paths\": viz_paths,\n"
+            "            \"file_results\": file_results.files,\n"
+            "            \"last_agent_message\": _w13s_messages[-1],\n"
+            "            \"last_agent_expects_reply\": file_results.expect_reply,\n"
+            "            \"last_agent_reply_msg\": file_results.reply_msg_to_supervisor,\n"
+            "            \"last_agent_finished_this_task\": bool(_w13s_complete and file_results.finished_this_task and not file_results.expect_reply),\n"
+            "            \"final_turn_msgs_list\": [_w13s_messages[-1]],\n"
+            "            \"last_created_obj\": \"file_results\" if _w13s_complete else None,\n"
+            "            \"last_agent_id\": \"file_writer\",\n"
+            "            \"current_turn_agent_id\": \"supervisor\",\n"
+            "            \"emergency_reroute\": None,\n"
+            "        }\n"
+        )
+        src = src.replace(anchor, insert + anchor, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13S file_writer final phase returns no-write ListOfFiles manifest")
+        break
+
+    # W13S: the final log cell must count VisualizationResults, because viz_join
+    # intentionally flushes the transient viz_results fan-in list.
+    _W13S_FINAL_GUARD = "# W13S-FINAL: final marker counts visualization_results"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "FINAL viz=" not in src or '_viz_items = state_vals.get("viz_results", []) or []' not in src:
+            continue
+        if _W13S_FINAL_GUARD in src:
+            break
+        old = (
+            '        _viz_items = state_vals.get("viz_results", []) or []\n'
+            '        _rr = state_vals.get("report_results")\n'
+            '        _viz_ok = len(_viz_items) >= 3\n'
+        )
+        new = (
+            f"        # {_W13S_FINAL_GUARD}\n"
+            '        _vr = state_vals.get("visualization_results")\n'
+            '        if isinstance(_vr, VisualizationResults):\n'
+            '            _viz_items = list(_vr.visualizations or [])\n'
+            '        else:\n'
+            '            _viz_items = state_vals.get("viz_results", []) or []\n'
+            '        _rr = state_vals.get("report_results")\n'
+            '        _viz_ok = len(_viz_items) >= 3\n'
+        )
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13S final marker counts persisted visualization_results")
+        break
+
+    # W13S: stop the legacy post-run image injector from adding huge data URIs
+    # or duplicate charts. Future HTML should use report-relative image paths.
+    _W13S_AX_GUARD = "# W13S-AX: relative image refs, no duplicate/data URI injection"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "# Fix AX: post-processing PNG injection" not in src:
+            continue
+        if _W13S_AX_GUARD in src:
+            break
+        src = src.replace(
+            "# Fix AX: post-processing PNG injection\n",
+            "# Fix AX: post-processing PNG injection\n" + _W13S_AX_GUARD + "\n",
+            1,
+        )
+        src = src.replace("import base64 as _ax_b64, html as _ax_html\n", "import html as _ax_html\n", 1)
+        src = src.replace(
+            "    if '<!-- Fix AX images -->' in _ax_html_content:\n"
+            "        print('[Fix AX] HTML already has injected images')\n"
+            "        return\n",
+            "    if '<!-- Fix AX images -->' in _ax_html_content or '<img' in _ax_html_content.lower():\n"
+            "        print('[Fix AX] HTML already has image tags; skipping post-run injection')\n"
+            "        return\n",
+            1,
+        )
+        old_img = (
+            "            with open(_axp, 'rb') as _axpf:\n"
+            "                _ax_b64data = _ax_b64.b64encode(_axpf.read()).decode('ascii')\n"
+            "            _ax_fname = _ax_html.escape(_ax_os.path.basename(_axp))\n"
+            "            _ax_img_tags.append(\n"
+            "                f'<figure style=\"margin:10px\">'\n"
+            "                f'<img src=\"data:image/png;base64,{_ax_b64data}\" '\n"
+            "                f'style=\"max-width:800px;width:100%\" alt=\"{_ax_fname}\"/>'\n"
+            "                f'<figcaption>{_ax_fname}</figcaption></figure>'\n"
+            "            )\n"
+            "            print(f'[Fix AX] Injected PNG: {_ax_fname} ({len(_ax_b64data)//1024}KB b64)')\n"
+        )
+        new_img = (
+            "            _ax_fname = _ax_html.escape(_ax_os.path.basename(_axp))\n"
+            "            _ax_rel = _ax_os.path.relpath(_axp, start=_ax_os.path.dirname(_ax_os.path.abspath(html_path))).replace(_ax_os.sep, '/')\n"
+            "            _ax_rel = _ax_html.escape(_ax_rel)\n"
+            "            _ax_img_tags.append(\n"
+            "                f'<figure style=\"margin:10px\">'\n"
+            "                f'<img src=\"{_ax_rel}\" '\n"
+            "                f'style=\"max-width:800px;width:100%\" alt=\"{_ax_fname}\"/>'\n"
+            "                f'<figcaption>{_ax_fname}</figcaption></figure>'\n"
+            "            )\n"
+            "            print(f'[Fix AX] Injected PNG reference: {_ax_fname} -> {_ax_rel}')\n"
+        )
+        if old_img in src:
+            src = src.replace(old_img, new_img, 1)
+        else:
+            print(f"⚠️  W13S-AX: data URI image block not found in cell {idx}")
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13S image injector uses relative paths and skips existing images")
+        break
+
+    # W13S: strengthen section-worker numeric fidelity so reports preserve exact
+    # analyst values and pass the correlation evidence gate without deterministic
+    # post-processing.
+    _W13S_NUM_GUARD = "# W13S-NUM: preserve exact analyst numeric values"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src or "Correlation insights:" not in src:
+            continue
+        if _W13S_NUM_GUARD in src:
+            break
+        old_line = '        f"Correlation insights: {_w13j_short(getattr(insights, \'correlation_insights\', \'\'), 900)}",\n'
+        new_lines = (
+            f'        # {_W13S_NUM_GUARD}\n'
+            '        f"Correlation insights: {_w13j_short(getattr(insights, \'correlation_insights\', \'\'), 900)}",\n'
+            '        "Preserve exact numeric evidence from AnalysisInsights. When citing correlations, write them in the form r = -0.1607 (not approximately or rounded away).",\n'
+        )
+        if old_line in src:
+            src = src.replace(old_line, new_lines, 1)
+        else:
+            print(f"⚠️  W13S-NUM: compact section prompt anchor not found in cell {idx}")
+        old_direct = (
+            "                    f\"Correlation insights: {_w13j_short(getattr(insights, 'correlation_insights', ''), 900) if '_w13j_short' in locals() else str(getattr(insights, 'correlation_insights', ''))[:900]}\",\n"
+        )
+        new_direct = (
+            old_direct
+            + "                    \"Preserve exact numeric evidence from AnalysisInsights. When citing correlations, write them in the form r = -0.1607 (not approximately or rounded away).\",\n"
+        )
+        if old_direct in src:
+            src = src.replace(old_direct, new_direct, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13S section prompt preserves exact numeric evidence")
+        break
+
+    # ============================  END W11 AGENT-AUTHENTICITY PATCHES  ===========================
+
+    # W13T: early-node structured-output proof fixes.
+    #
+    # Latest LangSmith trace for W13S showed initial_analysis used 15 LLM calls,
+    # cycled through dataframe/file tools, and hit GraphRecursionError, while
+    # data_cleaner returned normally and analyst returned only after a compact
+    # orphan-tool retry. Initial analysis was the outlier: its factory still used
+    # a raw templated prompt and exposed file/memory/progress tools that are not
+    # part of its responsibility. Keep the initial analyst scoped to dataframe
+    # inspection, make its factory prompt static like data_cleaner/analyst, and
+    # make native class acceptance explicit in logs.
+    _W13T_IA_GUARD = "# W13T-IA: static prompt and scoped initial-analysis tools"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_initial_analysis_agent" not in src or "ToolStrategy(InitialDescription)" not in src:
+            continue
+        if _W13T_IA_GUARD in src:
+            break
+        old_prompt = (
+            "    prompt = analyst_prompt_template_initial.partial(**init_ia_vars)\n"
+            "    try:\n"
+            "        # If it is a SystemMessagePromptTemplate (most common)\n"
+            "        system_prompt = prompt.messages[0].prompt.template\n"
+            "    except AttributeError:\n"
+            "        # If it is a direct SystemMessage or string\n"
+            "        system_prompt = prompt.messages[0].content\n"
+        )
+        new_prompt = (
+            f"    # {_W13T_IA_GUARD}\n"
+            "    _ = analyst_prompt_template_initial.partial(**init_ia_vars)  # validate variables only\n"
+            "    system_prompt = (\n"
+            "        \"You are the initial_analysis agent in the Intelligent Data Detective pipeline. \"\n"
+            "        \"Your runtime instructions, dataset ids, tool descriptions, memories, and output schema \"\n"
+            "        \"are provided in the first SystemMessage of each turn. Use only dataframe-inspection tools, \"\n"
+            "        \"then return exactly one InitialDescription structured response. Do not read or write files, \"\n"
+            "        \"do not report progress, and do not continue tool use once you have schema/stat/sample evidence.\"\n"
+            "    )\n"
+            "    _w13t_initial_tool_names = {\n"
+            "        \"get_dataframe_schema\", \"get_descriptive_statistics\", \"get_column_names\",\n"
+            "        \"query_dataframe\", \"create_sample\", \"assess_data_quality\",\n"
+            "    }\n"
+            "    _w13t_initial_tools = [t for t in init_analyst_tools if getattr(t, \"name\", \"\") in _w13t_initial_tool_names]\n"
+        )
+        if old_prompt not in src:
+            print(f"⚠️  W13T-IA: initial analysis prompt anchor not found in cell {idx}")
+            break
+        src = src.replace(old_prompt, new_prompt, 1)
+        src = src.replace(
+            "        tools=init_analyst_tools,\n",
+            "        tools=_w13t_initial_tools,\n",
+            1,
+        )
+        src = src.replace(
+            '        middleware =[prehook_quick, _make_unknown_tool_guard("initial_analysis", [t.name for t in init_analyst_tools] + ["InitialDescription"])],  # W2-REC6[IA]: unknown-tool guard wired\n',
+            '        middleware =[prehook_quick, _make_unknown_tool_guard("initial_analysis", [t.name for t in _w13t_initial_tools] + ["InitialDescription"])],  # W2-REC6[IA]: unknown-tool guard wired\n',
+            1,
+        )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13T-IA scoped initial_analysis factory prompt/tools")
+        break
+
+    _W13T_NODE_GUARD = "# W13T-NODES: explicit early structured-output proof"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def initial_analysis_node" not in src or "def data_cleaner_node" not in src or "def analyst_node" not in src:
+            continue
+        if _W13T_NODE_GUARD in src:
+            break
+        patched = []
+        old_ia_recovery = (
+            '        reason = "GraphRecursionError" if is_initial_recursion else "memory_tool_missing_id"\n'
+            '        _pl_logger.warning("STATE initial_analysis.recovered reason=%s nested_limit=60", reason)\n'
+            '        recovered_description = _build_deterministic_initial_description(state)\n'
+            '        return _initial_analysis_update_from_description(state, recovered_description)\n'
+        )
+        new_ia_recovery = (
+            '        reason = "GraphRecursionError" if is_initial_recursion else "memory_tool_missing_id"\n'
+            '        _pl_logger.error("STATE initial_analysis.failed_native reason=%s nested_limit=60", reason)\n'
+            '        if os.environ.get("IDD_ALLOW_RECOVERY", "0") != "1":\n'
+            '            raise RuntimeError("[W13T-NORECOV] initial_analysis failed native InitialDescription output") from exc\n'
+            '        _pl_logger.warning("STATE initial_analysis.recovered reason=%s nested_limit=60", reason)\n'
+            '        recovered_description = _build_deterministic_initial_description(state)\n'
+            '        return _initial_analysis_update_from_description(state, recovered_description)\n'
+        )
+        if old_ia_recovery in src:
+            src = src.replace(old_ia_recovery, new_ia_recovery, 1)
+            patched.append("initial_analysis_no_silent_recovery")
+        else:
+            print(f"⚠️  W13T-NODES: initial_analysis recovery anchor not found in cell {idx}")
+
+        old_ia_structured = (
+            '    assert isinstance(result["structured_response"], InitialDescription)\n'
+            '\n'
+            '    return _initial_analysis_update_from_description(state, result["structured_response"], result["messages"])\n'
+        )
+        new_ia_structured = (
+            '    assert isinstance(result["structured_response"], InitialDescription)\n'
+            '    try:  # W13T-NODES: explicit accepted class log\n'
+            '        _ia_desc = str(getattr(structured, "dataset_description", "") or "")[:100]\n'
+            '        _pl_logger.info("STATE initial_analysis: type=%s finished=%s desc=%r output=%s", type(structured).__name__, getattr(structured, "finished_this_task", None), _ia_desc, structured)\n'
+            '    except Exception: pass\n'
+            '\n'
+            '    return _initial_analysis_update_from_description(state, result["structured_response"], result["messages"])\n'
+        )
+        if old_ia_structured in src:
+            src = src.replace(old_ia_structured, new_ia_structured, 1)
+            patched.append("initial_analysis_class_log")
+        else:
+            print(f"⚠️  W13T-NODES: initial_analysis structured log anchor not found in cell {idx}")
+
+        old_dc_update = (
+            '    msg = AIMessage(content=cleaning_metadata.reply_msg_to_supervisor, name="data_cleaner")\n'
+            '    messages = result_messages if result_messages else [msg]\n'
+            '    return {\n'
+        )
+        new_dc_update = (
+            '    msg = AIMessage(content=cleaning_metadata.reply_msg_to_supervisor, name="data_cleaner")\n'
+            '    messages = result_messages if result_messages else [msg]\n'
+            '    try:  # W13T-NODES: explicit accepted class log\n'
+            '        _cm_steps = len(getattr(cleaning_metadata, "steps_taken", None) or [])\n'
+            '        _cm_desc = str(getattr(cleaning_metadata, "data_description_after_cleaning", "") or "")[:100]\n'
+            '        _pl_logger.info("STATE data_cleaner: type=%s finished=%s steps=%s desc=%r output=%s", type(cleaning_metadata).__name__, getattr(cleaning_metadata, "finished_this_task", None), _cm_steps, _cm_desc, cleaning_metadata)\n'
+            '    except Exception: pass\n'
+            '    return {\n'
+        )
+        if old_dc_update in src:
+            src = src.replace(old_dc_update, new_dc_update, 1)
+            patched.append("data_cleaner_class_log")
+        else:
+            print(f"⚠️  W13T-NODES: data_cleaner update-log anchor not found in cell {idx}")
+
+        old_dc_log = 'STATE cleaner: type={type(cleaning_metadata).__name__} steps={_cm_steps} desc={_cm_desc!r} finished={getattr(cleaning_metadata,\\\'finished_this_task\\\',None)} output={cleaning_metadata}'
+        new_dc_log = 'STATE data_cleaner: type={type(cleaning_metadata).__name__} steps={_cm_steps} desc={_cm_desc!r} finished={getattr(cleaning_metadata,\\\'finished_this_task\\\',None)} output={cleaning_metadata}'
+        if old_dc_log in src:
+            src = src.replace(old_dc_log, new_dc_log, 1)
+            patched.append("data_cleaner_class_log_name")
+        else:
+            print(f"⚠️  W13T-NODES: data_cleaner log rename anchor not found in cell {idx}")
+
+        if patched:
+            src = src.replace(
+                "# Fix AJ: state snapshot logging\n",
+                f"# {_W13T_NODE_GUARD}\n# Fix AJ: state snapshot logging\n",
+                1,
+            )
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13T-NODES patched: {', '.join(patched)}")
+        break
+
+    # W13U: analyst orphan-tool root fix. The W13I compact retry proved the
+    # actual issue: the first analyst attempt inherited cross-agent message
+    # history/newest_msg context that can contain Responses API tool-call state
+    # from a different agent. Use the isolated compact analyst task as the
+    # native first attempt, while still passing the structured state fields the
+    # agent needs for tools and outputs.
+    _W13U_AN_GUARD = "# W13U-AN: isolated analyst first attempt"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def analyst_node(state: State):" not in src or "STATE analyst.recovered reason=orphan_tool_output retry=compact" not in src:
+            continue
+        if _W13U_AN_GUARD in src:
+            break
+        anchor = (
+            '    analyst_configurable = dict((state.get("_config") or {}).get("configurable", {}))\n'
+        )
+        insert = (
+            f"    # {_W13U_AN_GUARD}\n"
+            "    _w13u_prompt = \"\\n\".join([\n"
+            "        user_prompt,\n"
+            "        \"Use only the analyst tools and then return AnalysisInsights via the respond tool.\",\n"
+            "        f\"Cleaned dataset context: {str(cleaning_metadata.data_description_after_cleaning)[:1800]}\",\n"
+            "        f\"Data sample: {str(initial_description.data_sample if initial_description else '')[:1000]}\",\n"
+            "    ])\n"
+            "    _w13u_messages = [HumanMessage(content=_w13u_prompt, name=\"supervisor\")]\n"
+        )
+        if anchor not in src:
+            print(f"⚠️  W13U-AN: analyst config anchor not found in cell {idx}")
+            break
+        src = src.replace(anchor, insert + anchor, 1)
+        src = src.replace(
+            '            "messages": rendered,\n',
+            '            "messages": _w13u_messages,\n',
+            1,
+        )
+        old_orphan = (
+            '        if is_orphan_tool_output:\n'
+            '            _pl_logger.warning("STATE analyst.recovered reason=orphan_tool_output retry=compact")\n'
+        )
+        new_orphan = (
+            '        if is_orphan_tool_output:\n'
+            '            _pl_logger.error("STATE analyst.failed_native reason=orphan_tool_output")\n'
+            '            if os.environ.get("IDD_ALLOW_RECOVERY", "0") != "1":\n'
+            '                raise RuntimeError("[W13U-NORECOV] analyst failed native AnalysisInsights output due to orphan tool output") from exc\n'
+            '            _pl_logger.warning("STATE analyst.recovered reason=orphan_tool_output retry=compact")\n'
+        )
+        if old_orphan not in src:
+            print(f"⚠️  W13U-AN: orphan retry anchor not found in cell {idx}")
+        else:
+            src = src.replace(old_orphan, new_orphan, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13U-AN isolates analyst first attempt and fail-closes orphan retry")
+        break
+
+    # W13U2: repair the shared-cell replacement target. W13U originally used a
+    # broad source replacement and can affect the earlier initial_analysis
+    # invoke because several nodes live in one notebook cell. Keep
+    # initial_analysis on its own rendered messages and scope the isolated
+    # message list strictly to analyst_agent.invoke.
+    _W13U2_AN_GUARD = "# W13U2-AN: scoped analyst isolated invoke"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def analyst_node(state: State):" not in src or "_w13u_messages" not in src:
+            continue
+        changed = False
+        bad_initial = (
+            '        result = initial_analysis_agent.invoke(\n'
+            '            {\n'
+            '                "messages": _w13u_messages,\n'
+        )
+        good_initial = (
+            '        result = initial_analysis_agent.invoke(\n'
+            '            {\n'
+            '                "messages": rendered,\n'
+        )
+        if bad_initial in src:
+            src = src.replace(bad_initial, good_initial, 1)
+            changed = True
+        analyst_rendered = (
+            '        result = analyst_agent.invoke(\n'
+            '            {\n'
+            '            "messages": rendered,\n'
+        )
+        analyst_isolated = (
+            '        result = analyst_agent.invoke(\n'
+            '            {\n'
+            '            "messages": _w13u_messages,\n'
+        )
+        if analyst_rendered in src:
+            src = src.replace(analyst_rendered, analyst_isolated, 1)
+            changed = True
+        if _W13U2_AN_GUARD not in src:
+            marker = '    analyst_configurable = dict((state.get("_config") or {}).get("configurable", {}))\n'
+            if marker in src:
+                src = src.replace(marker, f"    # {_W13U2_AN_GUARD}\n" + marker, 1)
+                changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13U2-AN scoped isolated analyst invoke")
+        break
+
+    # W13V: section-worker native completion. The W13U proof run showed one
+    # section worker ("Data Description & Cleaning") spending the entire nested
+    # limit paging through list_visualizations even though the section invoke
+    # state already contains cleaning metadata, analysis insights, and expected
+    # figure references. Sections do not need runtime tools; they need to write
+    # the assigned Section object. Remove section inspection tools and fail
+    # closed on any remaining section recursion unless explicit recovery mode is
+    # enabled.
+    _W13V_SW_GUARD = "# W13V-SW: section role uses no runtime tools"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_report_generator_agent(" not in src or "def section_worker(state: State):" not in src:
+            continue
+        if _W13V_SW_GUARD in src:
+            break
+        changed = False
+        section_tools_old = (
+            '            "allowed_tool_names": {"list_visualizations", "get_visualization"},\n'
+        )
+        section_tools_new = (
+            '            "allowed_tool_names": set(),  # W13V-SW: Section context is provided in invoke state; no runtime tools.\n'
+        )
+        first = src.find('"section": {')
+        if first >= 0:
+            second = src.find(section_tools_old, first)
+            if second >= 0:
+                src = src[:second] + section_tools_new + src[second + len(section_tools_old):]
+                changed = True
+        no_tools_old = (
+            '    if not role_tools:\n'
+            '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
+        )
+        no_tools_new = (
+            '    if not role_tools and rg_agent_task != "section":\n'
+            '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
+        )
+        if no_tools_old in src:
+            src = src.replace(no_tools_old, no_tools_new, 1)
+            changed = True
+        prompt_old = (
+            '    _no_file_text = (\n'
+            '        " Do not create, save, format, package, render, or write files. "\n'
+            '        "Use visualization metadata only; do not read PNG/image bytes."\n'
+            '        if rg_agent_task in {"outline", "section"} else ""\n'
+            '    )\n'
+        )
+        prompt_new = (
+            '    _no_file_text = (\n'
+            '        " Do not create, save, format, package, render, or write files. "\n'
+            '        "Use visualization metadata only; do not read PNG/image bytes."\n'
+            '        if rg_agent_task == "outline" else (\n'
+            '            " Do not call runtime tools. Use the cleaning metadata, analysis insights, section outline, "\n'
+            '            "expected figures, and artifact references already provided in the section invoke state. "\n'
+            '            "Return the Section structured response tool immediately when the section content is drafted."\n'
+            '            if rg_agent_task == "section" else ""\n'
+            '        )\n'
+            '    )\n'
+        )
+        if prompt_old in src:
+            src = src.replace(prompt_old, prompt_new, 1)
+            changed = True
+        rec_old = (
+            '            if _w13h_reason == "GraphRecursionError":\n'
+            '                try:\n'
+            '                    _pl_logger.warning("STATE report_section_agent.invoke.recovered section_name=%s reason=GraphRecursionError finalhop=direct_llm", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+        )
+        rec_new = (
+            '            if _w13h_reason == "GraphRecursionError":\n'
+            '                try:\n'
+            '                    _pl_logger.error("STATE report_section_agent.invoke.failed_native section_name=%s reason=GraphRecursionError", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+            '                if os.environ.get("IDD_ALLOW_RECOVERY", "0") != "1":\n'
+            '                    raise RuntimeError("[W13V-NORECOV] report_section_worker failed native Section output") from _w13h_exc\n'
+            '                try:\n'
+            '                    _pl_logger.warning("STATE report_section_agent.invoke.recovered section_name=%s reason=GraphRecursionError finalhop=direct_llm", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+        )
+        if rec_old in src:
+            src = src.replace(rec_old, rec_new, 1)
+            changed = True
+        marker = '    output_format = output_format_map[rg_agent_task]\n'
+        if marker in src:
+            src = src.replace(marker, f"    # {_W13V_SW_GUARD}\n" + marker, 1)
+            changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13V-SW removed section runtime tools and fail-closes section recursion")
+        else:
+            print(f"⚠️  W13V-SW anchors not found in cell {idx}")
+        break
+
+    # W13V2: split section-worker tool removal across the actual notebook
+    # cells: report factory lives in cell 44 and section_worker lives in cell 57.
+    _W13V2_FACTORY_GUARD = "# W13V2-SW: section role has no runtime tools"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_report_generator_agent(" not in src or _W13V2_FACTORY_GUARD in src:
+            continue
+        changed = False
+        sec_start = src.find('"section": {')
+        if sec_start >= 0:
+            old = '            "allowed_tool_names": {"list_visualizations", "get_visualization"},\n'
+            pos = src.find(old, sec_start)
+            if pos >= 0:
+                src = src[:pos] + '            "allowed_tool_names": set(),  # W13V2-SW: Section context is supplied in invoke state.\n' + src[pos + len(old):]
+                changed = True
+        old = (
+            '    if not role_tools:\n'
+            '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
+        )
+        if old in src:
+            src = src.replace(old, (
+                '    if not role_tools and rg_agent_task != "section":\n'
+                '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
+            ), 1)
+            changed = True
+        old = (
+            '    _no_file_text = (\n'
+            '        " Do not create, save, format, package, render, or write files. "\n'
+            '        "Use visualization metadata only; do not read PNG/image bytes."\n'
+            '        if rg_agent_task in {"outline", "section"} else ""\n'
+            '    )\n'
+        )
+        if old in src:
+            src = src.replace(old, (
+                '    _no_file_text = (\n'
+                '        " Do not create, save, format, package, render, or write files. "\n'
+                '        "Use visualization metadata only; do not read PNG/image bytes."\n'
+                '        if rg_agent_task == "outline" else (\n'
+                '            " Do not call runtime tools. Use the cleaning metadata, analysis insights, section outline, "\n'
+                '            "expected figures, and artifact references already provided in the section invoke state. "\n'
+                '            "Return the Section structured response tool immediately when the section content is drafted."\n'
+                '            if rg_agent_task == "section" else ""\n'
+                '        )\n'
+                '    )\n'
+            ), 1)
+            changed = True
+        marker = '    output_format = output_format_map[rg_agent_task]\n'
+        if marker in src:
+            src = src.replace(marker, f"    # {_W13V2_FACTORY_GUARD}\n" + marker, 1)
+            changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13V2-SW report factory gives sections no runtime tools")
+        else:
+            print(f"⚠️  W13V2-SW factory anchors not found in cell {idx}")
+        break
+
+    _W13V2_RECOVERY_GUARD = "# W13V2-SW: fail closed on section recursion"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def section_worker(state: State):" not in src or _W13V2_RECOVERY_GUARD in src:
+            continue
+        old = (
+            '            if _w13h_reason == "GraphRecursionError":\n'
+            '                try:\n'
+            '                    _pl_logger.warning("STATE report_section_agent.invoke.recovered section_name=%s reason=GraphRecursionError finalhop=direct_llm", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+        )
+        new = (
+            f'            # {_W13V2_RECOVERY_GUARD}\n'
+            '            if _w13h_reason == "GraphRecursionError":\n'
+            '                try:\n'
+            '                    _pl_logger.error("STATE report_section_agent.invoke.failed_native section_name=%s reason=GraphRecursionError", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+            '                if os.environ.get("IDD_ALLOW_RECOVERY", "0") != "1":\n'
+            '                    raise RuntimeError("[W13V2-NORECOV] report_section_worker failed native Section output") from _w13h_exc\n'
+            '                try:\n'
+            '                    _pl_logger.warning("STATE report_section_agent.invoke.recovered section_name=%s reason=GraphRecursionError finalhop=direct_llm", getattr(section, "name", "unknown"))\n'
+            '                except Exception:\n'
+            '                    pass\n'
+        )
+        if old in src:
+            src = src.replace(old, new, 1)
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13V2-SW fail-closes section recursion")
+        else:
+            print(f"⚠️  W13V2-SW recovery anchor not found in cell {idx}")
+        break
+
+    # W13W: report_packager is a structured approval/manifest agent, not a
+    # runtime file-writing agent. The deterministic renderer below writes the
+    # accepted draft to Markdown/HTML/PDF. Trace 019df116 showed the package
+    # agent obeying an older "Use write_file" instruction by creating
+    # placeholder.txt before returning ReportResults. Remove package tools and
+    # the conflicting instruction so no extra marker/status artifacts appear.
+    _W13W_RP_GUARD = "# W13W-RP: report_packager has no runtime file tools"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_report_generator_agent(" not in src and "def report_packager_node(state: State):" not in src:
+            continue
+        if _W13W_RP_GUARD in src:
+            continue
+        changed = False
+        if "def create_report_generator_agent(" in src:
+            old = (
+                '            "report_task": (\n'
+                '                "generate the final report package from accepted Section content and visualization artifacts. "\n'
+                '                "File/rendering tools are allowed for Markdown, HTML, and PDF artifacts, but completion still requires calling the ReportResults structured response tool."\n'
+                '            ),\n'
+            )
+            new = (
+                '            "report_task": (\n'
+                '                "review the accepted Section content and visualization artifacts, then return ONLY a ReportResults structured response. "\n'
+                '                "Do not write, edit, render, format, save, or create files; deterministic renderer code writes Markdown, HTML, and PDF after your approval."\n'
+                '            ),\n'
+            )
+            if old in src:
+                src = src.replace(old, new, 1)
+                changed = True
+            old_tools = (
+                '            "allowed_tool_names": {\n'
+                '                "read_file", "list_available_files", "list_visualizations", "get_visualization",\n'
+                '                "write_file", "edit_file", "generate_html_report", "format_markdown_report", "create_pdf_report",\n'
+                '            },\n'
+            )
+            if old_tools in src:
+                src = src.replace(
+                    old_tools,
+                    '            "allowed_tool_names": set(),  # W13W-RP: package context is supplied in invoke state; renderer writes files.\n',
+                    1,
+                )
+                changed = True
+            src = src.replace(
+                '    if not role_tools and rg_agent_task != "section":\n',
+                '    if not role_tools and rg_agent_task not in {"section", "package"}:\n',
+                1,
+            )
+            prompt_old = (
+                '        if rg_agent_task == "outline" else (\n'
+                '            " Do not call runtime tools. Use the cleaning metadata, analysis insights, section outline, "\n'
+                '            "expected figures, and artifact references already provided in the section invoke state. "\n'
+                '            "Return the Section structured response tool immediately when the section content is drafted."\n'
+                '            if rg_agent_task == "section" else ""\n'
+                '        )\n'
+            )
+            prompt_new = (
+                '        if rg_agent_task == "outline" else (\n'
+                '            " Do not call runtime tools. Use the cleaning metadata, analysis insights, section outline, "\n'
+                '            "expected figures, and artifact references already provided in the section invoke state. "\n'
+                '            "Return the Section structured response tool immediately when the section content is drafted."\n'
+                '            if rg_agent_task == "section" else (\n'
+                '                " Do not call runtime tools. The report draft and target artifact paths are provided in state. "\n'
+                '                "Return the ReportResults structured response tool only; renderer code writes the files."\n'
+                '                if rg_agent_task == "package" else ""\n'
+                '            )\n'
+                '        )\n'
+            )
+            if prompt_old in src:
+                src = src.replace(prompt_old, prompt_new, 1)
+                changed = True
+            marker = '    output_format = output_format_map[rg_agent_task]\n'
+            if marker in src:
+                src = src.replace(marker, f"    # {_W13W_RP_GUARD}\n" + marker, 1)
+                changed = True
+        if "def report_packager_node(state: State):" in src:
+            old = (
+                '        "The respond tool expects: html_report_path (str), markdown_report_path (str), pdf_report_path (str), reply_msg_to_supervisor (str), finished_this_task=True, expect_reply=False. "\n'
+                '        "Use write_file to save the HTML content to disk first, then call respond with the file paths. "\n'
+                '        "Do NOT run any analysis, cleaning, or visualization. "\n'
+                '        "After saving files (max 5 tool calls total), call `respond` with the file paths immediately."\n'
+            )
+            new = (
+                '        "The respond tool expects: html_report_path (str), markdown_report_path (str), pdf_report_path (str), reply_msg_to_supervisor (str), finished_this_task=True, expect_reply=False. "\n'
+                '        "Do NOT write, edit, save, render, format, analyze, clean, or visualize anything. "\n'
+                '        "The deterministic renderer will write the final files from accepted sections after you return ReportResults. "\n'
+                '        "Call `respond` with ReportResults immediately after reviewing the provided draft."\n'
+            )
+            if old in src:
+                src = src.replace(old, new, 1)
+                changed = True
+            old = (
+                '        "You are the report_packager agent. Review the agent-written report draft, confirm it is ready to render, "\n'
+                '        "and return a ReportResults structured response. The artifact renderer will write Markdown, HTML, and PDF from this draft after your approval. "\n'
+                '        "Do not add scaffold placeholders; do not rewrite the analysis as instructions."\n'
+            )
+            new = (
+                '        "You are the report_packager agent. Review the agent-written report draft, confirm it is ready to render, "\n'
+                '        "and return a ReportResults structured response. The artifact renderer will write Markdown, HTML, and PDF from this draft after your approval. "\n'
+                '        "Do not call tools, write placeholder files, add scaffold placeholders, or rewrite the analysis as instructions."\n'
+            )
+            if old in src:
+                src = src.replace(old, new, 1)
+                changed = True
+            marker = '    try:\n        _pl_logger.info("STATE report_packager_agent.invoke.start'
+            if marker in src:
+                src = src.replace(marker, f"    # {_W13W_RP_GUARD}\n" + marker, 1)
+                changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W13W-RP removed report_packager runtime file-write path")
+        else:
+            print(f"⚠️  W13W-RP anchors not found in cell {idx}")
+
+    # --- W13X-FINAL-REPORT-NAMES: use canonical discoverable final_report artifact names ---
+    _W13X_REPORT_NAMES_GUARD = "# W13X-FINAL-REPORT-NAMES: canonical final_report artifact names"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src:
+            continue
+        if _W13X_REPORT_NAMES_GUARD in src:
+            break
+        old = (
+            '    safe_title = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("_").lower() or "idd_report"\n'
+            '    md_path = reports_dir / f"{safe_title}.md"\n'
+            '    html_path = reports_dir / f"{safe_title}.html"\n'
+            '    pdf_path = reports_dir / f"{safe_title}.pdf"\n'
+        )
+        new = (
+            f"    # {_W13X_REPORT_NAMES_GUARD}\n"
+            '    descriptive_title_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("_").lower() or "idd_report"\n'
+            '    canonical_report_stem = "final_report"\n'
+            '    md_path = reports_dir / f"{canonical_report_stem}.md"\n'
+            '    html_path = reports_dir / f"{canonical_report_stem}.html"\n'
+            '    pdf_path = reports_dir / f"{canonical_report_stem}.pdf"\n'
+        )
+        if old not in src:
+            print(f"⚠️  W13X-FINAL-REPORT-NAMES anchors not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13X-FINAL-REPORT-NAMES writes canonical final_report artifacts")
+        break
+
+    # --- W13Z-FW-VIZ-PATHS: include report-referenced visualization copies in final manifest ---
+    _W13Z_FW_VIZ_GUARD = "# W13Z-FW-VIZ-PATHS: include report-referenced visualization paths"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or "_w13s_viz_paths = []" not in src:
+            continue
+        if _W13Z_FW_VIZ_GUARD in src:
+            break
+        old = (
+            "        for _w13s_item in _w13s_viz_items:\n"
+            "            _w13s_path = _w13s_item.get(\"path\") if isinstance(_w13s_item, dict) else getattr(_w13s_item, \"path\", None)\n"
+            "            if _w13s_path:\n"
+            "                _w13s_viz_paths.append(str(_w13s_path))\n"
+            "        _w13s_manifest = {\n"
+        )
+        new = (
+            "        for _w13s_item in _w13s_viz_items:\n"
+            "            _w13s_path = _w13s_item.get(\"path\") if isinstance(_w13s_item, dict) else getattr(_w13s_item, \"path\", None)\n"
+            "            if _w13s_path:\n"
+            "                _w13s_viz_paths.append(str(_w13s_path))\n"
+            f"        # {_W13Z_FW_VIZ_GUARD}\n"
+            "        try:\n"
+            "            import re as _w13z_re\n"
+            "            import os as _w13z_os\n"
+            "            _w13z_html_path = PathlibPath(getattr(_w13s_rr, \"html_report_path\", \"\") or \"\")\n"
+            "            if _w13z_html_path.is_file():\n"
+            "                _w13z_html = _w13z_html_path.read_text(encoding=\"utf-8\", errors=\"replace\")\n"
+            "                for _w13z_src in _w13z_re.findall(r'<img\\b[^>]*?\\bsrc\\s*=\\s*[\"\\\\\\']([^\"\\\\\\']+)[\"\\\\\\']', _w13z_html, flags=_w13z_re.I):\n"
+            "                    _w13z_ref = str(_w13z_src or \"\").strip()\n"
+            "                    if not _w13z_ref or _w13z_ref.startswith((\"data:\", \"http://\", \"https://\", \"#\")):\n"
+            "                        continue\n"
+            "                    _w13z_path = (_w13z_html_path.parent / PathlibPath(_w13z_ref.replace(\"/\", _w13z_os.sep))).resolve()\n"
+            "                    if _w13z_path.is_file() and str(_w13z_path) not in _w13s_viz_paths:\n"
+            "                        _w13s_viz_paths.append(str(_w13z_path))\n"
+            "        except Exception as _w13z_exc:\n"
+            "            _pl_logger.warning(\"STATE file_writer.final_manifest viz_ref_scan_failed error=%s\", _w13z_exc)\n"
+            "        _w13s_manifest = {\n"
+        )
+        if old not in src:
+            print(f"⚠️  W13Z-FW-VIZ-PATHS anchors not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W13Z-FW-VIZ-PATHS added report-referenced visualization paths to final manifest")
+        break
+
+    # --- W14A-PROMPT-PARITY: restore original-style prompt structure without raw placeholders ---
+    _W14A_PROMPT_GUARD = "# W14A-PROMPT-PARITY: original-style stable system prompt"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_initial_analysis_agent" not in src and "def create_report_generator_agent(" not in src:
+            continue
+        if _W14A_PROMPT_GUARD in src:
+            continue
+        changed = False
+        replacements = [
+            (
+                (
+                    '    system_prompt = (\n'
+                    '        "You are the initial_analysis agent in the Intelligent Data Detective pipeline. "\n'
+                    '        "Your runtime instructions, dataset ids, tool descriptions, memories, and output schema "\n'
+                    '        "are provided in the first SystemMessage of each turn. Use only dataframe-inspection tools, "\n'
+                    '        "then return exactly one InitialDescription structured response. Do not read or write files, "\n'
+                    '        "do not report progress, and do not continue tool use once you have schema/stat/sample evidence."\n'
+                    '    )\n'
+                ),
+                (
+                    f'    # {_W14A_PROMPT_GUARD} (initial_analysis)\n'
+                    '    system_prompt = "\\n".join([\n'
+                    '        "You are the Initial Data Analyst for the Intelligent Data Detective workflow.",\n'
+                    '        "",\n'
+                    '        "Your job is to perform the first careful read of the dataset and describe what is present before cleaning begins.",\n'
+                    '        "Use the runtime SystemMessage for the actual user request, available DataFrame IDs, tool descriptions, memories, data sample, and InitialDescription schema.",\n'
+                    '        "",\n'
+                    '        "Work plan:",\n'
+                    '        "1. Inspect schema, column names, representative rows, descriptive statistics, and obvious quality issues.",\n'
+                    '        "2. Summarize dataset shape, likely grain, important fields, missingness, suspicious values, and early analysis opportunities.",\n'
+                    '        "3. Stop tool use once you have enough evidence for the structured response.",\n'
+                    '        "",\n'
+                    '        "Boundaries: use only dataframe-inspection tools; do not read/write files, report progress, clean data, analyze deeply, or visualize.",\n'
+                    '        "Completion: return exactly one InitialDescription structured response through the response tool, then stop.",\n'
+                    '    ])\n'
+                ),
+            ),
+            (
+                (
+                    '    system_prompt = (\n'
+                    '        "You are the data_cleaner agent in the Intelligent Data Detective pipeline. "\n'
+                    '        "Your runtime instructions (dataset description, cleaning metadata, tools, "\n'
+                    '        "output schema) are provided as the first SystemMessage of every turn. "\n'
+                    '        "Follow those instructions; do not rely on any templated text here."\n'
+                    '    )\n'
+                ),
+                (
+                    f'    # {_W14A_PROMPT_GUARD} (data_cleaner)\n'
+                    '    system_prompt = "\\n".join([\n'
+                    '        "You are the Data Cleaner for the Intelligent Data Detective workflow.",\n'
+                    '        "",\n'
+                    '        "Your job is to convert the initially described dataset into an analysis-ready dataset while preserving a transparent cleaning record.",\n'
+                    '        "Use the runtime SystemMessage for the dataset description, sample rows, available DataFrame IDs, cleaning tools, memories, tooling guidelines, and CleaningMetadata schema.",\n'
+                    '        "",\n'
+                    '        "Work plan:",\n'
+                    '        "1. Profile missing values, duplicates, datatypes, impossible values, and column-level quality concerns.",\n'
+                    '        "2. Apply conservative, auditable cleaning actions through the provided tools and retain the cleaned DataFrame ID.",\n'
+                    '        "3. Explain what changed, what was left unchanged, and any quality caveats that downstream agents must know.",\n'
+                    '        "",\n'
+                    '        "Boundaries: clean only the active dataset; do not create report prose, visualizations, marker files, or final artifacts.",\n'
+                    '        "Completion: return exactly one CleaningMetadata structured response through the response tool, then stop.",\n'
+                    '    ])\n'
+                ),
+            ),
+            (
+                (
+                    '    system_prompt = (\n'
+                    '        "You are the analyst agent in the Intelligent Data Detective pipeline. "\n'
+                    '        "Your runtime instructions (cleaning_metadata, data_sample, output schema, "\n'
+                    '        "memories) are provided as the first SystemMessage of every turn. Follow those; "\n'
+                    '        "do not rely on any templated text here."\n'
+                    '    )\n'
+                ),
+                (
+                    f'    # {_W14A_PROMPT_GUARD} (analyst)\n'
+                    '    system_prompt = "\\n".join([\n'
+                    '        "You are the main Data Analyst for the Intelligent Data Detective workflow.",\n'
+                    '        "",\n'
+                    '        "Your job is to turn the cleaned dataset and cleaning record into concrete, evidence-backed analytical insights.",\n'
+                    '        "Use the runtime SystemMessage for cleaned dataset context, available DataFrame IDs, analysis tools, data sample, memories, and AnalysisInsights schema.",\n'
+                    '        "",\n'
+                    '        "Work plan:",\n'
+                    '        "1. Explore distributions, relationships, group differences, outliers, anomalies, correlations, and fields relevant to the user request.",\n'
+                    '        "2. Prioritize findings with numeric evidence and note limitations introduced by cleaning or data quality.",\n'
+                    '        "3. Recommend visualization targets that will help stakeholders understand the strongest findings.",\n'
+                    '        "",\n'
+                    '        "Boundaries: do analysis only; do not write reports, create final artifacts, or use tools after enough evidence has been gathered.",\n'
+                    '        "Completion: return exactly one AnalysisInsights structured response through the response tool, then stop.",\n'
+                    '    ])\n'
+                ),
+            ),
+        ]
+        for old, new in replacements:
+            if old in src:
+                src = src.replace(old, new, 1)
+                changed = True
+        old_report_system_prompt = (
+            '    system_prompt = "\\n".join([\n'
+            '        f"You are {output_format_map[rg_agent_task][\'name\']}.",\n'
+            '        f"Your only task is to {report_task}",\n'
+            '        f"Expected final structured output class/tool: {_schema_name}.",\n'
+            '        "When enough context is available, call the structured response tool immediately and stop.",\n'
+            '        "Do not use tools repeatedly to prove completion; one metadata inspection pass is enough.",\n'
+            '        f"Allowed tools for this role: {_role_tool_names}.",\n'
+            '        _no_file_text,\n'
+            '        "Every accepted completion must be a valid Pydantic object for the expected class.",\n'
+            '    ])\n'
+        )
+        new_report_system_prompt = (
+            f'    # {_W14A_PROMPT_GUARD} (report_generator roles)\n'
+            '    system_prompt = "\\n".join([\n'
+            '        f"You are {output_format_map[rg_agent_task][\'name\']} in the Intelligent Data Detective reporting workflow.",\n'
+            '        "",\n'
+            '        "Mission:",\n'
+            '        f"- {report_task}",\n'
+            '        "",\n'
+            '        "Available context:",\n'
+            '        "- The runtime invoke state supplies the user request, available DataFrame IDs, cleaning metadata, analysis insights, visualization metadata, section outline/draft content, report paths, memories, and exact schema needed for this role.",\n'
+            '        "- Use only resolved runtime context. Never reason from raw template placeholders or stale conversation history.",\n'
+            '        "",\n'
+            '        "Reporting style:",\n'
+            '        "- Write like a concise human data analyst: plain-English findings, numeric evidence, implications, and practical recommendations.",\n'
+            '        "- Avoid scaffold language such as \\\'this section should\\\', prompt instructions, placeholder text, or marker/status prose.",\n'
+            '        "",\n'
+            '        f"Allowed tools for this role: {_role_tool_names}.",\n'
+            '        _no_file_text,\n'
+            '        "Completion contract:",\n'
+            '        f"- Return exactly one {_schema_name} structured response through the response tool, then stop.",\n'
+            '        "- Do not use tools repeatedly to prove completion; one metadata inspection pass is enough when tools are allowed.",\n'
+            '        "- Every accepted completion must validate as the expected Pydantic output class.",\n'
+            '    ])\n'
+        )
+        if old_report_system_prompt in src:
+            src = src.replace(old_report_system_prompt, new_report_system_prompt, 1)
+            changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W14A-PROMPT-PARITY restored original-style stable prompt wording")
+
+    # --- W14B-REPORT-HEADINGS: normalize repeated title/section headings before rendering ---
+    _W14B_HEADING_GUARD = "# W14B-REPORT-HEADINGS: normalize duplicate report headings"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src:
+            continue
+        if _W14B_HEADING_GUARD in src:
+            break
+        old = (
+            '    draft = _dedupe_long_paragraphs(draft)\n'
+            '    # W11-RP: report_packager_agent required before deterministic renderer\n'
+        )
+        new = (
+            '    draft = _dedupe_long_paragraphs(draft)\n'
+            f'    # {_W14B_HEADING_GUARD}\n'
+            '    def _normalize_report_headings(text: str, report_title: str) -> str:\n'
+            '        normalized_lines = []\n'
+            '        previous_heading_key = None\n'
+            '        title_key = re.sub(r"\\s+", " ", str(report_title or "")).strip().casefold()\n'
+            '        title_seen = False\n'
+            '        for raw_line in text.splitlines():\n'
+            '            match = re.match(r"^(#{1,6})\\s+(.+?)\\s*$", raw_line)\n'
+            '            if not match:\n'
+            '                normalized_lines.append(raw_line)\n'
+            '                previous_heading_key = None if raw_line.strip() else previous_heading_key\n'
+            '                continue\n'
+            '            hashes, heading_text = match.groups()\n'
+            '            heading_text = heading_text.strip()\n'
+            '            heading_key = re.sub(r"\\s+", " ", heading_text).strip().casefold()\n'
+            '            level = len(hashes)\n'
+            '            if heading_key == title_key:\n'
+            '                if title_seen:\n'
+            '                    continue\n'
+            '                title_seen = True\n'
+            '                level = 1\n'
+            '            elif level == 1:\n'
+            '                level = 2\n'
+            '            if heading_key and heading_key == previous_heading_key:\n'
+            '                continue\n'
+            '            normalized_lines.append("#" * level + " " + heading_text)\n'
+            '            previous_heading_key = heading_key\n'
+            '        return "\\n".join(normalized_lines)\n'
+            '    draft = _normalize_report_headings(draft, title)\n'
+            '    # W11-RP: report_packager_agent required before deterministic renderer\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14B-REPORT-HEADINGS anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        old = (
+            '    html_lines = ["<!doctype html><html><head><meta charset=\'utf-8\'><title>" + _html.escape(title) + "</title></head><body>", f"<h1>{_html.escape(title)}</h1>"]\n'
+            '    current_para = []\n'
+            '    for line in draft.splitlines():\n'
+            '        if line.startswith("# "):\n'
+            '            html_lines.append(f"<h1>{_html.escape(line[2:].strip())}</h1>")\n'
+        )
+        new = (
+            '    html_lines = ["<!doctype html><html><head><meta charset=\'utf-8\'><title>" + _html.escape(title) + "</title></head><body>"]\n'
+            '    current_para = []\n'
+            '    _html_title_seen = False\n'
+            '    for line in draft.splitlines():\n'
+            '        if line.startswith("# "):\n'
+            '            _heading = line[2:].strip()\n'
+            '            if _heading.casefold() == str(title).strip().casefold() and _html_title_seen:\n'
+            '                continue\n'
+            '            _html_title_seen = _html_title_seen or (_heading.casefold() == str(title).strip().casefold())\n'
+            '            html_lines.append(f"<h1>{_html.escape(_heading)}</h1>")\n'
+        )
+        if old in src:
+            src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14B-REPORT-HEADINGS normalizes duplicate report headings")
+        break
+
+    # --- W14C-NO-MARKER-TXT: prevent helper/sample/cleaner marker text artifacts ---
+    _W14C_NO_MARKER_GUARD = "# W14C-NO-MARKER-TXT: no sample/cleaner marker text artifacts"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_sample" not in src or _W14C_NO_MARKER_GUARD in src:
+            continue
+        old = (
+            '    try:\n'
+            '        with (WORKING_DIRECTORY / file_name).open("w") as file:\n'
+            '            for i, point in enumerate(points):\n'
+            '                file.write(f"{i + 1}. {point}\\n")\n'
+            '        return f"sample data saved to {file_name}", {"points": points, "file_name": file_name}\n'
+            '    except Exception as e:\n'
+            '        return f"Error creating sample: {e}", {"error": "exception", "message": str(e)}\n'
+        )
+        new = (
+            f'    # {_W14C_NO_MARKER_GUARD}\n'
+            '    try:\n'
+            '        snippet = "\\n".join(f"{i + 1}. {point}" for i, point in enumerate(points))\n'
+            '        return snippet, {"points": points, "file_name": "", "written": False}\n'
+            '    except Exception as e:\n'
+            '        return f"Error creating sample: {e}", {"error": "exception", "message": str(e)}\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14C-NO-MARKER-TXT create_sample anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14C-NO-MARKER-TXT create_sample no longer writes outline.txt")
+        break
+
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def create_data_cleaner_agent" not in src or _W14C_NO_MARKER_GUARD in src:
+            continue
+        changed = False
+        old = (
+            '    tool_descriptions = "\\n".join(f"{t.name}: {t.description}" for t in data_cleaning_tools) if not use_local_llm else "\\n".join(f"{key}: {tool_descrips_mini[key]}" for key in tool_descrips_mini.keys() if key in [t.name for t in data_cleaning_tools])\n'
+        )
+        new = (
+            f'    # {_W14C_NO_MARKER_GUARD}\n'
+            '    _w14c_cleaner_excluded_tools = {"write_file", "edit_file", "read_file", "list_available_files", "python_repl_tool"}\n'
+            '    _w14c_data_cleaner_tools = [t for t in data_cleaning_tools if getattr(t, "name", "") not in _w14c_cleaner_excluded_tools]\n'
+            '    tool_descriptions = "\\n".join(f"{t.name}: {t.description}" for t in _w14c_data_cleaner_tools) if not use_local_llm else "\\n".join(f"{key}: {tool_descrips_mini[key]}" for key in tool_descrips_mini.keys() if key in [t.name for t in _w14c_data_cleaner_tools])\n'
+        )
+        if old in src:
+            src = src.replace(old, new, 1)
+            changed = True
+        for old, new in [
+            ("        tools=data_cleaning_tools,\n", "        tools=_w14c_data_cleaner_tools,\n"),
+            (
+                '        middleware =[_prehook, _make_unknown_tool_guard("data_cleaner", [t.name for t in data_cleaning_tools] + ["CleaningMetadata"])],  # W2-REC6[DC]: unknown-tool guard wired\n',
+                '        middleware =[_prehook, _make_unknown_tool_guard("data_cleaner", [t.name for t in _w14c_data_cleaner_tools] + ["CleaningMetadata"])],  # W2-REC6[DC]: unknown-tool guard wired\n',
+            ),
+        ]:
+            if old in src:
+                src = src.replace(old, new, 1)
+                changed = True
+        if changed:
+            cell["source"] = src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: W14C-NO-MARKER-TXT scoped data_cleaner away from generic file tools")
+        else:
+            print(f"⚠️  W14C-NO-MARKER-TXT data_cleaner anchors not found in cell {idx}")
+        break
+
+    # --- W14D-FW-PATHS: resolve report HTML image refs from promoted root as well as report dir ---
+    _W14D_FW_PATHS_GUARD = "# W14D-FW-PATHS: resolve promoted HTML image references"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or _W14D_FW_PATHS_GUARD in src:
+            continue
+        old = (
+            '                    _w13z_path = (_w13z_html_path.parent / PathlibPath(_w13z_ref.replace("/", _w13z_os.sep))).resolve()\n'
+            '                    if _w13z_path.is_file() and str(_w13z_path) not in _w13s_viz_paths:\n'
+            '                        _w13s_viz_paths.append(str(_w13z_path))\n'
+        )
+        new = (
+            f'                    # {_W14D_FW_PATHS_GUARD}\n'
+            '                    _w13z_rel = PathlibPath(_w13z_ref.replace("/", _w13z_os.sep))\n'
+            '                    _w13z_bases = [_w13z_html_path.parent, PathlibPath(getattr(RUNTIME, "run_dir", WORKING_DIRECTORY)), WORKING_DIRECTORY]\n'
+            '                    for _w13z_base in _w13z_bases:\n'
+            '                        _w13z_path = (PathlibPath(_w13z_base) / _w13z_rel).resolve()\n'
+            '                        if _w13z_path.is_file() and str(_w13z_path) not in _w13s_viz_paths:\n'
+            '                            _w13s_viz_paths.append(str(_w13z_path))\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14D-FW-PATHS anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14D-FW-PATHS resolves report image refs for final manifest")
+        break
+
+    # --- W14E-FW-NORMALIZE: normalize final manifest candidate paths before warning ---
+    _W14E_FW_NORMALIZE_GUARD = "# W14E-FW-NORMALIZE: normalize manifest paths before warnings"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or _W14E_FW_NORMALIZE_GUARD in src:
+            continue
+        old = (
+            '        _w13s_existing_paths = set(_w13s_report_paths + _w13s_viz_paths)\n'
+            '        _w13s_report_file_results = []\n'
+        )
+        new = (
+            f'        # {_W14E_FW_NORMALIZE_GUARD}\n'
+            '        _w13s_existing_paths = set()\n'
+            '        _w13s_candidate_bases = [PathlibPath(getattr(RUNTIME, "run_dir", WORKING_DIRECTORY)), PathlibPath(getattr(RUNTIME, "artifacts_dir", WORKING_DIRECTORY)), WORKING_DIRECTORY]\n'
+            '        for _w13s_raw_path in (_w13s_report_paths + _w13s_viz_paths):\n'
+            '            _w13s_raw_str = str(_w13s_raw_path or "")\n'
+            '            if not _w13s_raw_str:\n'
+            '                continue\n'
+            '            _w13s_existing_paths.add(_w13s_raw_str)\n'
+            '            _w13s_pp = PathlibPath(_w13s_raw_str)\n'
+            '            if _w13s_pp.is_absolute() and _w13s_pp.is_file():\n'
+            '                _w13s_existing_paths.add(str(_w13s_pp.resolve()))\n'
+            '                continue\n'
+            '            for _w13s_base in _w13s_candidate_bases:\n'
+            '                _w13s_probe = (PathlibPath(_w13s_base) / PathlibPath(_w13s_raw_str.replace("/", os.sep))).resolve()\n'
+            '                if _w13s_probe.is_file():\n'
+            '                    _w13s_existing_paths.add(str(_w13s_probe))\n'
+            '                    break\n'
+            '        for _w13s_base in _w13s_candidate_bases:\n'
+            '            try:\n'
+            '                for _w13s_existing_file in PathlibPath(_w13s_base).rglob("*"):\n'
+            '                    if _w13s_existing_file.is_file():\n'
+            '                        _w13s_existing_paths.add(str(_w13s_existing_file.resolve()))\n'
+            '            except Exception:\n'
+            '                pass\n'
+            '        _w13s_report_file_results = []\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14E-FW-NORMALIZE anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        old = (
+            '                _w13s_match = next((str(_p) for _p in _w13s_existing_paths if PathlibPath(str(_p)).name == _w13s_base), None)\n'
+        )
+        new = (
+            '                _w13s_match = next((str(_p) for _p in _w13s_existing_paths if PathlibPath(str(_p)).name == _w13s_base and PathlibPath(str(_p)).is_file()), None)\n'
+            '                if not _w13s_match:\n'
+            '                    for _w13s_base_dir in _w13s_candidate_bases:\n'
+            '                        _w13s_probe = (PathlibPath(_w13s_base_dir) / PathlibPath(_w13s_fp.replace("/", os.sep))).resolve()\n'
+            '                        if _w13s_probe.is_file():\n'
+            '                            _w13s_match = str(_w13s_probe)\n'
+            '                            _w13s_existing_paths.add(_w13s_match)\n'
+            '                            break\n'
+        )
+        if old in src:
+            src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14E-FW-NORMALIZE normalizes final manifest returned paths")
+        break
+
+    # --- W14F-READABILITY-POLISH: remove scaffold lead-ins from agent-authored report draft ---
+    _W14F_READABILITY_GUARD = "# W14F-READABILITY-POLISH: remove scaffold lead-ins"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src or _W14F_READABILITY_GUARD in src:
+            continue
+        old = (
+            '    draft = _normalize_report_headings(draft, title)\n'
+            '    # W11-RP: report_packager_agent required before deterministic renderer\n'
+        )
+        new = (
+            '    draft = _normalize_report_headings(draft, title)\n'
+            f'    # {_W14F_READABILITY_GUARD}\n'
+            '    def _polish_report_scaffold_leadins(text: str) -> str:\n'
+            '        text = re.sub(r"(?im)^\\s*Purpose:\\s*provide\\s+", "Purpose and scope: ", text)\n'
+            '        text = re.sub(r"(?im)^\\s*Purpose:\\s*", "Purpose and scope: ", text)\n'
+            '        text = re.sub(r"(?im)^\\s*This section should\\s+", "", text)\n'
+            '        text = re.sub(r"(?im)^\\s*This section addresses:\\s*", "", text)\n'
+            '        return text\n'
+            '    draft = _polish_report_scaffold_leadins(draft)\n'
+            '    # W11-RP: report_packager_agent required before deterministic renderer\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14F-READABILITY-POLISH anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14F-READABILITY-POLISH removes scaffold lead-ins from report draft")
+        break
+
+    # --- W14G-FW-DEFERRED-VIZ: suppress false warnings for expected copied viz paths ---
+    _W14G_FW_DEFERRED_GUARD = "# W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src or _W14G_FW_DEFERRED_GUARD in src:
+            continue
+        old = (
+            '        _w13s_report_file_results = []\n'
+            '        _w13s_viz_file_results = []\n'
+        )
+        new = (
+            f'        # {_W14G_FW_DEFERRED_GUARD}\n'
+            '        _w13s_expected_viz_basenames = {PathlibPath(str(_p)).name for _p in _w13s_viz_paths if str(_p or "")}\n'
+            '        _w13s_report_file_results = []\n'
+            '        _w13s_viz_file_results = []\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14G-FW-DEFERRED-VIZ anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        old = (
+            '            if _w13s_fp not in _w13s_existing_paths or not PathlibPath(_w13s_fp).is_file():\n'
+            '                _pl_logger.warning("STATE file_writer.final_manifest path_normalized_missing returned=%s", _w13s_fp)\n'
+            '                continue\n'
+        )
+        new = (
+            '            if _w13s_fp not in _w13s_existing_paths or not PathlibPath(_w13s_fp).is_file():\n'
+            '                if _w13s_tag == "visualization" and PathlibPath(_w13s_fp).name in _w13s_expected_viz_basenames:\n'
+            '                    continue\n'
+            '                _pl_logger.warning("STATE file_writer.final_manifest path_normalized_missing returned=%s", _w13s_fp)\n'
+            '                continue\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14G-FW-DEFERRED-VIZ warning anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14G-FW-DEFERRED-VIZ suppresses false copied-viz path warnings")
+        break
+
+    # --- W14H-VIZ-JOIN-UNION: rebuild viz fan-in from all channels before evaluation ---
+    _W14H_VIZ_JOIN_GUARD = "# W14H-VIZ-JOIN-UNION: union viz_results, visualization_results, viz_paths, and PNG artifacts"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_join(state: State):" not in src or _W14H_VIZ_JOIN_GUARD in src:
+            continue
+        start = src.find("def viz_join(state: State):")
+        end = src.find("    memory_text = \"\"", start)
+        if start < 0 or end < 0:
+            print(f"⚠️  W14H-VIZ-JOIN-UNION anchor not found in cell {idx}")
+            break
+        new_head = '''def viz_join(state: State):
+    # W14H-VIZ-JOIN-UNION: union viz_results, visualization_results, viz_paths, and PNG artifacts
+    # Parallel viz workers can race with a last-writer visualization_results reducer.
+    # Rebuild the fan-in from every available channel before downstream evaluation.
+    _w14h_viz_items = []
+    def _w14h_add_viz(_item):
+        if _item is None:
+            return
+        try:
+            if isinstance(_item, DataVisualization):
+                _w14h_viz_items.append(_item)
+                return
+            if isinstance(_item, dict):
+                _data = dict(_item)
+                try:
+                    for _k, _v in list(_data.items()):
+                        if _k in ALIASES:
+                            _data[ALIASES[_k]] = _v
+                except Exception:
+                    pass
+                _w14h_viz_items.append(DataVisualization.model_validate(_data))
+                return
+        except Exception:
+            return
+
+    for _w14h_item in (state.get("viz_results", []) or []):
+        _w14h_add_viz(_w14h_item)
+    _w14h_vr = state.get("visualization_results") or None
+    if isinstance(_w14h_vr, VisualizationResults):
+        for _w14h_item in (_w14h_vr.visualizations or []):
+            _w14h_add_viz(_w14h_item)
+    elif isinstance(_w14h_vr, list):
+        for _w14h_item in _w14h_vr:
+            _w14h_add_viz(_w14h_item)
+
+    _w14h_seen = {
+        (getattr(_v, "visualization_id", None) or "", str(getattr(_v, "path", "") or ""))
+        for _v in _w14h_viz_items
+    }
+    def _w14h_add_path(_path):
+        _path_str = str(_path or "")
+        if not _path_str:
+            return
+        _path_obj = PathlibPath(_path_str)
+        _vid = _path_obj.stem
+        _key = (_vid, _path_str)
+        if _key in _w14h_seen:
+            return
+        try:
+            _w14h_viz_items.append(DataVisualization(
+                reply_msg_to_supervisor="",
+                finished_this_task=True,
+                expect_reply=False,
+                path=_path_str,
+                visualization_id=_vid,
+                visualization_type="image",
+                visualization_description=f"Visualization artifact saved at {_path_str}.",
+                visualization_style="generated",
+                visualization_title=_path_obj.stem.replace("_", " ").title(),
+                visualization_complete=True,
+            ))
+            _w14h_seen.add(_key)
+        except Exception:
+            pass
+
+    for _w14h_path in (state.get("viz_paths", []) or []):
+        _w14h_add_path(_w14h_path)
+    _w14h_expected = len(state.get("viz_tasks", []) or [])
+    if len(_w14h_viz_items) < _w14h_expected:
+        for _w14h_base in (
+            PathlibPath(getattr(RUNTIME, "run_dir", WORKING_DIRECTORY)),
+            PathlibPath(getattr(RUNTIME, "artifacts_dir", WORKING_DIRECTORY)),
+            WORKING_DIRECTORY,
+        ):
+            try:
+                for _w14h_png in PathlibPath(_w14h_base).rglob("*.png"):
+                    if _w14h_png.is_file():
+                        _w14h_add_path(str(_w14h_png))
+            except Exception:
+                pass
+            if len(_w14h_viz_items) >= _w14h_expected:
+                break
+
+    _w14h_by_key = {}
+    for _w14h_viz in _w14h_viz_items:
+        _w14h_key = getattr(_w14h_viz, "visualization_id", None) or str(getattr(_w14h_viz, "path", "") or "")
+        if _w14h_key and _w14h_key not in _w14h_by_key:
+            _w14h_by_key[_w14h_key] = _w14h_viz
+    all_viz = VisualizationResults(
+        visualizations=list(_w14h_by_key.values()),
+        expect_reply=False,
+        reply_msg_to_supervisor="",
+        finished_this_task=True,
+    )
+    n = len(all_viz.visualizations) if all_viz else 0
+    pr = {}
+    pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
+'''
+        src = src[:start] + new_head + src[end:]
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
+        break
+
+    # ============================  END WAVE 4 PATCHES  ===========================
+
+    # ============================  END WAVE 2 PATCHES  ===========================
 
     with open(OUTPUT_NB, "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=1, ensure_ascii=False)

@@ -12,22 +12,19 @@ user-invocable: true
 <!-- repo-agent-bootstrap:managed:start -->
 # Notebook Specialist
 
-You are the specialist for `IntelligentDataDetective_beta_v5.ipynb`, the single-file source of truth for the entire IDD system. All 7 LangGraph agents, the State TypedDict, tools, and graph wiring live inside this notebook's 27 cells. Read `.github/instructions/notebook.instructions.md` before every edit.
+You are the specialist for IDD notebook behavior. Current changes are made through `_patch_notebook.py`, which regenerates the committed runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb` (99 cells in the W14 completion baseline). The original `IntelligentDataDetective_beta_v5.ipynb` is the patcher input, not the file to hand-edit for current work. Read `.github/instructions/notebook.instructions.md` before every edit.
 
-## Cell map (authoritative)
-| Cell | Role |
+## Current workflow
+| File | Role |
 |------|------|
-| 1 | Environment setup, API key handling, package install |
-| 4 | Core imports and type aliases |
-| 5 | `MyChatOpenai` – custom ChatOpenAI subclass |
-| 7 | Pydantic models (`BaseNoExtrasModel`, `State`, `AnalysisConfig`, …) |
-| 8 | `DataFrameRegistry` – thread-safe LRU DataFrame manager |
-| 10 | Agent prompt templates and `DEFAULT_TOOLING_GUIDELINES` |
-| 12/13 | All tools (~78 functions) + `@handle_tool_errors` decorator |
-| 14+ | Agent construction, LangGraph graph wiring, graph compilation |
+| `_patch_notebook.py` | Durable patch source for notebook behavior |
+| `IntelligentDataDetective_beta_v5_patched.ipynb` | Generated runnable W14 notebook |
+| `validate_run.py` | 12-gate production proof validator |
+| `validate_artifact_quality.py` | 9-gate artifact/readability validator |
 
 ## Hard rules
-- **Never delete cells.** Append new cells; never renumber or reorder existing ones.
+- **Do not hand-edit `IntelligentDataDetective_beta_v5_patched.ipynb`.** Edit `_patch_notebook.py` and regenerate it.
+- **Never delete cells.** Append new cells through the patcher only when the task explicitly requires it.
 - **Use `MyChatOpenai` everywhere** in the notebook — never raw `ChatOpenAI`.
 - **All agent output models must extend `BaseNoExtrasModel`** and include `reply_msg_to_supervisor`, `finished_this_task`, and `expect_reply` fields.
 - **State fields with reducers (`Annotated[..., keep_first]`, `Annotated[..., operator.add]`, etc.) must never be assigned directly** — state merges will silently break.
@@ -37,16 +34,21 @@ You are the specialist for `IntelligentDataDetective_beta_v5.ipynb`, the single-
 - **Memory namespaces** are `('memories', '<kind>')` where kind ∈ `{conversation, analysis, cleaning, visualization, insights, errors}`. TTL and per-kind limits come from `memory_config.yaml`, not hardcode them.
 
 ## Focus paths
+- `_patch_notebook.py`
+- `IntelligentDataDetective_beta_v5_patched.ipynb`
 - `IntelligentDataDetective_beta_v5.ipynb`
 - `memory_config.yaml`
 
 ## Validation after notebook edits
 ```bash
-# Confirm cells load without syntax error
-python3 -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5.ipynb'))['cells']; print(f'{len(cells)} cells OK')"
+python3 _patch_notebook.py
+python3 -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(f'{len(cells)} cells OK')"
 # Run unit tests (no API keys required)
 python3 -m pytest test_intelligent_data_detective.py -v
+python3 -m pytest test_validate_run.py -q
 ```
+
+Completion-impacting changes must preserve the W14 baseline: `validate_run.py` 12/12, `validate_artifact_quality.py` 9/9, native structured output markers, 3/3 visualization fan-in, no recovery/final-hop/path-normalization markers, and canonical `final_report.*` artifacts.
 
 ## Collaboration rules
 - Delegate git operations, docs updates, and memory-bank refreshes to `docs-memory-curator` via `custom-agent`.
