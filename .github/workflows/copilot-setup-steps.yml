@@ -35,6 +35,7 @@ jobs:
         run: |
           required_files=(
             "IntelligentDataDetective_beta_v5.ipynb"
+            "IntelligentDataDetective_beta_v5_patched.ipynb"
             "pytest.ini"
             "test_intelligent_data_detective.py"
             "test_error_handling_framework.py"
@@ -58,12 +59,18 @@ jobs:
           import json
           from pathlib import Path
 
-          notebook_path = Path("IntelligentDataDetective_beta_v5.ipynb")
-          notebook = json.loads(notebook_path.read_text())
-          cells = notebook.get("cells", [])
-          if not isinstance(cells, list) or not cells:
-              raise SystemExit("Notebook validation failed: no cells found")
-          print(f"Notebook smoke check passed: {len(cells)} cells found.")
+          notebook_paths = [
+              Path("IntelligentDataDetective_beta_v5.ipynb"),
+              Path("IntelligentDataDetective_beta_v5_patched.ipynb"),
+          ]
+          for notebook_path in notebook_paths:
+              notebook = json.loads(notebook_path.read_text())
+              cells = notebook.get("cells", [])
+              if not isinstance(cells, list) or not cells:
+                  raise SystemExit(
+                      f"Notebook validation failed for {notebook_path}: no cells found"
+                  )
+              print(f"Notebook smoke check passed for {notebook_path}: {len(cells)} cells found.")
           PY
 
       - name: Install validation dependencies

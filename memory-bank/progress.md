@@ -26,8 +26,7 @@
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
-- CI now runs via `.github/workflows/copilot-setup-steps.yml` on `pull_request`, `push` to `main`, and `workflow_dispatch`, covering no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps.
-- Full API-key notebook proof is intentionally manual because it is expensive and credential-dependent.
+- CI intentionally excludes the full API-key notebook trajectory proof; `.github/workflows/copilot-setup-steps.yml` currently gates only no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps on `pull_request`, `push` to `main`, and `workflow_dispatch`.
 - `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
 - Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
 - The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.

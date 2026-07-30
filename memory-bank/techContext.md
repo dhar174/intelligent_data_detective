@@ -50,18 +50,20 @@ export TAVILY_API_KEY="your-tavily-api-key"   # optional
 
 ## CI pipeline
 File: `.github/workflows/copilot-setup-steps.yml`
-Triggers: `push`, `pull_request`, `workflow_dispatch`
+Triggers: `pull_request` to `main`, `push` to `main`, `workflow_dispatch`
 
 Steps (in order):
-1. **Check required project files** — asserts all key test files and the notebook are present.
-2. **Validate notebook file** — smoke-check: parses JSON and confirms at least one cell exists.
+1. **Check required project files** — asserts key test files plus both notebooks (`IntelligentDataDetective_beta_v5.ipynb` and `IntelligentDataDetective_beta_v5_patched.ipynb`) are present.
+2. **Validate notebook files** — smoke-checks both notebooks by parsing JSON and confirming at least one cell exists.
 3. **Install dependencies** — uses `requirements.txt` / `requirements-dev.txt` when present; falls back to an inline `pip install` list.
-4. **Run tests in tests/** — `python -m pytest -v` (driven by `pytest.ini`).
+4. **Run no-key unit/integration checks** — `python -m pytest test_validate_run.py tests/unit tests/integration -q`.
 5. **Run root regression tests** — explicitly invokes `test_intelligent_data_detective.py`, `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py` (these live at repo root, outside `tests/`).
-6. **Run known edge-case error handling tests** — `python -m pytest test_error_handling_framework.py -v` with `continue-on-error: true`; one edge-case failure in this suite is expected and accepted.
-7. **Check formatting** — `black --check` on the two main test files.
-8. **Run flake8** — `flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501`.
-9. **Summarize CI caveats** — always-run step that writes a job summary noting the `test_error_handling_framework.py` allowed failure and that trajectory tests (which require `OPENAI_API_KEY`) are excluded from CI.
+6. **Run error-handling regression tests (required)** — runs `test_error_handling_framework.py` with the one known signature edge-case deselected.
+7. **Run known edge-case signature test (non-blocking)** — runs only `TestErrorHandlingFramework::test_integration_with_different_function_signatures` with `continue-on-error: true`.
+8. **Check formatting** — `black --check` on the two main test files.
+9. **Run flake8 on root regression test file** — `flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501`.
+10. **Lint validation scripts** — `python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503`.
+11. **Summarize CI caveats** — always-run step noting no-key scope, explicit root-regression invocation, isolated known edge-case handling, and API-key trajectory test exclusion.
 
 ## Constraints
 - No `src/` directory — Python files are at repo root.
