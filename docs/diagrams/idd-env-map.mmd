@@ -1,0 +1,19 @@
+flowchart LR
+%% intelligent_data_detective: env file diagram
+    subgraph _["."]
+        demo_memory_lifecycle_py["demo_memory_lifecycle.py"]
+        memory_enhancements_py["memory_enhancements.py"]
+        test_memory_lifecycle_py["test_memory_lifecycle.py"]
+    end
+    DEBUG_MEMORY(["DEBUG_MEMORY"])
+
+    demo_memory_lifecycle_py -. reads .-> DEBUG_MEMORY
+    memory_enhancements_py -. reads .-> DEBUG_MEMORY
+    test_memory_lifecycle_py -. reads .-> DEBUG_MEMORY
+
+    classDef code fill:#eef2ff,stroke:#3730a3,stroke-width:1.5px
+    classDef environment fill:#fff7ed,stroke:#c2410c,stroke-width:1.5px
+    class DEBUG_MEMORY environment
+    class demo_memory_lifecycle_py code
+    class memory_enhancements_py code
+    class test_memory_lifecycle_py code

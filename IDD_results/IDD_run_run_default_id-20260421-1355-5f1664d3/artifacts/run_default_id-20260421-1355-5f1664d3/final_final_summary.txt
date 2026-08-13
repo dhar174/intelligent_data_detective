@@ -1,0 +1,8 @@
+End of current analysis step. Summary:
+- sample_dirty had 53 rows; 3 duplicates removed -> 50 rows currently.
+- Current columns: id, name, value, category, score (types: int, object, float, object, float).
+- Missing values remaining (post-dedup): value = 6, score = 3; others complete.
+- Plan: normalize categories, impute numeric values per category median (fallback global median), impute names as 'Unknown', flag and winsorize outliers, and generate artifacts (sample_dirty_cleaned.csv, cleaning_log.csv, cleaning_summary.json, sample_dirty_head.csv) plus visualizations and reports (PDF/Markdown/HTML).
+- Draft CleaningMetadata prepared for audit; ready to execute next steps.
+
+Would you like me to proceed with step 1: category normalization and imputations now?

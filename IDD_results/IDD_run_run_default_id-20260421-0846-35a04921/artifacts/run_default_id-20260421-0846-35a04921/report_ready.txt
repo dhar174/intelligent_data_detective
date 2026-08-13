@@ -1,0 +1,15 @@
+Cleaning completed successfully. Summary of actions and artifact locations:
+- Removed 3 duplicate rows (from 53 to 50 rows).
+- Enforced dtypes: id to int, value/score to float, category to string, name to string.
+- Normalized category: trimmed and title-cased; basic handling for missing values.
+- Imputed numeric missing values: global median or category median when category has >=3 non-missing values.
+- Added outlier flags: value_outlier_iqr, value_outlier_z, score_outlier_iqr, score_outlier_z, and a combined outlier_flag.
+- Saved artifacts:
+  - output/sample_dirty_cleaned.csv
+  - output/cleaning_log.json
+  - output/cleaning_summary.md
+  - output/cleaning_script.py
+  - sample_dirty_cleaned_export.csv (exported)
+- Also included a 10-row sample in output/cleaning_summary.md.
+
+Next steps (optional): produce visualizations and a PDF/Markdown/HTML report from the cleaned data.

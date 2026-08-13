@@ -1,0 +1,7 @@
+Done. 
+
+Next steps plan is ready and will be executed upon your confirmation:
+- Normalize category labels, impute values (per-category median with global fallback), impute names, identify/outlier detection, winsorize, and generate artifacts.
+- Produce visualizations and final reports in PDF/Markdown/HTML formats.
+
+If you want me to proceed immediately, say go and I will return the cleaned dataset (sample_dirty_cleaned.csv), cleaning_log.csv, cleaning_summary.json, and sample_dirty_head.csv along with plots and PDF/HTML/Markdown reports.
