@@ -1,7 +1,7 @@
 # Intelligent Data Detective Notebook Documentation
 
 ## 1. Introduction
-This document provides a comprehensive overview of the `IntelligentDataDetective_beta_v3.ipynb` notebook. The notebook implements an intelligent data analysis system using a multi-agent architecture built with LangGraph. It aims to automate various stages of data analysis, including data loading, cleaning, exploratory data analysis (EDA), visualization, and report generation. Each agent specializes in a specific task, and a supervisor agent coordinates the overall workflow.
+This document provides a comprehensive overview of the `IntelligentDataDetective_beta_v5.ipynb` notebook. The notebook implements an intelligent data analysis system using a multi-agent architecture built with LangGraph. It aims to automate various stages of data analysis, including data loading, cleaning, exploratory data analysis (EDA), visualization, and report generation. Each agent specializes in a specific task, and a supervisor agent coordinates the overall workflow.
 
 ## 2. Notebook Structure (Cell-by-Cell Analysis)
 

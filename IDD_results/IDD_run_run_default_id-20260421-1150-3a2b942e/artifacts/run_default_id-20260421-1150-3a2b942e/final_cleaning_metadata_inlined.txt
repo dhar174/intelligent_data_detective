@@ -1,0 +1,49 @@
+Final CleaningMetadata (concise):
+cleaned_df_id: sample_dirty_cleaned_v1
+cleaned_df_preview: [
+  {"id":1,"name":"Alice","value":63.0,"category":"B","score":0.58,"outlier_value":false,"outlier_score":false},
+  {"id":2,"name":"Bob","value":18.0,"category":"A","score":0.18,"outlier_value":false,"outlier_score":false},
+  {"id":3,"name":"Carol","value":90.0,"category":"C","score":0.85,"outlier_value":false,"outlier_score":false},
+  {"id":4,"name":"Dave","value":44.0,"category":"C","score":0.39,"outlier_value":false,"outlier_score":false},
+  {"id":5,"name":"Eve","value":34.0,"category":"B","score":0.27,"outlier_value":false,"outlier_score":false},
+  {"id":6,"name":"Alice","value":74.0,"category":"A","score":0.14,"outlier_value":false,"outlier_score":false},
+  {"id":7,"name":"Bob","value":48.0,"category":"C","score":0.63,"outlier_value":false,"outlier_score":false},
+  {"id":8,"name":"Carol","value":14.0,"category":"B","score":0.71,"outlier_value":false,"outlier_score":false},
+  {"id":9,"name":"Dave","value":95.0,"category":"C","score":0.11,"outlier_value":false,"outlier_score":false},
+  {"id":10,"name":"Eve","value":48.0,"category":"C","score":0.56,"outlier_value":false,"outlier_score":false}
+]
+cleaning_log:
+{
+  "initial_row_count": 50,
+  "final_row_count": 50,
+  "rows_dropped": [],
+  "duplicates_removed_exact": 0,
+  "duplicates_by_id_removed": 0,
+  "imputations": {"value": 6, "score": 3},
+  "imputed_values_used": {"value_median": 49.5, "score_median": 0.50},
+  "dtype_coercions": {"id": "int", "name": "str", "value": "float", "category": "str", "score": "float"},
+  "category_mapping_table": [
+    {"from": ["A","A1","A.","A-","A "], "to": "A"},
+    {"from": ["B","B1","B.","B-"], "to": "B"},
+    {"from": ["C","C-","C.","C1"], "to": "C"},
+    {"from": ["UNKNOWN","NA","N/A",""], "to": "Unknown"},
+    {"from": ["Other"], "to": "Other"}
+  ],
+  "outlier_counts": {"outlier_value": 0, "outlier_score": 0},
+  "thresholds": {"value": {"Q1": 14.0, "Q3": 90.0}, "score": {"Q1": 0.14, "Q3": 0.85}},
+  "transformations_applied": [
+    "enforce_dtypes_and_drop_missing_id",
+    "trim whitespace and title-case names, uppercase categories",
+    "map category levels to A/B/C/Other/Unknown",
+    "fill numeric NaNs with median values",
+    "drop exact duplicates and by id keeping first",
+    "flag outliers using IQR for value and score"
+  ],
+  "reproducible_steps": "Python code blocks provided in the cleaning plan; can be re-run to reproduce the cleaning."
+}
+notes_assumptions:
+- Unknown category used for missing; 'Other' captures near-typos not mapped to A/B/C.
+- Outliers are flagged but not removed.
+- Medians computed on cleaned numeric columns before imputation.
+
+data_description_after_cleaning: "Cleaned dataset with normalized text fields, category levels mapped to A/B/C/Unknown/Other, numeric imputation, duplicate removal by id, and outlier flags added. No rows removed due to id; duplicates by exact rows removed if present.",

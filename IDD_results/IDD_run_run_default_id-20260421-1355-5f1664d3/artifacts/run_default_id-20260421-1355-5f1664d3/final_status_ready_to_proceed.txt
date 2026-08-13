@@ -1,0 +1,7 @@
+Current dataset snapshot for sample_dirty:
+- 5 columns: id, name, value, category, score
+- Dtypes: id int64, name object, value float64, category object, score float64
+- Sample rows shown (3 examples):
+  1: Alice, 63.0, B, 0.58; 2: Bob, 18.0, A, 0.18; 3: Carol, 90.0, C, 0.85
+
+Plan to proceed with full analysis, visualizations, and reporting as described earlier. Please reply with 'go' to start the remaining cleaning steps (dedup is already applied in prior steps) and produce the final artifacts: sample_dirty_cleaned.csv, cleaning_log.csv, cleaning_summary.json, sample_dirty_head.csv, plus plots and PDF/Markdown/HTML reports.
