@@ -4,11 +4,16 @@
 # Tasks Index
 
 ## In Progress
-- [BOOTSTRAP-001] Maintain repository agent stack - Keep managed guidance aligned with the codebase
+- [MAINT-001] Keep W14 completion context current - Update docs/memory when notebook workflow or proof baseline changes
 
 ## Pending
-- [BOOTSTRAP-002] Evaluate third-party agent assets - Vendor only pinned, licensed sources
+- [FOLLOWUP-001] Future prompt/report polish - Only with a fresh proof that preserves W14 gates
+- [FOLLOWUP-002] Data-cleaner defensive hardening - Resolve #121 through `_patch_notebook.py` without treating it as a current completion blocker
 
 ## Completed
-- none yet
+- [BOOTSTRAP-001] Repository agent stack scaffolded and customized
+- [W14-001] IDD v5 completion baseline proved and pushed (`IDD_run_run_default_id-20260504-1338-b3079aea`)
+- [W14-002] Final validators established (`validate_run.py` 12/12, `validate_artifact_quality.py` 9/9)
+- [W14-003] Stale Phase 6 GitHub issues #112-#119 closed after W14 proof
+- [CI-001] No-key CI workflow added for validator/unit/integration tests and targeted lint
 <!-- repo-agent-bootstrap:managed:end -->
