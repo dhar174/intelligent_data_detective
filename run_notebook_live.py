@@ -1,5 +1,5 @@
 """
-run_notebook_live.py -- Headless execution of the IDD v5 source notebook
+run_notebook_live.py -- Headless execution of IntelligentDataDetective_beta_v5_patched.ipynb
 
 Usage:
     python run_notebook_live.py           # fresh run (deletes checkpoints.sqlite)
@@ -10,14 +10,12 @@ Requirements:
 
 NEVER cancel this script -- the notebook takes 6-25 minutes to complete.
 """
-
 import argparse
 import os
 import sys
 import glob
 import re
 import subprocess
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -28,253 +26,42 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent
-NOTEBOOK_NAME = os.environ.get("IDD_NOTEBOOK", "IntelligentDataDetective_beta_v5.ipynb")
-NOTEBOOK_PATH = REPO_ROOT / NOTEBOOK_NAME
+PATCHED_NB = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
 OUTPUT_DIR = REPO_ROOT / "IDD_results"
 TIMEOUT = 3600  # 60 minutes — analyst/data_cleaner each cap at ~15-20 min with recovery
-LANGSMITH_ENV_NAMES = (
-    "LANGSMITH_API_KEY",
-    "LANGSMITH_ENDPOINT",
-    "LANGSMITH_PROJECT",
-    "LANGSMITH_TRACING",
-    "LANGCHAIN_TRACING_V2",
-    "LANGSMITH_WORKSPACE_ID",
-    "LANGCHAIN_CALLBACKS_BACKGROUND",
-)
-
-
-def _valid_openai_api_key(value: str) -> bool:
-    """Reject common env-var corruption before it reaches Authorization headers."""
-    if not value:
-        return False
-    if any(ch.isspace() for ch in value):
-        return False
-    if value.startswith(("At ", "Traceback", "Error", "Exception")):
-        return False
-    return value.startswith("sk-") and len(value) >= 30
 
 
 def load_api_key():
-    """Load a valid OPENAI_API_KEY from process, dotenv, or Windows env scopes."""
-    dotenv_values = _load_dotenv_values({"OPENAI_API_KEY"})
-    candidates: list[tuple[str, str]] = []
-    candidates.append(("process", os.environ.get("OPENAI_API_KEY", "").strip()))
-    if "OPENAI_API_KEY" in dotenv_values:
-        candidates.append((".env", dotenv_values["OPENAI_API_KEY"].strip()))
-    if sys.platform == "win32":
-        for scope in ("User", "Machine"):
-            candidates.append((scope, _read_windows_env_var("OPENAI_API_KEY", scope)))
-
-    saw_invalid = False
-    for source, key in candidates:
-        key = (key or "").strip()
-        if not key:
-            continue
-        if not _valid_openai_api_key(key):
-            saw_invalid = True
-            print(f"WARN Ignoring invalid OPENAI_API_KEY from {source} environment scope")
-            continue
-        os.environ["OPENAI_API_KEY"] = key
-        print(f"OK  OPENAI_API_KEY loaded from {source} environment scope")
+    """Load OPENAI_API_KEY from process env or Windows User env scope."""
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if key:
         return key
-
-    if saw_invalid:
-        os.environ.pop("OPENAI_API_KEY", None)
-        print("ERR OPENAI_API_KEY was found but no valid key-like value was available")
-    else:
-        print("ERR OPENAI_API_KEY is not set -- notebook will likely fail LLM calls")
-    return ""
-
-
-def _read_windows_env_var(name: str, scope: str) -> str:
     try:
-        return subprocess.check_output(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f'[System.Environment]::GetEnvironmentVariable("{name}","{scope}")',
-            ],
+        key = subprocess.check_output(
+            ["powershell", "-command",
+             '[System.Environment]::GetEnvironmentVariable("OPENAI_API_KEY","User")'],
             text=True,
         ).strip()
-    except Exception as exc:
-        print(f"Warning: Could not read {name} from {scope} env: {exc}")
-        return ""
-
-
-def _load_dotenv_values(names: set[str]) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for env_path in (REPO_ROOT / ".env", REPO_ROOT / ".env.local"):
-        if not env_path.is_file():
-            continue
-        for raw_line in env_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            if key not in names or key in values:
-                continue
-            values[key] = value.strip().strip('"').strip("'")
-    return values
-
-
-def load_langsmith_env():
-    """Load LangSmith/LangChain tracing vars without printing secret values."""
-    names = set(LANGSMITH_ENV_NAMES)
-    dotenv_values = _load_dotenv_values(names)
-    loaded: dict[str, str] = {}
-
-    for name in sorted(names):
-        value = os.environ.get(name, "").strip()
-        source = "process"
-        if not value and name in dotenv_values:
-            value = dotenv_values[name].strip()
-            source = ".env"
-        if not value and sys.platform == "win32":
-            for scope in ("User", "Machine"):
-                value = _read_windows_env_var(name, scope).strip()
-                if value:
-                    source = scope
-                    break
-        if value:
-            os.environ[name] = value
-            loaded[name] = source
-
-    if os.environ.get("LANGSMITH_API_KEY"):
-        os.environ.setdefault("LANGSMITH_TRACING", "true")
-        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-        os.environ.setdefault("LANGCHAIN_CALLBACKS_BACKGROUND", "false")
-        loaded.setdefault("LANGSMITH_TRACING", "default:true")
-        loaded.setdefault("LANGCHAIN_TRACING_V2", "default:true")
-        loaded.setdefault("LANGCHAIN_CALLBACKS_BACKGROUND", "default:false")
-
-    if loaded:
-        visible = ", ".join(
-            f"{key}<{source}>" for key, source in sorted(loaded.items())
-        )
-        print(f"OK  LangSmith tracing environment visible: {visible}")
+    except Exception as e:
+        print(f"Warning: Could not read OPENAI_API_KEY from User env: {e}")
+        key = ""
+    if key:
+        os.environ["OPENAI_API_KEY"] = key
+        print("OK  OPENAI_API_KEY loaded from User environment scope")
     else:
-        print("WARN LangSmith tracing environment not visible to runner")
-    return loaded
-
-
-def select_kernel_name() -> str:
-    """Determine available kernel: prefer py312-codex over stale python3 spec."""
-    try:
-        _ks = subprocess.check_output(["jupyter", "kernelspec", "list", "--json"], text=True)
-        import json as _json
-
-        _kernels = _json.loads(_ks).get("kernelspecs", {})
-        if "py312-codex" in _kernels:
-            return "py312-codex"
-        if "python3" in _kernels:
-            return "python3"
-        if _kernels:
-            return list(_kernels.keys())[0]
-    except Exception:
-        pass
-    return "py312-codex"
-
-
-def check_langsmith_cli() -> bool:
-    """Check the LangSmith CLI without printing any credential values."""
-    exe = shutil.which("langsmith")
-    if not exe:
-        print("WARN langsmith CLI executable is not on PATH")
-        return False
-    try:
-        result = subprocess.run(
-            ["langsmith", "--version"],
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        output = (result.stdout or result.stderr or "").strip()
-        if output:
-            print(f"OK  langsmith CLI: {output}")
-        return result.returncode == 0
-    except Exception as exc:
-        print(f"WARN langsmith CLI check failed: {exc}")
-        return False
-
-
-def probe_langsmith_kernel_env() -> bool:
-    """Verify the child Jupyter kernel sees tracing env vars; prints booleans only."""
-    try:
-        import nbformat
-        from nbclient import NotebookClient
-    except ImportError as exc:
-        print(f"WARN Cannot probe kernel env; missing notebook dependency: {exc}")
-        return False
-
-    kernel_name = select_kernel_name()
-    print(f"OK  Probing LangSmith env in kernel: {kernel_name}")
-    names_literal = repr(list(LANGSMITH_ENV_NAMES))
-    code = (
-        "import os, json\n"
-        f"names = {names_literal}\n"
-        "presence = {name: bool(os.environ.get(name)) for name in names}\n"
-        "print('LANGSMITH_KERNEL_ENV=' + json.dumps(presence, sort_keys=True))\n"
-    )
-    nb = nbformat.v4.new_notebook()
-    nb.cells.append(nbformat.v4.new_code_cell(code))
-    try:
-        client = NotebookClient(
-            nb,
-            timeout=120,
-            kernel_name=kernel_name,
-            allow_errors=False,
-            resources={"metadata": {"path": str(REPO_ROOT)}},
-        )
-        client.execute()
-    except Exception as exc:
-        print(f"WARN LangSmith kernel env probe failed: {exc}")
-        return False
-
-    probe_line = ""
-    for out in nb.cells[0].get("outputs", []):
-        text = "".join(out.get("text", ""))
-        for line in text.splitlines():
-            if line.startswith("LANGSMITH_KERNEL_ENV="):
-                probe_line = line
-    if not probe_line:
-        print("WARN LangSmith kernel env probe produced no result")
-        return False
-    print(probe_line)
-    import json as _json
-
-    presence = _json.loads(probe_line.split("=", 1)[1])
-    required = (
-        "LANGSMITH_API_KEY",
-        "LANGSMITH_PROJECT",
-        "LANGSMITH_TRACING",
-        "LANGCHAIN_TRACING_V2",
-        "LANGCHAIN_CALLBACKS_BACKGROUND",
-    )
-    missing = [name for name in required if not presence.get(name)]
-    if missing:
-        print(f"WARN LangSmith kernel env missing required keys: {', '.join(missing)}")
-        return False
-    print("OK  LangSmith env is visible inside the child Jupyter kernel")
-    return True
+        print("ERR OPENAI_API_KEY is not set -- notebook will likely fail LLM calls")
+    return key
 
 
 def check_nbclient():
     try:
         import nbclient  # noqa
         import nbformat  # noqa
-
         print("OK  nbclient and nbformat are available")
         return True
     except ImportError as e:
         print(f"ERR Missing dependency: {e}")
-        print(
-            "    Install with: pip install nbclient nbformat jupyter_client ipykernel"
-        )
+        print("    Install with: pip install nbclient nbformat jupyter_client ipykernel")
         return False
 
 
@@ -287,11 +74,9 @@ def execute_notebook(resume: bool = False):
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    if not NOTEBOOK_PATH.exists():
-        print(f"ERR Notebook not found: {NOTEBOOK_PATH}")
-        print(
-            "    Set IDD_NOTEBOOK to an existing notebook filename if overriding the default."
-        )
+    if not PATCHED_NB.exists():
+        print(f"ERR Patched notebook not found: {PATCHED_NB}")
+        print("    Run: python _patch_notebook.py  first")
         sys.exit(1)
 
     OUTPUT_DIR.mkdir(exist_ok=True)
@@ -299,22 +84,35 @@ def execute_notebook(resume: bool = False):
     executed_nb_path = OUTPUT_DIR / f"executed_{timestamp}.ipynb"
 
     print("\n" + "=" * 60)
-    print(f"Executing: {NOTEBOOK_PATH.name}")
+    print(f"Executing: {PATCHED_NB.name}")
     print(f"Timeout:   {TIMEOUT}s ({TIMEOUT // 60} min)")
     print(f"Output:    {executed_nb_path}")
     print("=" * 60 + "\n")
 
-    with open(NOTEBOOK_PATH, encoding="utf-8") as f:
+    with open(PATCHED_NB, encoding="utf-8") as f:
         nb = nbformat.read(f, as_version=4)
 
-    kernel_name = select_kernel_name()
+    # Determine available kernel: prefer py312-codex (Python 3.12) over stale python3 spec
+    import subprocess as _sp
+    try:
+        _ks = _sp.check_output(["jupyter", "kernelspec", "list", "--json"], text=True)
+        import json as _json
+        _kernels = _json.loads(_ks).get("kernelspecs", {})
+        if "py312-codex" in _kernels:
+            kernel_name = "py312-codex"
+        elif "python3" in _kernels:
+            kernel_name = "python3"
+        else:
+            kernel_name = list(_kernels.keys())[0]
+    except Exception:
+        kernel_name = "py312-codex"
     print(f"OK  Using kernel: {kernel_name}")
 
     client = NotebookClient(
         nb,
         timeout=TIMEOUT,
         kernel_name=kernel_name,
-        allow_errors=True,
+        allow_errors=False,
         resources={"metadata": {"path": str(REPO_ROOT)}},
     )
 
@@ -325,30 +123,17 @@ def execute_notebook(resume: bool = False):
     import threading as _threading
 
     _log_file = REPO_ROOT / "notebook_run_log.txt"
-    # Truncate / create; tolerate Windows file-share lock from the launching shell.
     try:
-        _log_file.write_text("", encoding="utf-8")
-    except PermissionError as _trunc_exc:
-        print(
-            f"W  could not truncate {_log_file.name} ({_trunc_exc}); continuing with append"
-        )
-        try:
-            with open(_log_file, "a", encoding="utf-8") as _f:
-                _f.write(
-                    f"\n--- run resumed at {datetime.now().isoformat(timespec='seconds')} ---\n"
-                )
-        except Exception as _app_exc:
-            print(f"W  could not append marker to {_log_file.name}: {_app_exc}")
+        _log_file.write_text("", encoding="utf-8")  # truncate / create
+    except PermissionError:
+        pass  # file may be locked on Windows; the tail thread will still read from it
     _stop_tail = _threading.Event()
 
     def _tail_log_to_stdout(log_path: Path, stop_evt: _threading.Event) -> None:
         import time
-
         try:
             with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(
-                    0, 2
-                )  # seek to end (file is empty at start, robust for later writes)
+                fh.seek(0, 2)  # seek to end (file is empty at start, robust for later writes)
                 while not stop_evt.is_set():
                     line = fh.readline()
                     if line:
@@ -358,9 +143,7 @@ def execute_notebook(resume: bool = False):
         except Exception as exc:
             print(f"[PIPELINE tail error] {exc}", flush=True)
 
-    _tail_thread = _threading.Thread(
-        target=_tail_log_to_stdout, args=(_log_file, _stop_tail), daemon=True
-    )
+    _tail_thread = _threading.Thread(target=_tail_log_to_stdout, args=(_log_file, _stop_tail), daemon=True)
     _tail_thread.start()
     print(f"OK  Log tail started → {_log_file}")
 
@@ -373,7 +156,7 @@ def execute_notebook(resume: bool = False):
         for _attempt in range(5):
             try:
                 # Also delete WAL/SHM sidecar files first
-                for _sidecar in ckpt_file.parent.glob("checkpoints.sqlite-*"):
+                for _sidecar in (ckpt_file.parent.glob("checkpoints.sqlite-*")):
                     try:
                         _sidecar.unlink()
                     except OSError:
@@ -383,16 +166,11 @@ def execute_notebook(resume: bool = False):
                 break
             except PermissionError:
                 import time as _time
-
-                print(
-                    f"WARN {ckpt_file.name} locked (attempt {_attempt+1}/5), retrying in 2s..."
-                )
+                print(f"WARN {ckpt_file.name} locked (attempt {_attempt+1}/5), retrying in 2s...")
                 _time.sleep(2)
         else:
-            print(
-                f"WARN Could not delete {ckpt_file.name} — another process may hold it open. "
-                f"Kill lingering Python kernels and retry."
-            )
+            print(f"WARN Could not delete {ckpt_file.name} — another process may hold it open. "
+                  f"Kill lingering Python kernels and retry.")
 
     try:
         client.execute()
@@ -401,54 +179,24 @@ def execute_notebook(resume: bool = False):
     except Exception as exc:
         elapsed = (datetime.now() - start).total_seconds()
         exc_str = str(exc).encode("utf-8", errors="replace").decode("utf-8")
-        print(
-            f"\nWARN Notebook raised an exception after {elapsed:.0f}s: {exc_str[:500]}"
-        )
+        print(f"\nWARN Notebook raised an exception after {elapsed:.0f}s: {exc_str[:500]}")
         # Collect cell errors from outputs
         for i, cell in enumerate(nb.cells):
             if cell.cell_type != "code":
                 continue
             for out in cell.get("outputs", []):
                 if out.get("output_type") == "error":
-                    cell_errors.append(
-                        {
-                            "cell_index": i,
-                            "cell_number": i + 1,
-                            "ename": out.get("ename", ""),
-                            "evalue": out.get("evalue", ""),
-                        }
-                    )
+                    cell_errors.append({
+                        "cell_index": i,
+                        "cell_number": i + 1,
+                        "ename": out.get("ename", ""),
+                        "evalue": out.get("evalue", ""),
+                    })
         if cell_errors:
             print("\nERR Cell errors detected:")
             for err in cell_errors:
-                print(
-                    f"    Cell {err['cell_number']} (idx {err['cell_index']}): "
-                    f"{err['ename']}: {err['evalue']}"
-                )
-
-    # NotebookClient is configured with allow_errors=True so long-running runs
-    # still save the executed notebook. Surface those cell errors explicitly.
-    if not cell_errors:
-        for i, cell in enumerate(nb.cells):
-            if cell.cell_type != "code":
-                continue
-            for out in cell.get("outputs", []):
-                if out.get("output_type") == "error":
-                    cell_errors.append(
-                        {
-                            "cell_index": i,
-                            "cell_number": i + 1,
-                            "ename": out.get("ename", ""),
-                            "evalue": out.get("evalue", ""),
-                        }
-                    )
-        if cell_errors:
-            print("\nERR Cell errors detected in saved notebook:")
-            for err in cell_errors:
-                print(
-                    f"    Cell {err['cell_number']} (idx {err['cell_index']}): "
-                    f"{err['ename']}: {err['evalue']}"
-                )
+                print(f"    Cell {err['cell_number']} (idx {err['cell_index']}): "
+                      f"{err['ename']}: {err['evalue']}")
 
     # Save executed notebook regardless of success
     with open(executed_nb_path, "w", encoding="utf-8") as f:
@@ -477,9 +225,7 @@ def extract_output_paths_from_notebook(nb):
         for out in cell.get("outputs", []):
             text = ""
             if out.get("output_type") in ("stream", "display_data", "execute_result"):
-                text = "".join(
-                    out.get("text", out.get("data", {}).get("text/plain", ""))
-                )
+                text = "".join(out.get("text", out.get("data", {}).get("text/plain", "")))
             for match in path_pattern.findall(text):
                 match = match.strip().rstrip(".,;")
                 if Path(match).suffix.lower() in (".html", ".pdf", ".md", ".png"):
@@ -541,14 +287,8 @@ def print_artifact_summary(artifacts_by_ext, notebook_paths):
         for p in notebook_paths:
             print(f"    {p}")
 
-    print(
-        "\n"
-        + (
-            "OK  All artifact types present."
-            if all_ok
-            else "WARN Some artifact types missing — check notebook execution."
-        )
-    )
+    print("\n" + ("OK  All artifact types present." if all_ok else
+                  "WARN Some artifact types missing — check notebook execution."))
     print("=" * 60)
     return all_ok
 
@@ -564,32 +304,14 @@ def main():
             "checkpoints.sqlite deletion."
         ),
     )
-    parser.add_argument(
-        "--check-langsmith",
-        action="store_true",
-        help=(
-            "Load LangSmith env vars, verify CLI availability, and probe the child "
-            "Jupyter kernel without running the full notebook. Secret values are never printed."
-        ),
-    )
     args = parser.parse_args()
-
-    if args.check_langsmith:
-        loaded = load_langsmith_env()
-        cli_ok = check_langsmith_cli()
-        kernel_ok = probe_langsmith_kernel_env()
-        if not loaded:
-            print("ERR LangSmith env was not loaded")
-        sys.exit(0 if loaded and cli_ok and kernel_ok else 1)
 
     resume_flag_path = REPO_ROOT / "_idd_resume.flag"
     tid_path = REPO_ROOT / "current_run_thread_id.txt"
 
     if args.resume:
         if not tid_path.exists():
-            print(
-                "ERR --resume: current_run_thread_id.txt not found — no prior run to resume"
-            )
+            print("ERR --resume: current_run_thread_id.txt not found — no prior run to resume")
             sys.exit(1)
         saved_tid = tid_path.read_text(encoding="utf-8").strip()
         if not saved_tid:
@@ -597,9 +319,7 @@ def main():
             sys.exit(1)
         ckpt = REPO_ROOT / "checkpoints.sqlite"
         if not ckpt.exists():
-            print(
-                "ERR --resume: checkpoints.sqlite not found — cannot resume without checkpoint"
-            )
+            print("ERR --resume: checkpoints.sqlite not found — cannot resume without checkpoint")
             sys.exit(1)
         # Write resume flag; notebook kernel reads this file to activate resume mode
         resume_flag_path.write_text(saved_tid, encoding="utf-8")
@@ -612,7 +332,6 @@ def main():
         print("OK  Fresh run (resume flag cleared)")
 
     load_api_key()
-    load_langsmith_env()
 
     if not check_nbclient():
         sys.exit(1)
