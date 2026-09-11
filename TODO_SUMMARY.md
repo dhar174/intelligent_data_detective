@@ -46,8 +46,8 @@ This is a quick reference summary of the comprehensive TODO analysis. For full d
    - Effort: 4-5 days
    - Impact: Production readiness
 
-6. **Implement Checkpointing System**
-   - Data loss prevention
+6. **Validate and Harden Existing Checkpointing**
+   - Test the current MemorySaver and SQLite persistence/recovery paths
    - Effort: 2-3 days
    - Impact: Production reliability
 
@@ -106,7 +106,7 @@ This is a quick reference summary of the comprehensive TODO analysis. For full d
 
 ### Performance
 - No profiling data
-- No caching strategy
+- Existing LRU and LangGraph node caching lack profiling and cache-invalidation validation
 - Memory management could be improved
 - No async operations
 
@@ -214,7 +214,7 @@ This is a quick reference summary of the comprehensive TODO analysis. For full d
 
 - [Full Comprehensive Analysis](./COMPREHENSIVE_TODO_ANALYSIS.md)
 - [Technical Review](./idd_v5_technical_review.md)
-- [Bug Hunt Report](./BUG_HUNT_REPORT.md)
+- [Bug Hunt Report](./v5_bug_report.md)
 - [Memory Integration Analysis](./complete_memory_integration_analysis.md)
 
 ---

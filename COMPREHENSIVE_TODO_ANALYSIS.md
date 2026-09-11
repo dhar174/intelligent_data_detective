@@ -125,12 +125,12 @@ This document provides a comprehensive analysis of the `IntelligentDataDetective
   - **Priority**: P2 - Medium
 
 #### 2.2 Error Recovery and Resilience
-- [ ] **CRITICAL**: Implement comprehensive checkpointing
-  - Add checkpoint validation and recovery
-  - Implement automatic checkpoint cleanup
-  - Create checkpoint migration utilities
+- [ ] **HIGH**: Validate and harden existing checkpointing
+  - Add checkpoint validation and recovery tests
+  - Verify automatic checkpoint cleanup
+  - Validate the existing SQLite migration and restore paths
   - **Estimated Effort**: 2-3 days
-  - **Priority**: P0 - Critical
+  - **Priority**: P1 - High
 
 - [ ] **HIGH**: Add circuit breaker pattern
   - Implement circuit breakers for external API calls
