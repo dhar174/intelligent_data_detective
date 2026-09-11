@@ -1,5 +1,35 @@
 # Error Handling and Validation Framework
 
+## Tool error response contract
+
+Data-manipulation tools keep their existing success strings. Failures return a
+dictionary with these stable fields:
+
+```python
+{
+    "status": "error",
+    "operation": "fill_missing_median",
+    "reason": "Column 'name' is not numeric.",
+    "action": "Choose a numeric column before calculating a median.",
+}
+```
+
+`status` distinguishes failures from successful responses, `operation`
+identifies the tool, `reason` explains the failure without exposing a
+traceback, and `action` gives the caller a corrective next step. Unexpected
+exceptions are logged with diagnostic context and return the same safe shape.
+
+The data-cleaning tools validate inputs before mutation:
+
+- `drop_column` requires a non-empty existing column name.
+- `delete_rows` requires one or more non-empty pandas query expressions. An
+  invalid query or an empty match leaves the DataFrame unchanged.
+- `fill_missing_median` requires a numeric column with at least one non-null
+  value. The update is made on a copy and registered only after validation.
+
+For a missing, empty, or invalid DataFrame ID, the decorator returns an error
+with `operation`, `reason`, and `action` before the tool runs.
+
 ## Overview
 
 The Error Handling and Validation Framework provides robust error handling and runtime validation for the IntelligentDataDetective notebook. It consists of two main components:
@@ -122,14 +152,12 @@ The framework automatically handles these error types:
 6. **ParserError**: Data parsing/format issues
 7. **General Exceptions**: Unexpected runtime errors
 
-## Error Message Format
+## Error response behavior
 
-All error messages follow a consistent format:
-- DataFrame validation: `"Error: DataFrame with ID 'df_id' not found or is invalid."`
-- File errors: `"Error: File not found - [details]"`
-- Column errors: `"Error: Column or key 'column_name' not found"`
-- Value errors: `"Error: Invalid value - [details]"`
-- General errors: `"Error in function_name: [details]"`
+Updated data tools return the structured contract above for validation and
+processing failures. Successful responses remain backward-compatible strings.
+The decorator uses the same contract for missing datasets, file errors, missing
+columns, invalid values, parse errors, and unexpected failures.
 
 ## Logging Integration
 
