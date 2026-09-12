@@ -102,6 +102,11 @@ def test_cleaning_tools_validate_and_preserve_failed_mutations():
     _assert_error(malformed_selector, "delete_rows")
     assert registry.get_dataframe("df").equals(original)
 
+    invalid_signature = tools["drop_column"]("df", "value", "extra")
+    _assert_error(invalid_signature, "drop_column")
+    assert "too many positional arguments" in invalid_signature["reason"]
+    assert registry.get_dataframe("df").equals(original)
+
     non_numeric = tools["fill_missing_median"]("df", "name")
     _assert_error(non_numeric, "fill_missing_median")
     assert registry.get_dataframe("df").equals(original)

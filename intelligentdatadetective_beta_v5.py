@@ -3212,8 +3212,12 @@ def handle_tool_errors(func):
                     if func_signature is not None
                     else None
                 )
-            except TypeError:
-                bound_args = None
+            except TypeError as exc:
+                return _tool_error(
+                    func.__name__,
+                    f"Invalid arguments: {exc}",
+                    "Check the operation parameters and try again.",
+                )
 
             # Bind the declared df_id parameter first, even for non-string values.
             if bound_args and 'df_id' in bound_args.arguments:
