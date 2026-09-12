@@ -60,8 +60,17 @@ def test_cleaning_tools_validate_and_preserve_failed_mutations():
     _assert_error(missing, "drop_column")
     assert registry.get_dataframe("df").equals(original)
 
+    empty_df_id = tools["drop_column"]("", "value")
+    _assert_error(empty_df_id, "drop_column")
+    assert empty_df_id["reason"] == "DataFrame ID must be a non-empty string."
+    assert registry.get_dataframe("df").equals(original)
+
     invalid_query = tools["delete_rows"]("df", ["unknown > 1"])
     _assert_error(invalid_query, "delete_rows")
+    assert registry.get_dataframe("df").equals(original)
+
+    malformed_selector = tools["delete_rows"]("df", {"valid": ["value > 1"], "bad": 123})
+    _assert_error(malformed_selector, "delete_rows")
     assert registry.get_dataframe("df").equals(original)
 
     non_numeric = tools["fill_missing_median"]("df", "name")
@@ -101,3 +110,29 @@ def test_unexpected_tool_failure_is_safe_and_logged(caplog):
     assert result["reason"] == "An unexpected data-processing failure occurred."
     assert "internal details" not in result["reason"]
     assert "internal details" in caplog.text
+
+
+def test_drop_and_delete_rows_success_paths_and_no_match():
+    registry = Registry()
+    registry.register_dataframe(
+        pd.DataFrame({0: [10, 20, 30], "value": [1.0, 2.0, 3.0], "name": ["a", "b", "c"]}),
+        "df",
+    )
+    tools = _load_tools(registry)
+
+    drop_success = tools["drop_column"]("df", "value")
+    assert drop_success == "Column dropped successfully. New columns: 0, name"
+    dropped_df = registry.get_dataframe("df")
+    assert list(dropped_df.columns) == [0, "name"]
+
+    non_inplace = tools["delete_rows"]("df", ["`0` >= 20"], inplace=False)
+    assert non_inplace == dropped_df.loc[[1, 2]].to_json()
+    assert registry.get_dataframe("df").equals(dropped_df)
+
+    delete_success = tools["delete_rows"]("df", ["`0` >= 20"])
+    assert delete_success == "2 rows deleted successfully."
+    assert registry.get_dataframe("df")[0].tolist() == [10]
+
+    no_match = tools["delete_rows"]("df", ["`0` > 999"])
+    assert no_match == "No rows match the provided condition(s): ['`0` > 999']"
+    assert registry.get_dataframe("df")[0].tolist() == [10]

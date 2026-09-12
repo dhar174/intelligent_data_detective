@@ -11557,6 +11557,70 @@ def main():
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
 
+    # --- W14I-TOOL-ERROR-HARDENING: close scoped error-handling review gaps in data tools ---
+    _W14I_TOOL_ERROR_GUARD = "# W14I-TOOL-ERROR-HARDENING"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if (
+            "# Error Handling and Validation Framework" not in src
+            or "def drop_column(df_id: str, column_name: str) -> str:" not in src
+            or "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:" not in src
+        ):
+            continue
+        if _W14I_TOOL_ERROR_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W14I-TOOL-ERROR-HARDENING already applied")
+            break
+
+        src = src.replace(
+            "            df_id = None\n\n            # Check first positional argument\n",
+            "            df_id = None\n            df_id_supplied = False\n\n            # Check first positional argument\n",
+            1,
+        )
+        src = src.replace(
+            "            if args and isinstance(args[0], str):\n                df_id = args[0]\n",
+            "            if args and isinstance(args[0], str):\n                df_id = args[0]\n                df_id_supplied = True\n",
+            1,
+        )
+        src = src.replace(
+            "            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n",
+            "            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n                df_id_supplied = True\n",
+            1,
+        )
+        src = src.replace(
+            "            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n\n            # Validate DataFrame exists if df_id is found\n            if df_id and not validate_dataframe_exists(df_id):\n",
+            "            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n                df_id_supplied = True\n\n            # Validate DataFrame exists for all explicitly supplied IDs.\n            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):\n                return _tool_error(\n                    func.__name__,\n                    \"DataFrame ID must be a non-empty string.\",\n                    \"Provide the ID of a registered, non-empty DataFrame.\",\n                )\n            if df_id_supplied and not validate_dataframe_exists(df_id):\n",
+            1,
+        )
+        src = src.replace(
+            "    updated_df = df.drop(columns=[column_name])\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return \"Column dropped successfully. New columns: \" + \", \".join(\n        updated_df.columns.tolist()\n    )\n",
+            "    updated_df = df.drop(columns=[column_name])\n    new_columns = \", \".join(map(str, updated_df.columns.tolist()))\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return f\"Column dropped successfully. New columns: {new_columns}\"\n",
+            1,
+        )
+        src = src.replace(
+            "    else:\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            if isinstance(condition_list, (list, tuple))\n            for condition in condition_list\n        ]\n",
+            "    else:\n        invalid_selector_keys = [\n            key\n            for key, condition_list in conditions.items()\n            if not isinstance(condition_list, (list, tuple))\n        ]\n        if invalid_selector_keys:\n            return _tool_error(\n                operation,\n                \"The row selector dictionary contains non-list values.\",\n                \"Provide only list/tuple query clauses for each selector key.\",\n            )\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            for condition in condition_list\n        ]\n",
+            1,
+        )
+        src = src.replace(
+            "    except (KeyError, SyntaxError, ValueError, TypeError) as exc:\n",
+            "    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:\n",
+            1,
+        )
+        if _W14I_TOOL_ERROR_GUARD not in src:
+            src = src.replace(
+                "# Error Handling and Validation Framework\n",
+                "# Error Handling and Validation Framework\n# W14I-TOOL-ERROR-HARDENING\n",
+                1,
+            )
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14I-TOOL-ERROR-HARDENING fixes scoped tool validation and copy-before-register safety")
+        break
+
     # ============================  END WAVE 4 PATCHES  ===========================
 
     # ============================  END WAVE 2 PATCHES  ===========================

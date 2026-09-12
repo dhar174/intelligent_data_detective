@@ -113,12 +113,25 @@ def get_column_names(df_id: str) -> str:
 def drop_column(df_id: str, column_name: str) -> str:
     """Drop a specified column from the DataFrame."""
     df = global_df_registry.get_dataframe(df_id)
+    if not isinstance(column_name, str) or not column_name.strip():
+        return _tool_error(
+            "drop_column",
+            "column_name must be a non-empty string.",
+            "Provide the name of an existing column.",
+        )
     if column_name not in df.columns:
-        return f"Error: Column '{column_name}' not found. Available: {list(df.columns)}"
-    
-    df.drop(columns=[column_name], inplace=True)
-    global_df_registry.register_dataframe(df, df_id, global_df_registry.get_raw_path_from_id(df_id))
-    return f"Column '{column_name}' dropped successfully."
+        return _tool_error(
+            "drop_column",
+            f"Column '{column_name}' does not exist.",
+            f"Choose one of: {', '.join(map(str, df.columns))}.",
+        )
+
+    updated_df = df.drop(columns=[column_name])
+    new_columns = ", ".join(map(str, updated_df.columns.tolist()))
+    global_df_registry.register_dataframe(
+        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
+    )
+    return f"Column dropped successfully. New columns: {new_columns}"
 ```
 
 ### Tool Function with File I/O
@@ -164,7 +177,8 @@ columns, invalid values, parse errors, and unexpected failures.
 The framework automatically logs all errors with timestamps:
 
 ```
-2025-07-24 18:16:51,365 - ERROR - get_column_names: Error: DataFrame with ID 'invalid_id' not found or is invalid.
+2026-09-11 18:24:49,981 - ERROR - broken failed: RuntimeError('internal details')
+2026-09-11 18:24:49,981 - ERROR - {'status': 'error', 'operation': 'broken', 'reason': 'An unexpected data-processing failure occurred.', 'action': 'Retry the operation; if it continues, check the dataset and logs.'}
 ```
 
 ## Testing

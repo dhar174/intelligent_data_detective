@@ -3218,19 +3218,29 @@ def handle_tool_errors(func):
         try:
             # Extract DataFrame ID from function arguments
             df_id = None
+            df_id_supplied = False
 
             # Check first positional argument
             if args and isinstance(args[0], str):
                 df_id = args[0]
+                df_id_supplied = True
             # Check for df_id in keyword arguments
             elif 'df_id' in kwargs:
                 df_id = kwargs['df_id']
+                df_id_supplied = True
             # For functions with params as first arg, check params.df_id
             elif args and hasattr(args[0], 'df_id'):
                 df_id = args[0].df_id
+                df_id_supplied = True
 
-            # Validate DataFrame exists if df_id is found
-            if df_id and not validate_dataframe_exists(df_id):
+            # Validate DataFrame exists for all explicitly supplied IDs.
+            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):
+                return _tool_error(
+                    func.__name__,
+                    "DataFrame ID must be a non-empty string.",
+                    "Provide the ID of a registered, non-empty DataFrame.",
+                )
+            if df_id_supplied and not validate_dataframe_exists(df_id):
                 return _tool_error(
                     func.__name__,
                     f"DataFrame '{df_id}' was not found or is empty.",
@@ -3389,12 +3399,11 @@ def drop_column(df_id: str, column_name: str) -> str:
             f"Choose one of: {', '.join(map(str, df.columns))}.",
         )
     updated_df = df.drop(columns=[column_name])
+    new_columns = ", ".join(map(str, updated_df.columns.tolist()))
     global_df_registry.register_dataframe(
         updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
     )
-    return "Column dropped successfully. New columns: " + ", ".join(
-        updated_df.columns.tolist()
-    )
+    return f"Column dropped successfully. New columns: {new_columns}"
 
 @tool("delete_rows")
 @cap_output(max_chars=3000, max_bytes=10_000, max_lines=200, add_footer=True, mode="preserve")
@@ -3413,10 +3422,20 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
     elif isinstance(conditions, list):
         query_parts = conditions
     else:
+        invalid_selector_keys = [
+            key
+            for key, condition_list in conditions.items()
+            if not isinstance(condition_list, (list, tuple))
+        ]
+        if invalid_selector_keys:
+            return _tool_error(
+                operation,
+                "The row selector dictionary contains non-list values.",
+                "Provide only list/tuple query clauses for each selector key.",
+            )
         query_parts = [
             condition
             for condition_list in conditions.values()
-            if isinstance(condition_list, (list, tuple))
             for condition in condition_list
         ]
     if not query_parts or not all(isinstance(condition, str) and condition.strip() for condition in query_parts):
@@ -3429,7 +3448,7 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
     df = global_df_registry.get_dataframe(df_id)
     try:
         rows_to_drop = df.query(query_str).index
-    except (KeyError, SyntaxError, ValueError, TypeError) as exc:
+    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
         return _tool_error(
             operation,
             f"The row selector is invalid: {type(exc).__name__}.",
