@@ -1,0 +1,25 @@
+digraph repo_diagram {
+  label="intelligent_data_detective: mixed module diagram";
+  labelloc=t;
+  graph [rankdir=LR, fontsize=18, fontname="Arial"];
+  node [shape=box, style="rounded,filled", fontname="Arial", fillcolor="#EEF2FF", color="#3730A3"];
+  edge [fontname="Arial", color="#6B7280"];
+  "demo_memory_enhancement" [label="demo_memory_enhancement"];
+  "demo_memory_lifecycle" [label="demo_memory_lifecycle"];
+  "DEBUG_MEMORY" [label="DEBUG_MEMORY", shape=hexagon, fillcolor="#FFF7ED", color="#C2410C"];
+  "memory_enhancements" [label="memory_enhancements"];
+  "test_error_handling_framework" [label="test_error_handling_framework"];
+  "test_intelligent_data_detective" [label="test_intelligent_data_detective"];
+  "test_memory_categorization" [label="test_memory_categorization"];
+  "test_memory_integration" [label="test_memory_integration"];
+  "test_memory_lifecycle" [label="test_memory_lifecycle"];
+  "demo_memory_enhancement" -> "memory_enhancements";
+  "demo_memory_lifecycle" -> "DEBUG_MEMORY" [style=dashed, color="#C2410C", label="reads"];
+  "demo_memory_lifecycle" -> "memory_enhancements";
+  "memory_enhancements" -> "DEBUG_MEMORY" [style=dashed, color="#C2410C", label="reads"];
+  "test_error_handling_framework" -> "test_intelligent_data_detective";
+  "test_memory_categorization" -> "memory_enhancements";
+  "test_memory_integration" -> "memory_enhancements";
+  "test_memory_lifecycle" -> "DEBUG_MEMORY" [style=dashed, color="#C2410C", label="reads"];
+  "test_memory_lifecycle" -> "memory_enhancements";
+}

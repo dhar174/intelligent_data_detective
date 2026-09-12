@@ -1,0 +1,1 @@
+Cleaning completed. Artifacts saved to the output/ directory. Proceeding to the next steps (visualizations and formal report) after your confirmation or on instruction.

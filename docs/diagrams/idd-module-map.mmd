@@ -1,0 +1,33 @@
+flowchart LR
+%% intelligent_data_detective: mixed module diagram
+    demo_memory_enhancement["demo_memory_enhancement"]
+    demo_memory_lifecycle["demo_memory_lifecycle"]
+    DEBUG_MEMORY(["DEBUG_MEMORY"])
+    memory_enhancements["memory_enhancements"]
+    test_error_handling_framework["test_error_handling_framework"]
+    test_intelligent_data_detective["test_intelligent_data_detective"]
+    test_memory_categorization["test_memory_categorization"]
+    test_memory_integration["test_memory_integration"]
+    test_memory_lifecycle["test_memory_lifecycle"]
+
+    demo_memory_enhancement --> memory_enhancements
+    demo_memory_lifecycle -. reads .-> DEBUG_MEMORY
+    demo_memory_lifecycle --> memory_enhancements
+    memory_enhancements -. reads .-> DEBUG_MEMORY
+    test_error_handling_framework --> test_intelligent_data_detective
+    test_memory_categorization --> memory_enhancements
+    test_memory_integration --> memory_enhancements
+    test_memory_lifecycle -. reads .-> DEBUG_MEMORY
+    test_memory_lifecycle --> memory_enhancements
+
+    classDef code fill:#eef2ff,stroke:#3730a3,stroke-width:1.5px
+    classDef environment fill:#fff7ed,stroke:#c2410c,stroke-width:1.5px
+    class DEBUG_MEMORY environment
+    class demo_memory_enhancement code
+    class demo_memory_lifecycle code
+    class memory_enhancements code
+    class test_error_handling_framework code
+    class test_intelligent_data_detective code
+    class test_memory_categorization code
+    class test_memory_integration code
+    class test_memory_lifecycle code

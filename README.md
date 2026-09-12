@@ -231,62 +231,54 @@ flowchart LR
 
 ### 📊 Basic Usage
 
-#### Using Jupyter Notebook (Recommended)
+#### Running the W14 patched notebook (Recommended)
 
-1. **Open the main notebook**:
+The current completion baseline is the committed patched notebook:
+`IntelligentDataDetective_beta_v5_patched.ipynb`.
+
+The proof run `IDD_run_run_default_id-20260504-1338-b3079aea` completed on the deterministic `retail_orders` dataset with:
+- `validate_run.py` score **12/12**
+- `validate_artifact_quality.py` score **9/9**
+- native structured-output markers for all major nodes
+- 3/3 visualization fan-in
+- canonical `final_report.html`, `final_report.md`, and `final_report.pdf`
+- no recovery/final-hop/path-normalization warnings and no marker `.txt` artifacts
+
+1. **Run the patched notebook through the live runner**:
    ```bash
-   jupyter notebook IntelligentDataDetective_beta_v5.ipynb
+   export OPENAI_API_KEY="your-openai-api-key"
+   export IDD_NOTEBOOK="IntelligentDataDetective_beta_v5_patched.ipynb"
+   export IDD_SAMPLE_DATASET="retail_orders"
+   python run_notebook_live.py
    ```
 
-2. **Configure your analysis**:
-   ```python
-   # Set your data source
-   sample_prompt_text = "Analyze this customer review dataset for sentiment patterns and insights"
-   
-   # Configure analysis parameters
-   config = {
-       "configurable": {
-           "thread_id": "data-analysis-session",
-           "user_id": "analyst-1",
-           "recursion_limit": 50
-       }
-   }
+2. **Validate the latest run**:
+   ```bash
+   python validate_run.py --latest --log-path notebook_run_log.txt --window 180
+   python validate_artifact_quality.py --latest
    ```
 
-3. **Run the analysis**:
-   ```python
-   # Execute the multi-agent workflow
-   for chunk in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
-       print(chunk)
+3. **Run no-key regression checks before expensive notebook proofs**:
+   ```bash
+   python -m pytest test_validate_run.py tests/unit tests/integration -q
+   python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
+   ```
+   These checks verify validator behavior, the committed W14 patched notebook markers, and the importable no-key core without requiring API credentials.
+
+4. **Regenerate the patched notebook after notebook behavior changes**:
+   ```bash
+   python _patch_notebook.py
+   python -m pytest test_validate_run.py -q
    ```
 
-#### Example Workflow
+Do not hand-edit `IntelligentDataDetective_beta_v5_patched.ipynb`; edit `_patch_notebook.py` and regenerate it.
 
-```python
-# Note: This project is currently notebook-based. Use the Jupyter notebook for analysis.
-# Open IntelligentDataDetective_beta_v5.ipynb and run the cells
+#### Using Jupyter interactively
 
-# Example of how to use the compiled graph from the notebook:
-# After running the notebook setup cells (e.g., cells 1–5, which import libraries, initialize variables, and load data), you can use:
+You can also open the patched notebook manually:
 
-# Configure your analysis
-inputs = {
-    "user_prompt": "Identify key patterns and anomalies in this sales data",
-    "df_ids": ["sales_data_2023"],  # Replace "sales_data_2023" with the actual dataframe ID obtained from the notebook setup cells
-    "messages": []
-}
-
-config = {
-    "configurable": {
-        "thread_id": "data-analysis-session",
-        "user_id": "analyst-1"
-    },
-    "recursion_limit": 50
-}
-
-# Run the analysis using the compiled graph
-for chunk in data_detective_graph.stream(inputs, config=config, stream_mode="updates"):
-    print(chunk)
+```bash
+jupyter notebook IntelligentDataDetective_beta_v5_patched.ipynb
 ```
 
 ## 📖 Detailed Usage Examples
