@@ -11595,7 +11595,7 @@ def main():
         )
         src = src.replace(
             "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception as e:\n                    print(f\"Error loading DataFrame from {path}: {e}\")\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
-            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception:\n                    logging.exception(\"Error loading DataFrame from %s\", path)\n                    raise\n                self.registry[df_id][\"df\"] = loaded\n",
+            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception:\n                    logging.exception(\"Error loading DataFrame from %s\", path)\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
             1,
         )
         src = src.replace(

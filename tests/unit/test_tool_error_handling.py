@@ -33,11 +33,16 @@ class Registry:
             return None
 
         if raw_path.suffix == ".pkl":
-            df = pd.read_pickle(raw_path)
+            reader = pd.read_pickle
         elif raw_path.suffix == ".json":
-            df = pd.read_json(raw_path, orient="records")
+            reader = lambda path: pd.read_json(path, orient="records")
         else:
-            df = pd.read_csv(raw_path)
+            reader = pd.read_csv
+        try:
+            df = reader(raw_path)
+        except Exception:
+            logging.exception("Error loading DataFrame from %s", raw_path)
+            return None
         self.frames[df_id] = df
         return df
 
@@ -172,6 +177,21 @@ def test_unexpected_validation_failure_uses_tool_failure(caplog):
     _assert_error(result, "drop_column")
     assert result["reason"] == "An unexpected data-processing failure occurred."
     assert "registry unavailable" in caplog.text
+
+
+def test_unreadable_backing_file_logs_and_returns_missing_error(tmp_path, caplog):
+    registry = Registry()
+    broken_path = tmp_path / "broken.pkl"
+    broken_path.write_text("not a pickle", encoding="utf-8")
+    registry.register_dataframe(None, "df", str(broken_path))
+    tools = _load_tools(registry)
+
+    with caplog.at_level(logging.ERROR):
+        result = tools["drop_column"]("df", "value")
+
+    _assert_error(result, "drop_column")
+    assert result["reason"] == "DataFrame 'df' was not found or is empty."
+    assert "Error loading DataFrame from" in caplog.text
 
 
 def test_drop_and_delete_rows_success_paths_and_no_match():

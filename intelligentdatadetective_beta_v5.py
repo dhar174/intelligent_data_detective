@@ -1164,7 +1164,7 @@ class DataFrameRegistry:
                     return None
                 except Exception:
                     logging.exception("Error loading DataFrame from %s", path)
-                    raise
+                    return None
                 self.registry[df_id]["df"] = loaded
                 self._touch_cache(df_id, loaded)
                 return loaded
