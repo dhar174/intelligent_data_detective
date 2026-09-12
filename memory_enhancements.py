@@ -239,6 +239,39 @@ class MemoryPolicyEngine:
         self.logger = logging.getLogger(__name__)
         if debug:
             self.logger.setLevel(logging.DEBUG)
+
+    def _get_all_memories_grouped_by_kind(self, limit: int = 60000) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch all memories under ('memories',) and group them by kind."""
+        try:
+            all_items = self.store.search(("memories",), query="", limit=limit)
+            items_by_kind = {}
+
+            for item in all_items:
+                # Handle both dict and potential SearchItem objects
+                item_value = item.value if hasattr(item, "value") else item
+                if not isinstance(item_value, dict):
+                    continue
+
+                # Determine kind from data or from the namespace if available
+                kind = item_value.get("kind")
+                if not kind and hasattr(item, "namespace") and len(item.namespace) >= 2:
+                    kind = item.namespace[1]
+
+                if kind:
+                    if kind not in items_by_kind:
+                        items_by_kind[kind] = []
+
+                    # Ensure the dict contains necessary fields
+                    if "id" not in item_value and hasattr(item, "key"):
+                        item_value = item_value.copy()
+                        item_value["id"] = item.key
+
+                    items_by_kind[kind].append(item_value)
+
+            return items_by_kind
+        except Exception as e:
+            self.logger.error(f"Failed to fetch and group memories: {e}")
+            return {}
     
     def insert(self, record: MemoryRecord) -> MemoryRecord:
         """
@@ -372,16 +405,18 @@ class MemoryPolicyEngine:
             MEMORY_METRICS["memory_prune_runs_total"] += 1
             report = PruneReport()
             
+            # Fetch all items under the memories base namespace in a single call
+            items_by_kind = self._get_all_memories_grouped_by_kind(limit=60000)
+            if not items_by_kind:
+                return report
+
             for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
-                namespace = ("memories", kind)
                 policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+                items = items_by_kind.get(kind, [])
+                if not items:
+                    continue
                 
                 try:
-                    # Get all items in namespace
-                    items = self.store.search(namespace, query="", limit=10000)  # Large limit to get all
-                    if not items:
-                        continue
-                    
                     current_time = time.time()
                     to_delete = []
                     
@@ -588,6 +623,9 @@ class MemoryPolicyEngine:
     def _maybe_prune(self, kind: str):
         """Maybe trigger pruning if thresholds are exceeded."""
         try:
+            # Note: While we could use MEMORY_METRICS, searching ensures we have
+            # an accurate count from the actual store state. This is not an N+1
+            # as it's typically called after a single insertion for one kind.
             policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
             namespace = ("memories", kind)
             items = self.store.search(namespace, query="", limit=10000)
@@ -666,6 +704,12 @@ def put_memory(
         }
         
         store.put(namespace, memory_id, item)
+
+        # Update metrics for consistency even in legacy path
+        MEMORY_METRICS["memory_put_total"] += 1
+        MEMORY_METRICS["memory_items_total"] += 1
+        MEMORY_METRICS["memory_items_by_kind"][kind] = \
+            MEMORY_METRICS["memory_items_by_kind"].get(kind, 0) + 1
     
     return memory_id
 
@@ -935,11 +979,14 @@ def memory_policy_report(store: InMemoryStore) -> Dict[str, Any]:
             "recommendations": []
         }
         
+        # Fetch all memories once and group by kind
+        engine = MemoryPolicyEngine(store)
+        items_by_kind = engine._get_all_memories_grouped_by_kind(limit=60000)
+
         # Check each kind against its policy
         for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
             try:
-                namespace = ("memories", kind)
-                items = store.search(namespace, query="", limit=10000)
+                items = items_by_kind.get(kind, [])
                 count = len(items)
                 policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
                 
@@ -1043,32 +1090,34 @@ def recalculate_importance(store: InMemoryStore, kinds: Optional[List[str]] = No
     """
     try:
         engine = MemoryPolicyEngine(store)
-        kinds_to_process = kinds or ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]
+        kinds_to_process = set(kinds) if kinds else {"conversation", "analysis", "cleaning", "visualization", "insights", "errors"}
+
+        # Fetch all items under the memories base namespace in a single call
+        items_by_kind = engine._get_all_memories_grouped_by_kind(limit=60000)
+
+        # Convert grouped items to records
+        records_by_kind = {}
+        for kind, items in items_by_kind.items():
+            if kind in kinds_to_process:
+                records_by_kind[kind] = []
+                for item in items:
+                    record = MemoryRecord(
+                        id=item.get("id", str(uuid.uuid4())),
+                        kind=kind,
+                        text=item.get("text", ""),
+                        created_at=item.get("created_at", time.time()),
+                        usage_count=item.get("usage_count", 0),
+                        base_importance=item.get("base_importance", 0.5),
+                        dynamic_importance=item.get("dynamic_importance", 0.5),
+                        user_id=item.get("user_id", "user")
+                    )
+                    records_by_kind[kind].append(record)
         
         total_updated = 0
-        for kind in kinds_to_process:
+        for kind, records in records_by_kind.items():
             try:
-                namespace = ("memories", kind)
-                items = store.search(namespace, query="", limit=10000)
-                
-                records = []
-                for item in items:
-                    if isinstance(item, dict):
-                        record = MemoryRecord(
-                            id=item.get("id", str(uuid.uuid4())),
-                            kind=item.get("kind", kind),
-                            text=item.get("text", ""),
-                            created_at=item.get("created_at", time.time()),
-                            usage_count=item.get("usage_count", 0),
-                            base_importance=item.get("base_importance", 0.5),
-                            dynamic_importance=item.get("dynamic_importance", 0.5),
-                            user_id=item.get("user_id", "user")
-                        )
-                        records.append(record)
-                
                 engine.recalc_importance(records)
                 total_updated += len(records)
-                
             except Exception as e:
                 logging.error(f"Failed to update importance for kind {kind}: {e}")
                 continue
