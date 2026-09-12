@@ -315,17 +315,23 @@ class MemoryPolicyEngine:
             
             candidates = []
             
-            # Search each kind
-            for kind in kinds:
-                namespace = ("memories", kind)
-                try:
-                    items = self.store.search(namespace, query=query, limit=limit*2)  # Get more for ranking
-                    for item in items:
-                        if isinstance(item, dict):
+            # Optimized: Search all memory kinds in a single call using prefix matching
+            # This avoids N+1 query pattern when multiple kinds are requested
+            try:
+                namespace_prefix = ("memories",)
+                # Use a larger limit to ensure we get enough candidates across all kinds
+                search_limit = limit * 3 * len(kinds)
+                items = self.store.search(namespace_prefix, query=query, limit=search_limit)
+
+                kinds_set = set(kinds)
+                for item in items:
+                    if isinstance(item, dict):
+                        kind = item.get("kind")
+                        if kind in kinds_set:
                             # Convert to MemoryRecord
                             record = MemoryRecord(
                                 id=item.get("id", str(uuid.uuid4())),
-                                kind=item.get("kind", kind),
+                                kind=kind,
                                 text=item.get("text", ""),
                                 vector=item.get("vector"),
                                 created_at=item.get("created_at", time.time()),
@@ -339,8 +345,8 @@ class MemoryPolicyEngine:
                                 user_id=item.get("user_id", "user")
                             )
                             candidates.append(record)
-                except Exception:
-                    continue
+            except Exception as e:
+                self.logger.error(f"Failed to perform batched memory search: {e}")
             
             # Rank candidates
             ranked = self._rank_memories(query, candidates)
@@ -728,21 +734,31 @@ def retrieve_memories(
     # Original implementation for backward compatibility OR fallback when no policy engine results
     # If specific kinds requested, search those first
     if kinds:
-        for kind in kinds:
-            kind_limit = MEMORY_CONFIG["kinds"].get(kind, {}).get("limit", MEMORY_CONFIG["default_limit"])
-            if limit:
-                # Use provided limit, distributed across kinds
-                kind_limit = min(kind_limit, max(1, limit // len(kinds)))
+        # Optimized: Search all kinds in one call
+        try:
+            namespace_prefix = ("memories",)
+            # Use a reasonably large limit to get candidates from all requested kinds
+            search_limit = (limit or MEMORY_CONFIG["default_limit"]) * 2 * len(kinds)
+            items = store.search(namespace_prefix, query=query, limit=search_limit)
             
-            try:
-                namespace = ("memories", kind)
-                items = store.search(namespace, query=query, limit=kind_limit)
-                for item in items:
-                    if isinstance(item, dict):
-                        item["namespace_kind"] = kind
-                        results.append(item)
-            except Exception:
-                continue
+            kinds_set = set(kinds)
+            kind_counts = {kind: 0 for kind in kinds}
+
+            for item in items:
+                if isinstance(item, dict):
+                    kind = item.get("kind")
+                    if kind in kinds_set:
+                        # Check kind-specific limit
+                        kind_limit = MEMORY_CONFIG["kinds"].get(kind, {}).get("limit", MEMORY_CONFIG["default_limit"])
+                        if limit:
+                            kind_limit = min(kind_limit, max(1, limit // len(kinds)))
+
+                        if kind_counts[kind] < kind_limit:
+                            item["namespace_kind"] = kind
+                            results.append(item)
+                            kind_counts[kind] += 1
+        except Exception as e:
+            logging.debug(f"Fallback batched search failed: {e}")
     
     # If no results from specific kinds, or no kinds specified, fallback to generic namespace
     if not results:
@@ -1078,58 +1094,6 @@ def recalculate_importance(store: InMemoryStore, kinds: Optional[List[str]] = No
     except Exception as e:
         logging.error(f"Failed to recalculate importance: {e}")
         return 0
-def update_memory_with_kind(
-    state: Union[MessagesState, "State"],
-    config: RunnableConfig,
-    kind: MemoryKind,
-    memstore: Optional[InMemoryStore] = None
-) -> str:
-    """
-    Enhanced update_memory function with memory kind categorization.
-    
-    Args:
-        state: Current state with messages
-        config: Runnable configuration with user_id
-        kind: Type of memory being stored
-        memstore: Optional memory store (uses global if not provided)
-        
-    Returns:
-        The memory ID that was created
-    """
-    if memstore is None:
-        # Use global store from notebook context if available
-        try:
-            import builtins
-            memstore = getattr(builtins, 'in_memory_store', None)
-        except:
-            pass
-    
-    if not memstore:
-        return ""
-    
-    user_id = str(config.get("configurable", {}).get("user_id", "user"))
-    
-    # Extract text from last message
-    text = ""
-    if hasattr(state, 'get') and state.get("messages"):
-        last_message = state["messages"][-1]
-        if hasattr(last_message, 'text'):
-            text = last_message.text()
-        else:
-            text = str(last_message)
-    elif hasattr(state, "messages") and state.messages:
-        last_message = state.messages[-1]
-        if hasattr(last_message, 'text'):
-            text = last_message.text()
-        else:
-            text = str(last_message)
-    
-    if not text:
-        return ""
-    
-    return put_memory(memstore, kind, text, user_id=user_id)
-
-
 # Backward-compatible wrapper functions
 def update_memory_with_kind(
     state: Union[MessagesState, "State"],
