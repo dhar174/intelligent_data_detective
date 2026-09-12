@@ -24,6 +24,10 @@ import os
 from typing import Dict, List, Optional, Union, Literal, Any
 from dataclasses import dataclass, field
 from langgraph.store.memory import InMemoryStore
+try:
+    from langgraph.store.base import Put
+except ImportError:
+    Put = None
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.messages import BaseMessage
 from langgraph.graph import MessagesState
@@ -473,6 +477,9 @@ class MemoryPolicyEngine:
             records: List of memory records to update
         """
         try:
+            ops = []
+            batch_available = Put is not None and hasattr(self.store, "batch")
+
             for record in records:
                 policy = MEMORY_POLICIES.get(record.kind, MemoryPolicy())
                 
@@ -504,7 +511,13 @@ class MemoryPolicyEngine:
                     "user_id": record.user_id
                 }
                 
-                self.store.put(namespace, record.id, item)
+                if batch_available:
+                    ops.append(Put(namespace, record.id, item))
+                else:
+                    self.store.put(namespace, record.id, item)
+
+            if ops:
+                self.store.batch(ops)
                 
         except Exception as e:
             self.logger.error(f"Failed to recalculate importance: {e}")
