@@ -11557,6 +11557,82 @@ def main():
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
 
+    # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
+    _W14I_VIZ_MEMBERSHIP_GUARD = "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def viz_evaluator_node(state: State):" not in src or _W14I_VIZ_MEMBERSHIP_GUARD in src:
+            continue
+        if (
+            'normalized_spec_result_keys = {' in src
+            and 'normalized_visualization_id = (' in src
+        ):
+            print(f"ℹ️  Cell idx {idx}: W14I-VIZ-MEMBERSHIP already present in source notebook")
+            break
+        old = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+        )
+        new = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            f'            {_W14I_VIZ_MEMBERSHIP_GUARD}\n'
+            '            task_result_titles = {r.visualization_title for r in task_result_map.values()}\n'
+            '            spec_result_ids = {res.visualization_id for res in spec_result_map.values()}\n'
+            '            normalized_spec_result_keys = {\n'
+            '                s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)\n'
+            '            }\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    normalized_visualization_id = (\n'
+            '                        r.visualization_id.lower().strip()\n'
+            '                        if isinstance(r.visualization_id, str)\n'
+            '                        else None\n'
+            '                    )\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in task_result_titles:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif (\n'
+            '                        r.visualization_id in spec_result_ids\n'
+            '                        or normalized_visualization_id in normalized_spec_result_keys\n'
+            '                    ):\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14I-VIZ-MEMBERSHIP anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14I-VIZ-MEMBERSHIP keeps normalized spec-key matching")
+        break
+
     # ============================  END WAVE 4 PATCHES  ===========================
 
     # ============================  END WAVE 2 PATCHES  ===========================
