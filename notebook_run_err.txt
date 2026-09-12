@@ -1,0 +1,19 @@
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:1 char:15
++ function ghcs {
++               ~
+Missing closing '}' in statement block or type definition.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:63 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:65 char:15
++ function ghce {
++               ~
+Missing closing '}' in statement block or type definition.
+At C:\Users\darf3\Documents\WindowsPowerShell\gh-copilot.ps1:94 char:1
++ }
++ ~
+Unexpected token '}' in expression or statement.
+    + CategoryInfo          : ParserError: (:) [], ParseException
+    + FullyQualifiedErrorId : MissingEndCurlyBrace
+ 

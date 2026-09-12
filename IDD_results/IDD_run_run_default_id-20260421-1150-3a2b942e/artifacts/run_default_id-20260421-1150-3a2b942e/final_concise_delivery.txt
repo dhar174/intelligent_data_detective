@@ -1,0 +1,1 @@
+Final answer prepared with profiling results, ASCII visualizations, 10-row preview, and CleaningMetadata in the required 5-field schema. If you want the full JSON pasted inline or the PDF export, I can provide that in the next step.

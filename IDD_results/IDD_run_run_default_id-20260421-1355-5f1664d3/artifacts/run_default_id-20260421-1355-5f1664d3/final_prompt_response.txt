@@ -1,0 +1,6 @@
+All set. Summary and plan have been prepared. Key points:
+- sample_dirty had 53 rows originally; 3 duplicates removed → 50 rows remain.
+- Current quick profile (pre-cleaning state): 53x5, dtypes {id: int64, name: object, value: float64, category: object, score: float64}; missing: value=6, score=3; duplicates=3; min/max (numeric): value 1.0–95.0, score 0.1–0.93; sample rows shown earlier.
+- Next steps planned: category normalization, per-category median imputations (with global fallback), name imputation, outlier detection/winsorization, artifact generation, visuals, and reports.
+
+If you’re ready, I’ll start step 1 immediately and return the cleaned dataset and artifacts (sample_dirty_cleaned.csv, cleaning_log.csv, cleaning_summary.json, sample_dirty_head.csv) along with plots and PDFs/Markdown/HTML reports.

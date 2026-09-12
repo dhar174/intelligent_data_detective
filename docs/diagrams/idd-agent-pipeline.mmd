@@ -1,0 +1,72 @@
+flowchart TB
+    %% Intelligent Data Detective – agent pipeline (hand-crafted from notebook source)
+
+    Input(["CSV / DataFrame\n+ AnalysisConfig"])
+
+    subgraph Phase1["Phase 1 · Ingest & Clean"]
+        InitAnalysis["initial_analysis\n─────────────\ndetect schema\nprofile distributions\nflag data-quality issues"]
+        DataCleaner["data_cleaner\n─────────────\nfill / drop missing values\nremove outliers\nfix dtypes"]
+    end
+
+    subgraph Phase2["Phase 2 · Analyse"]
+        Analyst["analyst\n─────────────\nsummary statistics\ncorrelation matrix\npattern & anomaly detection"]
+    end
+
+    subgraph Phase3["Phase 3 · Visualise"]
+        Viz["visualization\n(fan-out)"]
+        VizWorker["viz_worker × N\n(parallel)"]
+        VizJoin["viz_join\n(fan-in)"]
+        VizEval{"viz_evaluator\nQA check"}
+    end
+
+    subgraph Phase4["Phase 4 · Report"]
+        ReportOrch["report_orchestrator\n(section fan-out)"]
+        ReportWorker["report_section_worker × N\n(parallel)"]
+        ReportJoin["report_join\n(fan-in)"]
+        ReportPkg["report_packager\nassemble HTML / PDF"]
+    end
+
+    FileWriter["file_writer\n─────────────\nvalidate paths\nwrite charts + CSV\nwrite final report"]
+
+    Output(["Artifacts directory\n• charts (PNG)\n• cleaned CSV\n• report (HTML / PDF)"])
+
+    Supervisor{{"Supervisor\nrouter"}}
+
+    %% Happy-path flow
+    Input --> Supervisor
+    Supervisor --> InitAnalysis
+    InitAnalysis --> DataCleaner
+    DataCleaner --> Supervisor
+    Supervisor --> Analyst
+    Analyst --> Supervisor
+    Supervisor --> Viz
+    Viz --> VizWorker
+    VizWorker --> VizJoin
+    VizJoin --> VizEval
+    VizEval -->|"Accepted"| Supervisor
+    VizEval -->|"Revise"| Analyst
+    Supervisor --> ReportOrch
+    ReportOrch --> ReportWorker
+    ReportWorker --> ReportJoin
+    ReportJoin --> ReportPkg
+    ReportPkg --> Supervisor
+    Supervisor --> FileWriter
+    FileWriter --> Output
+
+    %% Shared state (annotations only)
+    State[["Shared LangGraph State\n─────────────────────\nmessages  ·  plan\nDataFrameRegistry (UUID-keyed, LRU-20)\ncleaning_metadata  ·  analysis_results\nviz_results  ·  report_sections"]]
+
+    Phase1 -. reads/writes .-> State
+    Phase2 -. reads/writes .-> State
+    Phase3 -. reads/writes .-> State
+    Phase4 -. reads/writes .-> State
+
+    classDef agent  fill:#eef2ff,stroke:#3730a3,stroke-width:1.5px
+    classDef router fill:#fef9c3,stroke:#ca8a04,stroke-width:2px
+    classDef io     fill:#f0fdf4,stroke:#15803d,stroke-width:1.5px
+    classDef state  fill:#fff7ed,stroke:#c2410c,stroke-width:1.5px,stroke-dasharray:4 3
+
+    class InitAnalysis,DataCleaner,Analyst,Viz,VizWorker,VizJoin,ReportOrch,ReportWorker,ReportJoin,ReportPkg,FileWriter agent
+    class VizEval,Supervisor router
+    class Input,Output io
+    class State state
