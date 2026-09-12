@@ -383,57 +383,66 @@ class MemoryPolicyEngine:
                         continue
                     
                     current_time = time.time()
-                    to_delete = []
+                    to_delete_set = set()
+                    remaining_items = []
                     
-                    # Time-based pruning
+                    # Single pass for TTL, Superseded, and collecting survivors
                     for item in items:
-                        if isinstance(item, dict):
-                            created_at = item.get("created_at", 0)
-                            if current_time - created_at > policy.ttl_seconds:
-                                to_delete.append(item.get("id"))
-                                report.expired_count += 1
-                    
-                    # Superseded cleanup
-                    for item in items:
-                        if isinstance(item, dict) and item.get("superseded_by"):
-                            if current_time - item.get("created_at", 0) > 86400:  # 1 day grace period
-                                to_delete.append(item.get("id"))
-                                report.superseded_count += 1
-                    
-                    # Remove expired/superseded items
-                    remaining_items = [item for item in items if isinstance(item, dict) and item.get("id") not in to_delete]
+                        if not isinstance(item, dict):
+                            continue
+
+                        item_id = item.get("id")
+                        created_at = item.get("created_at", 0)
+
+                        is_expired = current_time - created_at > policy.ttl_seconds
+                        is_superseded = item.get("superseded_by") and current_time - created_at > 86400
+
+                        if is_expired:
+                            to_delete_set.add(item_id)
+                            report.expired_count += 1
+
+                        if is_superseded:
+                            to_delete_set.add(item_id)
+                            report.superseded_count += 1
+
+                        if not is_expired and not is_superseded:
+                            remaining_items.append(item)
                     
                     # Size-based pruning
+                    size_pruned_ids = set()
                     if len(remaining_items) > policy.max_items:
                         # Sort by keep score
                         scored_items = []
                         for item in remaining_items:
-                            if isinstance(item, dict):
-                                importance = item.get("dynamic_importance", 0.5)
-                                recency_factor = self._calculate_recency_factor(item.get("created_at", 0), policy.decay_half_life_seconds)
-                                usage_count = item.get("usage_count", 0)
-                                keep_score = importance * recency_factor * (1 + math.sqrt(usage_count))
-                                scored_items.append((keep_score, item))
+                            importance = item.get("dynamic_importance", 0.5)
+                            recency_factor = self._calculate_recency_factor(item.get("created_at", 0), policy.decay_half_life_seconds)
+                            usage_count = item.get("usage_count", 0)
+                            keep_score = importance * recency_factor * (1 + math.sqrt(usage_count))
+                            scored_items.append((keep_score, item))
                         
                         # Sort by score (highest first) and keep top items
                         scored_items.sort(key=lambda x: x[0], reverse=True)
-                        items_to_keep = scored_items[:policy.max_items]
                         items_to_remove = scored_items[policy.max_items:]
                         
                         for _, item in items_to_remove:
-                            to_delete.append(item.get("id"))
+                            item_id = item.get("id")
+                            size_pruned_ids.add(item_id)
+                            to_delete_set.add(item_id)
                             report.size_pruned_count += 1
                     
-                    # Low importance pruning
+                    # Low importance pruning on remaining items (excluding those already size-pruned)
                     for item in remaining_items:
-                        if isinstance(item, dict):
-                            dynamic_importance = item.get("dynamic_importance", 0.5)
-                            if dynamic_importance < policy.min_importance and item.get("id") not in to_delete:
-                                to_delete.append(item.get("id"))
-                                report.low_importance_count += 1
+                        item_id = item.get("id")
+                        if item_id in size_pruned_ids:
+                            continue
+
+                        dynamic_importance = item.get("dynamic_importance", 0.5)
+                        if dynamic_importance < policy.min_importance:
+                            to_delete_set.add(item_id)
+                            report.low_importance_count += 1
                     
                     # Execute deletions
-                    for item_id in to_delete:
+                    for item_id in to_delete_set:
                         try:
                             # Note: InMemoryStore doesn't have delete method in interface
                             # In real implementation, would need to track and handle deletion
@@ -442,7 +451,7 @@ class MemoryPolicyEngine:
                             pass
                     
                     # Update metrics
-                    kind_pruned = len(to_delete)
+                    kind_pruned = len(to_delete_set)
                     MEMORY_METRICS["memory_pruned_items_total"] += kind_pruned
                     MEMORY_METRICS["memory_expired_items_total"] += report.expired_count
                     MEMORY_METRICS["memory_items_total"] -= kind_pruned
