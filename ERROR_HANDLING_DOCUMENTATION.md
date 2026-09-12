@@ -174,11 +174,14 @@ columns, invalid values, parse errors, and unexpected failures.
 
 ## Logging Integration
 
-The framework automatically logs all errors with timestamps:
+The framework logs unexpected failures with timestamps and tracebacks through
+`_tool_failure()`. Expected validation and parsing errors are returned to the
+caller without additional log records.
 
 ```
 2026-09-11 18:24:49,981 - ERROR - broken failed: RuntimeError('internal details')
-2026-09-11 18:24:49,981 - ERROR - {'status': 'error', 'operation': 'broken', 'reason': 'An unexpected data-processing failure occurred.', 'action': 'Retry the operation; if it continues, check the dataset and logs.'}
+Traceback (most recent call last):
+...
 ```
 
 ## Testing

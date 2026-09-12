@@ -1162,9 +1162,9 @@ class DataFrameRegistry:
                     loaded = self._read_df(path)            # FIX: read by suffix
                 except FileNotFoundError:
                     return None
-                except Exception as e:
-                    print(f"Error loading DataFrame from {path}: {e}")
-                    return None
+                except Exception:
+                    logging.exception("Error loading DataFrame from %s", path)
+                    raise
                 self.registry[df_id]["df"] = loaded
                 self._touch_cache(df_id, loaded)
                 return loaded
@@ -3170,30 +3170,11 @@ def validate_dataframe_exists(df_id: str) -> bool:
         ...     # proceed with operations
         ...     pass
     """
-    if not df_id or not isinstance(df_id, str):
+    if not isinstance(df_id, str) or not df_id.strip():
         return False
 
-    try:
-        # Check if DataFrame exists in registry
-        df = global_df_registry.get_dataframe(df_id)
-        if df is not None:
-            return not df.empty  # DataFrame exists and is not empty
-
-        # Try to load from raw path if not in registry
-        raw_path = global_df_registry.get_raw_path_from_id(df_id)
-        if raw_path and os.path.exists(raw_path):
-            try:
-                df = pd.read_csv(raw_path)
-                if df is not None and not df.empty:
-                    # Register the loaded DataFrame
-                    global_df_registry.register_dataframe(df, df_id, raw_path)
-                    return True
-            except Exception:
-                return False
-
-        return False
-    except Exception:
-        return False
+    df = global_df_registry.get_dataframe(df_id, load_if_not_exists=True)
+    return df is not None and not df.empty
 
 def handle_tool_errors(func):
     """Decorator for consistent error handling across tool functions.
@@ -3220,9 +3201,14 @@ def handle_tool_errors(func):
             df_id = None
             df_id_supplied = False
 
-            # Check first positional argument
-            if args and isinstance(args[0], str):
-                df_id = args[0]
+            try:
+                bound_args = inspect.signature(func).bind_partial(*args, **kwargs)
+            except TypeError:
+                bound_args = None
+
+            # Bind the declared df_id parameter first, even for non-string values.
+            if bound_args and 'df_id' in bound_args.arguments:
+                df_id = bound_args.arguments['df_id']
                 df_id_supplied = True
             # Check for df_id in keyword arguments
             elif 'df_id' in kwargs:

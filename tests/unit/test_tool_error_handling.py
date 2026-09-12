@@ -1,4 +1,5 @@
 import logging
+import inspect
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -9,14 +10,36 @@ class Registry:
     def __init__(self):
         self.frames = {}
         self.paths = {}
+        self.raise_on_get = False
 
     def register_dataframe(self, df, df_id, raw_path=""):
         self.frames[df_id] = df
         self.paths[df_id] = raw_path
         return df_id
 
-    def get_dataframe(self, df_id):
-        return self.frames.get(df_id)
+    def get_dataframe(self, df_id, load_if_not_exists=False):
+        if self.raise_on_get:
+            raise RuntimeError("registry unavailable")
+        df = self.frames.get(df_id)
+        if df is not None or not load_if_not_exists:
+            return df
+
+        raw_path = self.paths.get(df_id)
+        if not raw_path:
+            return None
+
+        raw_path = Path(raw_path)
+        if not raw_path.exists():
+            return None
+
+        if raw_path.suffix == ".pkl":
+            df = pd.read_pickle(raw_path)
+        elif raw_path.suffix == ".json":
+            df = pd.read_json(raw_path, orient="records")
+        else:
+            df = pd.read_csv(raw_path)
+        self.frames[df_id] = df
+        return df
 
     def get_raw_path_from_id(self, df_id):
         return self.paths.get(df_id)
@@ -33,6 +56,7 @@ def _load_tools(registry):
         "Optional": Optional,
         "os": __import__("os"),
         "logging": logging,
+        "inspect": inspect,
         "functools": __import__("functools"),
         "pd": pd,
         "global_df_registry": registry,
@@ -63,6 +87,11 @@ def test_cleaning_tools_validate_and_preserve_failed_mutations():
     empty_df_id = tools["drop_column"]("", "value")
     _assert_error(empty_df_id, "drop_column")
     assert empty_df_id["reason"] == "DataFrame ID must be a non-empty string."
+    assert registry.get_dataframe("df").equals(original)
+
+    non_string_df_id = tools["drop_column"](123, "value")
+    _assert_error(non_string_df_id, "drop_column")
+    assert non_string_df_id["reason"] == "DataFrame ID must be a non-empty string."
     assert registry.get_dataframe("df").equals(original)
 
     invalid_query = tools["delete_rows"]("df", ["unknown > 1"])
@@ -110,6 +139,34 @@ def test_unexpected_tool_failure_is_safe_and_logged(caplog):
     assert result["reason"] == "An unexpected data-processing failure occurred."
     assert "internal details" not in result["reason"]
     assert "internal details" in caplog.text
+
+
+def test_validation_reload_supports_non_csv_backing_files(tmp_path):
+    registry = Registry()
+    pd.DataFrame({"value": [1.0, 2.0], "name": ["a", "b"]}).to_pickle(
+        tmp_path / "frame.pkl"
+    )
+    registry.register_dataframe(None, "df", str(tmp_path / "frame.pkl"))
+    tools = _load_tools(registry)
+
+    result = tools["drop_column"]("df", "value")
+
+    assert result == "Column dropped successfully. New columns: name"
+    assert list(registry.get_dataframe("df").columns) == ["name"]
+
+
+def test_unexpected_validation_failure_uses_tool_failure(caplog):
+    registry = Registry()
+    registry.register_dataframe(pd.DataFrame({"value": [1.0]}), "df")
+    registry.raise_on_get = True
+    tools = _load_tools(registry)
+
+    with caplog.at_level(logging.ERROR):
+        result = tools["drop_column"]("df", "value")
+
+    _assert_error(result, "drop_column")
+    assert result["reason"] == "An unexpected data-processing failure occurred."
+    assert "registry unavailable" in caplog.text
 
 
 def test_drop_and_delete_rows_success_paths_and_no_match():
