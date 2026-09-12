@@ -3194,6 +3194,11 @@ def handle_tool_errors(func):
         ...     # tool implementation
         ...     return "success"
     """
+    try:
+        func_signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        func_signature = None
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
@@ -3202,7 +3207,11 @@ def handle_tool_errors(func):
             df_id_supplied = False
 
             try:
-                bound_args = inspect.signature(func).bind_partial(*args, **kwargs)
+                bound_args = (
+                    func_signature.bind_partial(*args, **kwargs)
+                    if func_signature is not None
+                    else None
+                )
             except TypeError:
                 bound_args = None
 
