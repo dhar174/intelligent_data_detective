@@ -28,8 +28,8 @@ Read [the detailed guide](references/detailed-guide.md) before executing this sk
 
 ## Python Example
 """
+import json
 import anthropic
-from anthropic import beta_tool
 
 client = anthropic.Anthropic()
 

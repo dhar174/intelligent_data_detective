@@ -302,7 +302,7 @@ Si se modificaron packages compartidos ({shared_pkg_list}), ejecutar su rebuild 
 | No config files at all           | Minimal defaults, note that project needs setup                        |
 | Multiple frameworks              | Pick primary based on root package.json, note secondary                |
 | Both App Router and Pages Router | Treat as App Router primary, note Pages Router legacy routes           |
-| No package.json scripts          | Generate commands from direct tool invocations (`npx next dev`)        |
+| No package.json scripts          | Generate no project commands; report that scripts are missing  |
 | Bun without `bun run` scripts    | Use `bunx` prefix for npx equivalents                                  |
 | Monorepo without workspaces      | Treat each `apps/*` or `packages/*` as independent                     |
 | CSS: multiple approaches         | Pick primary (Tailwind wins over CSS Modules over plain CSS)           |

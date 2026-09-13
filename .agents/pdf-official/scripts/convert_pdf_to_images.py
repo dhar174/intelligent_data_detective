@@ -8,7 +8,7 @@ from pdf2image import convert_from_path
 
 
 def convert(pdf_path, output_dir, max_dim=1000):
-    images = convert_from_path(pdf_path, dpi=200)
+    os.makedirs(output_dir, exist_ok=True)
 
     for i, image in enumerate(images):
         # Scale image if needed to keep width/height under `max_dim`
