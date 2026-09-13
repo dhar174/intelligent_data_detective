@@ -24,13 +24,14 @@ bitmap = page.render(
 
 # Convert to PIL Image
 img = bitmap.to_pil()
-img.save("page_1.png", "PNG")
+from idd_core import _resolve_artifact_path
+img.save(_resolve_artifact_path("page_1.png", config=None), "PNG")
 
 # Process multiple pages
 for i, page in enumerate(pdf):
     bitmap = page.render(scale=1.5)
     img = bitmap.to_pil()
-    img.save(f"page_{i+1}.jpg", "JPEG", quality=90)
+    img.save(_resolve_artifact_path(f"page_{i+1}.jpg", config=None), "JPEG", quality=90)
 ```
 
 ### Extract Text with pypdfium2
@@ -379,7 +380,8 @@ with pdfplumber.open("complex_table.pdf") as pdf:
     
     # Visual debugging for table extraction
     img = page.to_image(resolution=150)
-    img.save("debug_layout.png")
+    from idd_core import _resolve_artifact_path
+    img.save(_resolve_artifact_path("debug_layout.png", config=None))
 ```
 
 ### reportlab Advanced Features
@@ -389,6 +391,7 @@ with pdfplumber.open("complex_table.pdf") as pdf:
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
+from idd_core import _resolve_artifact_path
 
 # Sample data
 data = [
@@ -398,7 +401,8 @@ data = [
 ]
 
 # Create PDF with table
-doc = SimpleDocTemplate("report.pdf")
+output_pdf = _resolve_artifact_path("report.pdf", config=None)
+doc = SimpleDocTemplate(str(output_pdf))
 elements = []
 
 # Add title
@@ -485,18 +489,22 @@ def batch_process_pdfs(input_dir, operation='merge'):
                 logger.error(f"Failed to process {pdf_file}: {e}")
                 continue
         
-        with open("batch_merged.pdf", "wb") as output:
+        from idd_core import _resolve_artifact_path
+        output_path = _resolve_artifact_path("batch_merged.pdf", config=None)
+        with open(output_path, "wb") as output:
             writer.write(output)
     
     elif operation == 'extract_text':
+        from idd_core import _resolve_artifact_path
         for pdf_file in pdf_files:
             try:
                 reader = PdfReader(pdf_file)
                 text = ""
                 for page in reader.pages:
-                    text += page.extract_text()
+                    text += page.extract_text() or ""
                 
-                output_file = pdf_file.replace('.pdf', '.txt')
+                output_name = os.path.splitext(os.path.basename(pdf_file))[0] + '.txt'
+                output_file = _resolve_artifact_path(output_name, config=None)
                 with open(output_file, 'w', encoding='utf-8') as f:
                     f.write(text)
                 logger.info(f"Extracted text from: {pdf_file}")
@@ -509,6 +517,7 @@ def batch_process_pdfs(input_dir, operation='merge'):
 ### Advanced PDF Cropping
 ```python
 from pypdf import PdfWriter, PdfReader
+from idd_core import _resolve_artifact_path
 
 reader = PdfReader("input.pdf")
 writer = PdfWriter()
@@ -521,7 +530,8 @@ page.mediabox.right = 550
 page.mediabox.top = 750
 
 writer.add_page(page)
-with open("cropped.pdf", "wb") as output:
+output_path = _resolve_artifact_path("cropped.pdf", config=None)
+with open(output_path, "wb") as output:
     writer.write(output)
 ```
 
@@ -548,6 +558,8 @@ with open("cropped.pdf", "wb") as output:
 ### 5. Memory Management
 ```python
 # Process PDFs in chunks
+from idd_core import _resolve_artifact_path
+
 def process_large_pdf(pdf_path, chunk_size=10):
     reader = PdfReader(pdf_path)
     total_pages = len(reader.pages)
@@ -560,7 +572,8 @@ def process_large_pdf(pdf_path, chunk_size=10):
             writer.add_page(reader.pages[i])
         
         # Process chunk
-        with open(f"chunk_{start_idx//chunk_size}.pdf", "wb") as output:
+        output_path = _resolve_artifact_path(f"chunk_{start_idx//chunk_size}.pdf", config=None)
+        with open(output_path, "wb") as output:
             writer.write(output)
 ```
 

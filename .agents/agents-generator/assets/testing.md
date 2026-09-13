@@ -53,9 +53,9 @@ After changes to {{TESTED_AREA}}:
   # Run tests matching a pattern
   {{PM}} {{TEST_RUNNER}} -t "test name pattern"
   ```
-  - For vitest: `bun run test path/to/file.test.ts` or `bun vitest run -t "pattern"`
-  - For jest: `npm test -- path/to/file.spec.ts` or `npx jest -t "pattern"`
-  - For playwright: `npx playwright test path/to/file.spec.ts`
+  - For vitest: `{{PM}} test path/to/file.test.ts` or `{{PM_EXEC}} vitest run -t "pattern"`
+  - For jest: `{{PM}} test -- path/to/file.spec.ts` or `{{PM_EXEC}} jest -t "pattern"`
+  - For playwright: `{{PM_EXEC}} playwright test path/to/file.spec.ts`
   - Read the actual test runner config to determine the correct invocation pattern.
   - List 2-3 real test file paths as examples.
 - **TEST_PATTERNS**:

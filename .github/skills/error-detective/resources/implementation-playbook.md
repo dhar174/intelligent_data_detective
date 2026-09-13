@@ -116,9 +116,13 @@ In distributed multi-agent systems (e.g., Supervisor -> Worker -> Tool), single 
 Ensure any candidate fix completely resolves the root issue without introducing secondary defects:
 
 - [ ] Run the minimal reproducible test case: verify it passes.
-- [ ] Run the entire test suite:
+- [ ] Run the core fast test suite:
   ```bash
   pytest test_intelligent_data_detective.py test_error_handling_framework.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
+  ```
+- [ ] Run the project-wide test suite:
+  ```bash
+  pytest -v
   ```
 - [ ] Verify error logging preserves clean exceptions and doesn't swallow unexpected failure types.
 

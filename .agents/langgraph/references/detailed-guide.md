@@ -76,6 +76,31 @@ def search(query: str) -> str:
     # Implementation here
     return f"Results for: {query}"
 
+import ast
+import operator
+
+_MATH_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.USub: operator.neg,
+}
+
+def safe_math_evaluator(expr: str):
+    """Safely evaluate basic arithmetic expressions using AST."""
+    def _eval(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        elif isinstance(node, ast.BinOp) and type(node.op) in _MATH_OPS:
+            return _MATH_OPS[type(node.op)](_eval(node.left), _eval(node.right))
+        elif isinstance(node, ast.UnaryOp) and type(node.op) in _MATH_OPS:
+            return _MATH_OPS[type(node.op)](_eval(node.operand))
+        raise ValueError(f"Unsupported math expression or operation: {ast.dump(node)}")
+    tree = ast.parse(expr.strip(), mode="eval")
+    return _eval(tree.body)
+
 @tool
 def calculator(expression: str) -> str:
     """Evaluate a math expression."""

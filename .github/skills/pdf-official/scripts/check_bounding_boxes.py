@@ -50,7 +50,7 @@ def get_bounding_box_messages(fields_json_stream) -> list[str]:
                 entry_height = ri.rect[3] - ri.rect[1]
 
                 # Convert font size (points) to image coordinate units (pixels)
-                scale = 1.0
+                scale = None
                 pages = fields.get("pages", [])
                 page_info = next((p for p in pages if p.get("page_number") == ri.field.get("page_number")), None)
                 if page_info:
@@ -60,8 +60,10 @@ def get_bounding_box_messages(fields_json_stream) -> list[str]:
                         scale = page_info["dpi"] / 72.0
                     elif "image_height" in page_info and "pdf_height" in page_info and page_info["pdf_height"] > 0:
                         scale = page_info["image_height"] / page_info["pdf_height"]
-                elif "dpi" in fields:
+                if scale is None and "dpi" in fields:
                     scale = fields["dpi"] / 72.0
+                if scale is None:
+                    scale = 1.0
 
                 min_height = font_size * scale
                 if entry_height < min_height:

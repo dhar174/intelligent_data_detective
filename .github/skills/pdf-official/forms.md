@@ -129,18 +129,21 @@ For checkboxes:
 
 ### Step 2: Create fields.json and validation images (REQUIRED)
 - Create a file named `fields.json` with information for the form fields and bounding boxes in this format:
-```
+```json
 {
+  "dpi": 200, // Top-level render DPI (default 200 from convert_pdf_to_images.py) used to convert font points to pixels
   "pages": [
     {
       "page_number": 1,
-      "image_width": (first page image width in pixels),
-      "image_height": (first page image height in pixels),
+      "image_width": 1700, // first page image width in pixels
+      "image_height": 2200, // first page image height in pixels
+      "dpi": 200 // optional per-page DPI (or "pixels_per_point" / "pdf_height" for coordinate scaling)
     },
     {
       "page_number": 2,
-      "image_width": (second page image width in pixels),
-      "image_height": (second page image height in pixels),
+      "image_width": 1700,
+      "image_height": 2200,
+      "dpi": 200
     }
     // additional pages
   ],

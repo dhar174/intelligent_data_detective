@@ -4,7 +4,6 @@ import io
 from check_bounding_boxes import get_bounding_box_messages
 
 
-# Currently this is not run automatically in CI; it's just for documentation and manual checking.
 class TestGetBoundingBoxMessages(unittest.TestCase):
     
     def create_json_stream(self, data):
@@ -220,7 +219,72 @@ class TestGetBoundingBoxMessages(unittest.TestCase):
         messages = get_bounding_box_messages(stream)
         self.assertTrue(any("SUCCESS" in msg for msg in messages))
         self.assertFalse(any("FAILURE" in msg for msg in messages))
-    
+
+    def test_scale_pixels_per_point(self):
+        """Test scale calculation using page pixels_per_point"""
+        data = {
+            "pages": [{"page_number": 1, "pixels_per_point": 2.0}],
+            "form_fields": [{
+                "description": "Field",
+                "page_number": 1,
+                "label_bounding_box": [10, 10, 50, 30],
+                "entry_bounding_box": [60, 10, 150, 35],  # height 25 < 14 * 2.0 = 28
+                "entry_text": {"font_size": 14}
+            }]
+        }
+        stream = self.create_json_stream(data)
+        messages = get_bounding_box_messages(stream)
+        self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages))
+
+    def test_scale_page_dpi(self):
+        """Test scale calculation using page dpi"""
+        data = {
+            "pages": [{"page_number": 1, "dpi": 144.0}],
+            "form_fields": [{
+                "description": "Field",
+                "page_number": 1,
+                "label_bounding_box": [10, 10, 50, 30],
+                "entry_bounding_box": [60, 10, 150, 35],  # height 25 < 14 * (144/72) = 28
+                "entry_text": {"font_size": 14}
+            }]
+        }
+        stream = self.create_json_stream(data)
+        messages = get_bounding_box_messages(stream)
+        self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages))
+
+    def test_scale_image_height_ratio(self):
+        """Test scale calculation using image_height / pdf_height"""
+        data = {
+            "pages": [{"page_number": 1, "image_height": 2000, "pdf_height": 1000}],
+            "form_fields": [{
+                "description": "Field",
+                "page_number": 1,
+                "label_bounding_box": [10, 10, 50, 30],
+                "entry_bounding_box": [60, 10, 150, 35],  # height 25 < 14 * 2.0 = 28
+                "entry_text": {"font_size": 14}
+            }]
+        }
+        stream = self.create_json_stream(data)
+        messages = get_bounding_box_messages(stream)
+        self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages))
+
+    def test_scale_fallback_top_level_dpi_with_page_info(self):
+        """Test fallback to top-level dpi even when page_info exists but lacks scale fields"""
+        data = {
+            "dpi": 144.0,
+            "pages": [{"page_number": 1}],  # Has page_info, but no dpi or pixels_per_point
+            "form_fields": [{
+                "description": "Field",
+                "page_number": 1,
+                "label_bounding_box": [10, 10, 50, 30],
+                "entry_bounding_box": [60, 10, 150, 35],  # height 25 < 14 * 2.0 = 28
+                "entry_text": {"font_size": 14}
+            }]
+        }
+        stream = self.create_json_stream(data)
+        messages = get_bounding_box_messages(stream)
+        self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages))
+
 
 if __name__ == '__main__':
     unittest.main()

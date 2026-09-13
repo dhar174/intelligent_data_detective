@@ -36,13 +36,14 @@ One sentence from `package.json` `description`, or inferred from the package's p
 
 Path relative to repo root, e.g. `packages/db` or `apps/dashboard`.
 
-### `{{PM}}`
+### `{{PM}}` and `{{PM_EXEC}}`
 
 The root package manager: `pnpm`, `bun`, `npm`, `yarn`.
+The corresponding package executor `{{PM_EXEC}}`: `pnpm exec`, `bunx`, `npx`, `yarn`.
 
 ### `{{BUILD_COMMAND}}`
 
-- Monorepo with turborepo: `npx turbo run build --filter={{PACKAGE_NAME}}`
+- Monorepo with turborepo: `{{PM_EXEC}} turbo run build --filter={{PACKAGE_NAME}}`
 - Monorepo with pnpm: `pnpm --filter {{PACKAGE_NAME}} build`
 - If no build script in sub-package: omit this command.
 

@@ -90,8 +90,9 @@ ax.set_title('Trigonometric Functions')
 ax.legend()
 ax.grid(True, alpha=0.3)
 
-# Save and/or display
-plt.savefig('plot.png', dpi=300, bbox_inches='tight')
+# Save and/or display (route through _resolve_artifact_path per AGENTS.md:80)
+from idd_core import _resolve_artifact_path
+plt.savefig(_resolve_artifact_path('plot.png', config=None), dpi=300, bbox_inches='tight')
 plt.show()
 ```
 
@@ -204,21 +205,24 @@ ax.annotate('important point', xy=(x, y), xytext=(x+1, y+1),
             arrowprops=dict(arrowstyle='->', color='red'))
 ```
 
-For detailed styling options and colormap guidelines, see `references/styling_guide.md`.
+For detailed styling options and colormap guidelines, see the [official Matplotlib styling tutorial](https://matplotlib.org/stable/tutorials/introductory/customizing.html) and [colormap reference](https://matplotlib.org/stable/users/explain/colors/colormaps.html).
 
 ### 5. Saving Figures
 
 **Export to various formats:**
 ```python
+# In this repository, always resolve paths via _resolve_artifact_path (AGENTS.md:80)
+from idd_core import _resolve_artifact_path
+
 # High-resolution PNG for presentations/papers
-plt.savefig('figure.png', dpi=300, bbox_inches='tight', facecolor='white')
+plt.savefig(_resolve_artifact_path('figure.png', config=None), dpi=300, bbox_inches='tight', facecolor='white')
 
 # Vector format for publications (scalable)
-plt.savefig('figure.pdf', bbox_inches='tight')
-plt.savefig('figure.svg', bbox_inches='tight')
+plt.savefig(_resolve_artifact_path('figure.pdf', config=None), bbox_inches='tight')
+plt.savefig(_resolve_artifact_path('figure.svg', config=None), bbox_inches='tight')
 
 # Transparent background
-plt.savefig('figure.png', dpi=300, bbox_inches='tight', transparent=True)
+plt.savefig(_resolve_artifact_path('figure.png', config=None), dpi=300, bbox_inches='tight', transparent=True)
 ```
 
 **Important parameters:**
@@ -305,7 +309,8 @@ def create_analysis_plot(data, title):
 
 # Use the function
 fig, ax = create_analysis_plot(my_data, 'My Analysis')
-plt.savefig('analysis.png', dpi=300, bbox_inches='tight')
+from idd_core import _resolve_artifact_path
+plt.savefig(_resolve_artifact_path('analysis.png', config=None), dpi=300, bbox_inches='tight')
 ```
 
 ## Integration with Other Tools

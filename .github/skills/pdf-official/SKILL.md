@@ -34,6 +34,7 @@ for page in reader.pages:
 #### Merge PDFs
 ```python
 from pypdf import PdfWriter, PdfReader
+from idd_core import _resolve_artifact_path
 
 writer = PdfWriter()
 for pdf_file in ["doc1.pdf", "doc2.pdf", "doc3.pdf"]:
@@ -41,17 +42,23 @@ for pdf_file in ["doc1.pdf", "doc2.pdf", "doc3.pdf"]:
     for page in reader.pages:
         writer.add_page(page)
 
-with open("merged.pdf", "wb") as output:
+# Always route file outputs through _resolve_artifact_path (AGENTS.md:80)
+output_path = _resolve_artifact_path("merged.pdf", config=None)
+with open(output_path, "wb") as output:
     writer.write(output)
 ```
 
 #### Split PDF
 ```python
+from pypdf import PdfReader, PdfWriter
+from idd_core import _resolve_artifact_path
+
 reader = PdfReader("input.pdf")
 for i, page in enumerate(reader.pages):
     writer = PdfWriter()
     writer.add_page(page)
-    with open(f"page_{i+1}.pdf", "wb") as output:
+    output_path = _resolve_artifact_path(f"page_{i+1}.pdf", config=None)
+    with open(output_path, "wb") as output:
         writer.write(output)
 ```
 
@@ -67,6 +74,8 @@ print(f"Creator: {meta.creator}")
 
 #### Rotate Pages
 ```python
+from idd_core import _resolve_artifact_path
+
 reader = PdfReader("input.pdf")
 writer = PdfWriter()
 
@@ -74,7 +83,8 @@ page = reader.pages[0]
 page.rotate(90)  # Rotate 90 degrees clockwise
 writer.add_page(page)
 
-with open("rotated.pdf", "wb") as output:
+output_path = _resolve_artifact_path("rotated.pdf", config=None)
+with open(output_path, "wb") as output:
     writer.write(output)
 ```
 
@@ -117,7 +127,8 @@ with pdfplumber.open("document.pdf") as pdf:
 # Combine all tables
 if all_tables:
     combined_df = pd.concat(all_tables, ignore_index=True)
-    combined_df.to_excel("extracted_tables.xlsx", index=False)
+    from idd_core import _resolve_artifact_path
+    combined_df.to_excel(_resolve_artifact_path("extracted_tables.xlsx", config=None), index=False)
 ```
 
 ### reportlab - Create PDFs
@@ -126,8 +137,10 @@ if all_tables:
 ```python
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from idd_core import _resolve_artifact_path
 
-c = canvas.Canvas("hello.pdf", pagesize=letter)
+output_pdf = _resolve_artifact_path("hello.pdf", config=None)
+c = canvas.Canvas(str(output_pdf), pagesize=letter)
 width, height = letter
 
 # Add text
@@ -146,8 +159,10 @@ c.save()
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
+from idd_core import _resolve_artifact_path
 
-doc = SimpleDocTemplate("report.pdf", pagesize=letter)
+output_pdf = _resolve_artifact_path("report.pdf", config=None)
+doc = SimpleDocTemplate(str(output_pdf), pagesize=letter)
 styles = getSampleStyleSheet()
 story = []
 
@@ -234,6 +249,7 @@ print(text)
 ### Add Watermark
 ```python
 from pypdf import PdfReader, PdfWriter
+from idd_core import _resolve_artifact_path
 
 # Create watermark (or load existing)
 watermark = PdfReader("watermark.pdf").pages[0]
@@ -246,7 +262,8 @@ for page in reader.pages:
     page.merge_page(watermark)
     writer.add_page(page)
 
-with open("watermarked.pdf", "wb") as output:
+output_path = _resolve_artifact_path("watermarked.pdf", config=None)
+with open(output_path, "wb") as output:
     writer.write(output)
 ```
 
@@ -261,6 +278,7 @@ pdfimages -j input.pdf output_prefix
 ### Password Protection
 ```python
 from pypdf import PdfReader, PdfWriter
+from idd_core import _resolve_artifact_path
 
 reader = PdfReader("input.pdf")
 writer = PdfWriter()
@@ -271,7 +289,8 @@ for page in reader.pages:
 # Add password
 writer.encrypt("userpassword", "ownerpassword")
 
-with open("encrypted.pdf", "wb") as output:
+output_path = _resolve_artifact_path("encrypted.pdf", config=None)
+with open(output_path, "wb") as output:
     writer.write(output)
 ```
 
