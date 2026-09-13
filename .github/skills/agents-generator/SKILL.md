@@ -119,7 +119,7 @@ If the user asks to "preview", "show what would change", "dry-run": run all dete
 
 - Report the detected `[format cmd]` and `[lint cmd]` as unexecuted candidates. Run neither automatically; execute one only after the user separately authorizes it and its exact project-controlled script body has been reviewed.
 - Scan for `{{`, `TODO`, `...`. Fix any found.
-- Verify all commands exist in package.json scripts.
+- Verify JavaScript/TypeScript commands against `package.json` scripts and Python commands against the detected manifest/tool configuration.
 - If AGENTS.md > 300 lines, warn. If > 500, move content to rule files.
 - Summarize all changes using conventional commit format before declaring done.
 - Report: what was detected, generated, skipped, and confidence score.
