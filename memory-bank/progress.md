@@ -9,7 +9,11 @@
 - [x] False-positive agent deleted (`frontend-experience-specialist`)
 - [x] IDD-specific agents created/customised
 - [x] Memory-bank and AGENTS.md enriched with real IDD content
-- [ ] Validator run and any warnings resolved
+- [x] W14 completion proof reached (`IDD_run_run_default_id-20260504-1338-b3079aea`)
+- [x] Final validators added and pushed (`validate_run.py`, `validate_artifact_quality.py`)
+- [x] Validator run and W14 warnings resolved
+- [x] Stale Phase 6 GitHub issues closed/rescoped after W14 proof (#112-#119 closed, #121 post-W14 hardening)
+- [x] No-key CI workflow added for validator/unit/integration checks
 - [ ] Maintenance drift reviewed against future repo changes
 
 ## What works
@@ -17,15 +21,23 @@
 - Error handling tests: **15/16 pass** (1 known edge-case failure — acceptable)
 - Memory test suites: all pass
 - Notebook execution: functional end-to-end (requires `OPENAI_API_KEY`; 6–25 min)
+- Patched notebook completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`
+- Final artifacts: canonical root `final_report.html`, `final_report.md`, `final_report.pdf`, resolving HTML images, parseable PDF, no marker `.txt` artifacts
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
-- No CI pipeline — tests must be run manually.
-- `automation.instructions.md` is a scaffolded stub; no automated hooks exist yet.
+- CI intentionally excludes the full API-key notebook trajectory proof; `.github/workflows/copilot-setup-steps.yml` currently gates only no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps on `pull_request`, `push` to `main`, and `workflow_dispatch`.
+- `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
+- Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
 - The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.
 
 ## Validation status
 ```bash
+python -m pytest test_validate_run.py -q
+python -m pytest test_validate_run.py tests/unit tests/integration -q
+python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
+python validate_run.py --latest --log-path notebook_run_log.txt --window 180
+python validate_artifact_quality.py --latest
 python3 -m pytest test_intelligent_data_detective.py -v          # 22/22
 python3 -m pytest test_error_handling_framework.py -v            # 15/16
 python3 -m pytest -v                                             # all suites
@@ -33,7 +45,7 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 ```
 
 ## Last meaningful update
-[2026-04-20] Scaffolded and fully customised agent stack for IDD repo.
+Post-W14 repo hygiene: closed stale Phase 6 issues, rescoped #121 as defensive hardening, replaced the CI stub with no-key validation, and added a lightweight W14 patched-notebook marker regression test.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
@@ -64,7 +76,7 @@ Root cause was twofold: (a) `langchain.agents.factory._resolve_schemas` iterates
 | Run | Outcome | Notes |
 |---|---|---|
 | 87 | + W9-SR-DROP — **7/8 GREEN** | viz=True report=True, 0 recoveries / 0 finalhop / 0 tracebacks. ❌ PDF only. ~21 min. |
-| 88 | + W10-PDF-POST — **8/8 GREEN** structurally, **HOLLOW** semantically | All structural gates pass; PDF emitted (1983 B). But report = 356-char placeholder, 0 sections, 1 viz embedded 5×, 25+ stub marker files in reports dir. **Potemkin pipeline.** Analyst output was rich and correct — content lost between analyst and report. Triggered Phase 6 pivot. |
+| 88 | + W10-PDF-POST — **8/8 GREEN** structurally, **HOLLOW** semantically | Historical hollow-report regression: report = 356-char placeholder, 0 sections, 1 viz embedded 5×, 25+ stub marker files in reports dir. Analyst output was rich and correct — content lost between analyst and report. Triggered Phase 6 pivot. |
 
 ### Acceptance bar — REPLACED (2026-04-23)
 The "8/8 CLEAN" structural success criterion is **OBSOLETE** as of Run 88. The new active bar is the **Phase 6 12-criteria content-quality gate**:
@@ -92,24 +104,3 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 - **RC3** — `file_writer`: emits a 356-char placeholder for body content; spams 25+ stub-marker tools to compensate.
 - **RC4** — supervisor FINAL gate accepts hollow completion (no content-validation preconditions).
 - **RC5 (NEW)** — structured Pydantic outputs (`AnalysisInsights`, `ReportResults`, …) may not actually be persisted to supervisor `State` after W9-SR-DROP — wrapper code reads them from `agent.invoke()` dict, but downstream nodes may be reading stale / empty State fields. Needs forensic confirmation in Phase A.
-
-### Phase 6 milestones
-- [x] Run 87 structural pass (7/8) — W9-SR-DROP verified
-- [x] Run 88 structural pass (8/8) — W10-PDF-POST verified
-- [x] Wave 5 cutover (direct-to-notebook) + backups at `_wave5_backup_20260423-091557/`
-- [x] GitHub epic + 7 sub-issues filed (#119 epic; #112–#118 phases A–G)
-- [x] Forensic agents launched (`forensic-pipeline`, `forensic-sr-persistence`) — results stranded; re-harvest pending
-- [ ] Phase A — forensic confirmation of RC1–RC5 (re-launch or direct inspection)
-- [ ] Phase B — telemetry-only instrumented run
-- [ ] Phase C — viz pipeline fix
-- [ ] Phase D — report pipeline fix (`Section.body` min-length validator, `written_sections` reducer audit)
-- [ ] Phase E — `file_writer` prompt rewrite + tool-list restriction + tool-call cap
-- [ ] Phase F — supervisor FINAL gate content-validation preconditions
-- [ ] Phase G — validation against 12-criteria (expect 5–8 convergence runs)
-
-### Known artifacts to inspect
-- `IDD_results/IDD_run_*-20260423-*/report.html` — verify 356-char placeholder
-- `IDD_results/IDD_run_*-20260423-*/*.pdf` — verify ≈1983 bytes
-- `IDD_results/IDD_run_*-20260423-*/*_{ack,commit,ready,stub,trigger}*` — count stub files
-<!-- session-curated:2026-04-23-phase6:end -->
-

@@ -124,3 +124,4 @@ checkpoints.sqlite-wal
 current_run_thread_id.txt
 _idd_resume.flag
 IDD_results/
+session.md
