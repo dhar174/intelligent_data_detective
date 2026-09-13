@@ -1,8 +1,9 @@
 import json
+import os
 import sys
+from pathlib import Path
 
 from PIL import Image, ImageDraw
-from pathlib import Path
 
 
 def safe_user_path(path_value, base_dir="."):
@@ -16,6 +17,77 @@ def safe_user_path(path_value, base_dir="."):
     except ValueError as exc:
         raise ValueError(f"Path escapes allowed directory: {path_value}") from exc
     return resolved_path
+
+
+def _get_artifacts_base(config=None) -> Path:
+    """Resolve the active runtime or configured artifacts directory."""
+    if config:
+        try:
+            cfg = getattr(config, "configurable", None) or (config if isinstance(config, dict) else {})
+            runtime = cfg.get("runtime") if isinstance(cfg, dict) else None
+            if runtime is not None and getattr(runtime, "artifacts_dir", None):
+                base = Path(runtime.artifacts_dir).resolve()
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+        except Exception:
+            pass
+
+    for mod_name in ("__main__", "idd_core", "intelligentdatadetective_beta_v5"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            runtime = getattr(mod, "RUNTIME", None)
+            if runtime is not None and getattr(runtime, "artifacts_dir", None):
+                base = Path(runtime.artifacts_dir).resolve()
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+
+    env_dir = os.environ.get("IDD_ARTIFACTS_DIR")
+    if env_dir:
+        base = Path(env_dir).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    base = (Path.cwd() / "artifacts").resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _resolve_artifact_path(
+    file_name: str,
+    *,
+    config=None,
+    subdir: str | None = None,
+    create_parents: bool = True,
+) -> Path:
+    """Resolve file_name within the active runtime/configured artifacts directory."""
+    if not file_name or not isinstance(file_name, str):
+        raise ValueError("file_name must be a non-empty string.")
+
+    base = _get_artifacts_base(config)
+    if subdir:
+        base = (base / subdir).resolve()
+
+    base.mkdir(parents=True, exist_ok=True)
+
+    candidate = Path(file_name).expanduser()
+    if candidate.is_absolute():
+        path = candidate.resolve()
+    else:
+        cwd_candidate = (Path.cwd() / candidate).resolve()
+        try:
+            cwd_candidate.relative_to(base)
+            path = cwd_candidate
+        except ValueError:
+            path = (base / candidate).resolve()
+
+    try:
+        path.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"Refusing to access path outside artifacts root ({base}): {path}") from exc
+
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # Creates "validation" images with rectangles for the bounding box information that
@@ -40,8 +112,9 @@ def create_validation_image(page_number, fields_json_path, input_path, output_pa
                 draw.rectangle(label_box, outline='blue', width=2)
                 num_boxes += 2
         
-        img.save(output_path)
-        print(f"Created validation image at {output_path} with {num_boxes} bounding boxes")
+        resolved_output_path = _resolve_artifact_path(str(output_path), config=None)
+        img.save(resolved_output_path)
+        print(f"Created validation image at {resolved_output_path} with {num_boxes} bounding boxes")
 
 
 if __name__ == "__main__":
@@ -51,5 +124,5 @@ if __name__ == "__main__":
     page_number = int(sys.argv[1])
     fields_json_path = safe_user_path(sys.argv[2])
     input_image_path = safe_user_path(sys.argv[3])
-    output_image_path = safe_user_path(sys.argv[4])
+    output_image_path = sys.argv[4]
     create_validation_image(page_number, fields_json_path, input_image_path, output_image_path)

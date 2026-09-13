@@ -277,13 +277,13 @@ with SqliteSaver.from_conn_string("agent_state.db") as memory:
     )
     # Agent knows name is Alice!
 
-# Get conversation history
-state = app.get_state(config)
-print(state.values["messages"])
+    # Get conversation history
+    state = app.get_state(config)
+    print(state.values["messages"])
 
-# List all checkpoints
-for checkpoint in app.get_state_history(config):
-    print(checkpoint.config, checkpoint.values)
+    # List all checkpoints
+    for checkpoint in app.get_state_history(config):
+        print(checkpoint.config, checkpoint.values)
 
 ### Human-in-the-Loop
 

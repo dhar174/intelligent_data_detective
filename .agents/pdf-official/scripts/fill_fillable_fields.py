@@ -7,28 +7,75 @@ from pypdf import PdfReader, PdfWriter
 
 from extract_form_field_info import get_field_info
 
-# Resolve artifacts path in accordance with AGENTS.md conventions
-repo_root = Path(__file__).resolve().parents[3]
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
-
-try:
-    from idd_core import _resolve_artifact_path
-except ImportError:
-    def _resolve_artifact_path(file_name: str, *, config=None, subdir=None, create_parents=True) -> Path:
-        base = Path(os.environ.get("IDD_ARTIFACTS_DIR", Path.cwd() / "artifacts"))
-        if subdir:
-            base = base / subdir
-        base.mkdir(parents=True, exist_ok=True)
-        candidate = Path(file_name)
-        path = (base / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+def _get_artifacts_base(config=None) -> Path:
+    """Resolve the active runtime or configured artifacts directory."""
+    if config:
         try:
-            path.relative_to(base.resolve())
+            cfg = getattr(config, "configurable", None) or (config if isinstance(config, dict) else {})
+            runtime = cfg.get("runtime") if isinstance(cfg, dict) else None
+            if runtime is not None and getattr(runtime, "artifacts_dir", None):
+                base = Path(runtime.artifacts_dir).resolve()
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+        except Exception:
+            pass
+
+    for mod_name in ("__main__", "idd_core", "intelligentdatadetective_beta_v5"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            runtime = getattr(mod, "RUNTIME", None)
+            if runtime is not None and getattr(runtime, "artifacts_dir", None):
+                base = Path(runtime.artifacts_dir).resolve()
+                base.mkdir(parents=True, exist_ok=True)
+                return base
+
+    env_dir = os.environ.get("IDD_ARTIFACTS_DIR")
+    if env_dir:
+        base = Path(env_dir).resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    base = (Path.cwd() / "artifacts").resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _resolve_artifact_path(
+    file_name: str,
+    *,
+    config=None,
+    subdir: str | None = None,
+    create_parents: bool = True,
+) -> Path:
+    """Resolve file_name within the active runtime/configured artifacts directory."""
+    if not file_name or not isinstance(file_name, str):
+        raise ValueError("file_name must be a non-empty string.")
+
+    base = _get_artifacts_base(config)
+    if subdir:
+        base = (base / subdir).resolve()
+
+    base.mkdir(parents=True, exist_ok=True)
+
+    candidate = Path(file_name).expanduser()
+    if candidate.is_absolute():
+        path = candidate.resolve()
+    else:
+        cwd_candidate = (Path.cwd() / candidate).resolve()
+        try:
+            cwd_candidate.relative_to(base)
+            path = cwd_candidate
         except ValueError:
-            raise ValueError(f"Refusing to access path outside artifacts root: {path}")
-        if create_parents:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+            path = (base / candidate).resolve()
+
+    try:
+        path.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"Refusing to access path outside artifacts root ({base}): {path}") from exc
+
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # Fills fillable form fields in a PDF. See forms.md.
