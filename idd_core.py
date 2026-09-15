@@ -864,12 +864,13 @@ class DataFrameRegistry:
         with self._lock:
             if df_id is None:
                 df_id = str(uuid.uuid4())
-            path = self._norm_path(raw_path)
 
             if df_id in self.registry:
                 self.registry[df_id]["df"] = df
-                self.registry[df_id]["raw_path"] = str(path)
-                self.df_id_to_raw_path[df_id] = str(path)
+                if raw_path not in ("", None):
+                    path = self._norm_path(raw_path)
+                    self.registry[df_id]["raw_path"] = str(path)
+                    self.df_id_to_raw_path[df_id] = str(path)
                 if df is not None:
                     self._touch_cache(df_id, df)
                 return df_id

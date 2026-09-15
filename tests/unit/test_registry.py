@@ -72,13 +72,16 @@ class TestDataFrameRegistryBasic:
         assert df_id is not None
         assert len(df_id) > 0
 
-    def test_register_update_existing(self, registry, sample_df):
-        """Re-registering with same id updates the DataFrame."""
-        registry.register_dataframe(sample_df, "updatable")
+    def test_register_update_existing(self, registry, sample_df, tmp_path):
+        """Re-registering with same id updates the DataFrame without clobbering raw_path."""
+        csv_path = tmp_path / "updatable.csv"
+        registry.register_dataframe(sample_df, "updatable", raw_path=str(csv_path))
         new_df = pd.DataFrame({"x": [99, 100]})
         registry.register_dataframe(new_df, "updatable")
         result = registry.get_dataframe("updatable")
         assert list(result["x"]) == [99, 100]
+        assert registry.get_raw_path_from_id("updatable") == str(csv_path)
+        assert registry.get_id_from_raw_path(str(csv_path)) == "updatable"
 
 
 class TestDataFrameRegistryFileRoundtrip:

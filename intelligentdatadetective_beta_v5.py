@@ -1097,12 +1097,12 @@ class DataFrameRegistry:
           if df_id is None:
               df_id = str(uuid.uuid4())
           # fast path: update existing id
-          path = self._norm_path(raw_path)
-
           if df_id in self.registry:
               self.registry[df_id]["df"] = df
-              self.registry[df_id]["raw_path"] = str(path)
-              self.df_id_to_raw_path[df_id] = str(path)  # FIX: keep mapping in sync
+              if raw_path not in ("", None):
+                  path = self._norm_path(raw_path)
+                  self.registry[df_id]["raw_path"] = str(path)
+                  self.df_id_to_raw_path[df_id] = str(path)  # FIX: keep mapping in sync
               if df is not None:
                   self._touch_cache(df_id, df)            # FIX: refresh cache
               return df_id
@@ -1112,6 +1112,7 @@ class DataFrameRegistry:
           if raw_path == "" or raw_path is None:
               raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()
               raw_path = str(raw_path)
+          path = self._norm_path(raw_path)
 
           # new id: must have either df or an existing path
           if df is None and not path.exists():
