@@ -175,10 +175,24 @@ KNOWN_MEMORY_KINDS = (
     "visualization", "insights", "errors"
 )
 
-def _configured_memory_search_limit(kinds: Optional[List[str]] = None) -> int:
-    """Derive search limits from configured retention and retrieval budgets."""
+# Multiply the configured retention cap by this factor for maintenance
+# operations (prune, report, importance recalculation) so that even an
+# over-capacity namespace can be fully observed.  Retrieval calls that are
+# not performing maintenance should leave ``maintenance=False``.
+MAINTENANCE_SEARCH_FACTOR = 4
+
+def _configured_memory_search_limit(
+    kinds: Optional[List[str]] = None, *, maintenance: bool = False
+) -> int:
+    """Derive search limits from configured retention and retrieval budgets.
+
+    When ``maintenance=True`` the returned limit is multiplied by
+    ``MAINTENANCE_SEARCH_FACTOR`` so that pruning, reporting, and importance
+    recalculation can observe all records even when a namespace has grown
+    beyond its configured retention cap.
+    """
     selected_kinds = kinds or list(KNOWN_MEMORY_KINDS)
-    return max(
+    base = max(
         1,
         sum(
             max(
@@ -189,6 +203,7 @@ def _configured_memory_search_limit(kinds: Optional[List[str]] = None) -> int:
             for kind in selected_kinds
         ),
     )
+    return base * MAINTENANCE_SEARCH_FACTOR if maintenance else base
 
 def estimate_importance(kind: str, text: str) -> float:
     """
@@ -289,9 +304,13 @@ class MemoryPolicyEngine:
         return items_by_kind
 
     def _get_all_memories_grouped_by_kind(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, Any]]]:
-        """Fetch all memories under ('memories',), with exact-namespace fallback."""
+        """Fetch all memories under ('memories',), with exact-namespace fallback.
+
+        Always uses an exhaustive (maintenance) search limit so that namespaces
+        exceeding their configured retention cap are fully observable.
+        """
         try:
-            search_limit = limit or _configured_memory_search_limit()
+            search_limit = limit or _configured_memory_search_limit(maintenance=True)
             all_items = self.store.search(("memories",), query="", limit=search_limit)
             items_by_kind = self._group_memories_by_kind(all_items)
             if items_by_kind:
@@ -301,7 +320,7 @@ class MemoryPolicyEngine:
             for kind in KNOWN_MEMORY_KINDS:
                 namespace = ("memories", kind)
                 items = self.store.search(
-                    namespace, query="", limit=_configured_memory_search_limit([kind])
+                    namespace, query="", limit=_configured_memory_search_limit([kind], maintenance=True)
                 )
                 grouped_items = self._group_memories_by_kind(items)
                 if grouped_items.get(kind):
@@ -313,6 +332,7 @@ class MemoryPolicyEngine:
                 )
 
             return fallback_items_by_kind
+
         except Exception as e:
             self.logger.error(f"Failed to fetch and group memories: {e}")
             raise
@@ -1153,7 +1173,7 @@ def recalculate_importance(store: InMemoryStore, kinds: Optional[List[str]] = No
                     store.search(
                         namespace,
                         query="",
-                        limit=_configured_memory_search_limit([kind]),
+                        limit=_configured_memory_search_limit([kind], maintenance=True),
                     )
                 ).get(kind, [])
         else:

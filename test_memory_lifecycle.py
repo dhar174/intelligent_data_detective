@@ -38,7 +38,7 @@ from memory_enhancements import (
 
 
 class MockInMemoryStore:
-    """Enhanced mock store for lifecycle testing."""
+    """Enhanced mock store for lifecycle testing (exact-namespace only)."""
     
     def __init__(self):
         self.data = {}
@@ -71,6 +71,59 @@ class MockInMemoryStore:
     
     def clear(self):
         """Clear all data."""
+        self.data = {}
+        self.search_calls = []
+
+
+class SearchItemMock:
+    """Simulates a LangGraph SearchItem with .value, .key, and .namespace attributes."""
+
+    def __init__(self, key: str, value: Dict[str, Any], namespace: tuple):
+        self.key = key
+        self.value = value
+        self.namespace = namespace
+
+    # No .get() method — callers must use .value
+
+
+class PrefixAwareMockStore:
+    """Mock store that supports parent-namespace prefix searches.
+
+    When ``search(("memories",), ...)`` is called it returns all items stored
+    under any ``("memories", <kind>)`` sub-namespace, wrapped as
+    ``SearchItemMock`` objects (with ``.value`` / ``.key`` / ``.namespace``
+    attributes) to exercise the SearchItem conversion path.
+    """
+
+    MEMORIES_PREFIX = ("memories",)
+
+    def __init__(self):
+        self.data: Dict[tuple, Dict[str, Dict]] = {}
+        self.search_calls: List[tuple] = []
+
+    def put(self, namespace: tuple, memory_id: str, item: Dict[str, Any]):
+        self.data.setdefault(namespace, {})[memory_id] = item.copy()
+
+    def search(self, namespace: tuple, query: str, limit: int = 5) -> List:
+        self.search_calls.append((namespace, query, limit))
+
+        if namespace == self.MEMORIES_PREFIX:
+            # Prefix scan: return all items from every sub-namespace
+            results = []
+            for ns, ns_data in self.data.items():
+                if ns[:1] == self.MEMORIES_PREFIX:
+                    for key, value in ns_data.items():
+                        results.append(SearchItemMock(key=key, value=value.copy(), namespace=ns))
+            return results[:limit]
+
+        # Exact-namespace lookup
+        ns_data = self.data.get(namespace, {})
+        items = []
+        for key, value in ns_data.items():
+            items.append(SearchItemMock(key=key, value=value.copy(), namespace=namespace))
+        return items[:limit]
+
+    def clear(self):
         self.data = {}
         self.search_calls = []
 
@@ -558,6 +611,130 @@ class TestMemoryLifecycle(unittest.TestCase):
         self.assertEqual(updated_count, 1)
         self.assertEqual([call[0] for call in self.store.search_calls], [("memories", "analysis")])
         self.assertGreaterEqual(self.store.search_calls[0][2], 1)
+
+
+class TestPrefixAwareGroupedSearch(unittest.TestCase):
+    """Tests for the parent-namespace fast path using a prefix-aware store.
+
+    These tests verify that the new single-search optimization works correctly
+    when the store supports prefix searches, and that SearchItem objects (with
+    .value / .key / .namespace attributes) are handled properly.
+    """
+
+    def setUp(self):
+        self.store = PrefixAwareMockStore()
+        reset_memory_metrics()
+
+    def tearDown(self):
+        os.environ.pop("DEBUG_MEMORY", None)
+
+    def _insert(self, kind: str, mem_id: str, text: str = "test", **kwargs):
+        """Helper: put a raw dict directly (bypass engine to control data precisely)."""
+        item = {"text": text, "kind": kind, **kwargs}
+        self.store.put(("memories", kind), mem_id, item)
+
+    # -----------------------------------------------------------------------
+    # 1. Fast path: single parent-namespace call returns all items
+    # -----------------------------------------------------------------------
+    def test_prefix_fast_path_single_search(self):
+        """_get_all_memories_grouped_by_kind should issue exactly ONE search call
+        when the store supports prefix searches."""
+        self._insert("analysis", "a1", "analysis memory")
+        self._insert("conversation", "c1", "conversation memory")
+
+        engine = MemoryPolicyEngine(self.store)
+        self.store.search_calls.clear()
+
+        grouped = engine._get_all_memories_grouped_by_kind()
+
+        # Only the parent-namespace call should have been issued
+        namespaces_searched = [call[0] for call in self.store.search_calls]
+        self.assertEqual(namespaces_searched, [("memories",)],
+                         "Expected exactly one parent-namespace search, got: "
+                         f"{namespaces_searched}")
+
+    # -----------------------------------------------------------------------
+    # 2. All kinds are grouped correctly from a single search result
+    # -----------------------------------------------------------------------
+    def test_prefix_path_groups_all_kinds(self):
+        """Items from multiple kinds should be correctly grouped."""
+        for kind in ("analysis", "conversation", "insights"):
+            self._insert(kind, f"{kind}-id", f"{kind} memory text")
+
+        engine = MemoryPolicyEngine(self.store)
+        grouped = engine._get_all_memories_grouped_by_kind()
+
+        self.assertIn("analysis", grouped)
+        self.assertIn("conversation", grouped)
+        self.assertIn("insights", grouped)
+        self.assertEqual(grouped["analysis"][0].get("kind"), "analysis")
+
+    # -----------------------------------------------------------------------
+    # 3. SearchItem conversion (.value / .key / .namespace attributes)
+    # -----------------------------------------------------------------------
+    def test_prefix_path_search_item_conversion(self):
+        """SearchItem objects returned by prefix store must be unwrapped to dicts
+        and their 'id' field must be filled from .key when absent."""
+        # Insert without an explicit 'id' field so the engine must fill it from .key
+        self.store.put(("memories", "analysis"), "key-from-key", {"text": "no-id item", "kind": "analysis"})
+
+        engine = MemoryPolicyEngine(self.store)
+        grouped = engine._get_all_memories_grouped_by_kind()
+
+        analysis_items = grouped.get("analysis", [])
+        self.assertTrue(any(item.get("id") == "key-from-key" for item in analysis_items),
+                        "id should have been backfilled from SearchItem.key")
+
+    # -----------------------------------------------------------------------
+    # 4. prune() can observe over-capacity records via prefix fast path
+    # -----------------------------------------------------------------------
+    def test_prefix_path_prune_observes_overflow(self):
+        """prune() must fetch more than max_items records so it can detect overflow.
+
+        The maintenance limit (MAINTENANCE_SEARCH_FACTOR × max_items) must be
+        large enough that the search limit passed to the store exceeds the
+        per-kind retention cap.
+        """
+        from memory_enhancements import MAINTENANCE_SEARCH_FACTOR
+
+        kind = "analysis"
+        policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+        # Verify the maintenance factor is actually applied
+        expected_min_limit = policy.max_items * MAINTENANCE_SEARCH_FACTOR
+
+        self._insert(kind, "overflow-item", "overflow memory")
+
+        engine = MemoryPolicyEngine(self.store)
+        self.store.search_calls.clear()
+
+        engine.prune()
+
+        parent_calls = [c for c in self.store.search_calls if c[0] == ("memories",)]
+        self.assertTrue(parent_calls, "prune() should have called search on the parent namespace")
+        actual_limit = parent_calls[0][2]
+        self.assertGreaterEqual(
+            actual_limit, expected_min_limit,
+            f"prune() search limit {actual_limit} < maintenance limit {expected_min_limit}; "
+            "over-capacity records would be silently excluded"
+        )
+
+    # -----------------------------------------------------------------------
+    # 5. memory_policy_report() counts items via the prefix fast path
+    # -----------------------------------------------------------------------
+    def test_prefix_path_report_counts_all_items(self):
+        """memory_policy_report() should see items inserted across all kinds."""
+        for kind in ("analysis", "conversation", "insights"):
+            self._insert(kind, f"rep-{kind}", f"Report test {kind}", created_at=time.time())
+
+        report = memory_policy_report(self.store)
+
+        self.assertIn("kind_status", report)
+        for kind in ("analysis", "conversation", "insights"):
+            status = report["kind_status"].get(kind, {})
+            self.assertGreaterEqual(
+                status.get("current_count", 0), 1,
+                f"memory_policy_report did not count any items for kind '{kind}'"
+            )
 
 
 class TestMemoryIntegrationLifecycle(unittest.TestCase):

@@ -129,9 +129,14 @@ KNOWN_MEMORY_KINDS = (
     "visualization", "insights", "errors"
 )
 
-def _configured_memory_search_limit(kinds: Optional[List[str]] = None) -> int:
+# Multiply the configured retention cap by this factor for maintenance
+# operations (prune, report, importance recalculation) so that even an
+# over-capacity namespace can be fully observed.
+MAINTENANCE_SEARCH_FACTOR = 4
+
+def _configured_memory_search_limit(kinds: Optional[List[str]] = None, *, maintenance: bool = False) -> int:
     selected_kinds = kinds or list(KNOWN_MEMORY_KINDS)
-    return max(
+    base = max(
         1,
         sum(
             max(
@@ -142,6 +147,7 @@ def _configured_memory_search_limit(kinds: Optional[List[str]] = None) -> int:
             for kind in selected_kinds
         ),
     )
+    return base * MAINTENANCE_SEARCH_FACTOR if maintenance else base
 
 def _group_memories_by_kind(items: List[Any]) -> Dict[str, List[Dict[str, Any]]]:
     grouped: Dict[str, List[Dict[str, Any]]] = {}
@@ -169,7 +175,7 @@ def _group_memories_by_kind(items: List[Any]) -> Dict[str, List[Dict[str, Any]]]
 def _get_all_memories_grouped_by_kind(
     store: Union[BaseStore,InMemoryStore], limit: Optional[int] = None
 ) -> Dict[str, List[Dict[str, Any]]]:
-    search_limit = limit or _configured_memory_search_limit()
+    search_limit = limit or _configured_memory_search_limit(maintenance=True)
     all_items = store.search(("memories",), query="", limit=search_limit)
     grouped = _group_memories_by_kind(all_items)
     if grouped:
@@ -181,7 +187,7 @@ def _get_all_memories_grouped_by_kind(
         items = store.search(
             namespace,
             query="",
-            limit=_configured_memory_search_limit([kind]),
+            limit=_configured_memory_search_limit([kind], maintenance=True),
         )
         per_kind_grouped = _group_memories_by_kind(items)
         if per_kind_grouped.get(kind):
@@ -251,7 +257,7 @@ RECALC_FETCH_NEW = """        kinds_to_process = kinds or list(KNOWN_MEMORY_KIND
                     store.search(
                         namespace,
                         query="",
-                        limit=_configured_memory_search_limit([kind]),
+                        limit=_configured_memory_search_limit([kind], maintenance=True),
                     )
                 ).get(kind, [])
         else:
