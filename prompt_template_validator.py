@@ -359,8 +359,11 @@ class PromptTemplateValidator:
 
 def main():
     """Main validation function."""
-    notebook_path = "/home/runner/work/intelligent_data_detective/intelligent_data_detective/IntelligentDataDetective_beta_v4.ipynb"
-    
+    notebook_path_str = os.environ.get(
+        "NOTEBOOK_PATH",
+        str(Path(__file__).parent / "IntelligentDataDetective_beta_v4.ipynb")
+    )
+    notebook_path = Path(notebook_path_str)    
     validator = PromptTemplateValidator(notebook_path)
     result = validator.validate_all_templates()
     validator.print_report(result)
