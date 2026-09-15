@@ -1,0 +1,24 @@
+Final status (concise):
+- Duplicates removed: 3; current cleaned basis: 50 rows x 5 columns.
+- Quick profile (current data): 53x5 baseline used for dedup; after dedup, 50 rows remain; dtypes are id int64, name object, value float64, category object, score float64.
+- Current missing values (post-dedup): value 6, score 3; id/name/category have no missing values.
+
+Next actions to complete cleaning and enable full reporting:
+1) Normalize category labels to uppercase and map synonyms to A/B/C.
+2) Impute numeric value/score by category median; fallback to global median; log imputations per column/category.
+3) Impute missing names with 'Unknown'.
+4) Detect outliers (IQR) for value/score; add is_outlier flags; Winsorize to 1st/99th percentile.
+5) Create artifacts: sample_dirty_cleaned.csv, cleaning_log.csv, cleaning_summary.json, sample_dirty_head.csv (first 10 rows).
+6) Produce visualizations: distributions for value and score, category distribution, and value vs score by category.
+7) Generate PDF/Markdown/HTML reports with provenance.
+
+Draft CleaningMetadata (audit):
+{
+  "reply_msg_to_supervisor": "Deduplication complete. Proceeding with remaining cleaning and visualization/report generation for dataset 'sample_dirty'.",
+  "finished_this_task": false,
+  "expect_reply": false,
+  "steps_taken": ["Deduplicated by id; prepare for normalization, imputation, and outlier handling."] ,
+  "data_description_after_cleaning": "Post-deduplication: 50 rows, 5 columns. Further cleaning pending (imputation, normalization, outlier handling)."
+}
+
+I can proceed with the next steps now to complete the cleaned dataset and full reporting.

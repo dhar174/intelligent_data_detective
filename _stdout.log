@@ -1,0 +1,23 @@
+OK  Fresh run (resume flag cleared)
+OK  OPENAI_API_KEY loaded from User environment scope
+OK  nbclient and nbformat are available
+
+============================================================
+Executing: IntelligentDataDetective_beta_v5_patched.ipynb
+Timeout:   3600s (60 min)
+Output:    C:\Users\darf3\Documents\intelligent_data_detective\IDD_results\executed_20260423_024857.ipynb
+============================================================
+
+OK  Using kernel: py312-codex
+OK  Log tail started → C:\Users\darf3\Documents\intelligent_data_detective\notebook_run_log.txt
+WARN checkpoints.sqlite locked (attempt 1/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 2/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 3/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 4/5), retrying in 2s...
+WARN checkpoints.sqlite locked (attempt 5/5), retrying in 2s...
+WARN Could not delete checkpoints.sqlite — another process may hold it open. Kill lingering Python kernels and retry.
+[PIPELINE] 02:49:16 [INFO] STAGE initial_analysis START
+[PIPELINE] 02:49:16 [INFO] STAGE initial_analysis DONE [OK] (0s)
+[PIPELINE] 02:49:16 [INFO] SHORTCUT0 ia_done=True ia=True dc=None cm=n
+[PIPELINE] 02:49:16 [INFO] STAGE supervisor START
+[PIPELINE] 02:49:16 [INFO] STAGE initial_analysis DONE [OK] (0s)
