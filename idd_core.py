@@ -1082,6 +1082,12 @@ if HAS_LANGCHAIN:
         except Exception:
             pass
 
+        env_artifacts = os.environ.get("IDD_ARTIFACTS_DIR")
+        if env_artifacts:
+            base = PathlibPath(env_artifacts)
+            base.mkdir(parents=True, exist_ok=True)
+            return base
+
         base = PathlibPath(WORKING_DIRECTORY) / "artifacts"
         base.mkdir(parents=True, exist_ok=True)
         return base

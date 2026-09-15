@@ -1,0 +1,52 @@
+
+# "conversation",
+# "analysis",
+# "progress",
+# "routes",
+# "replies",
+# "plans",
+# "todos",
+# "initial_description",
+# "cleaning",
+# "visualization",
+# "insights",
+# "reports",
+# "files",
+# "errors"
+data_cleaning_tools.append(create_manage_memory_tool(namespace=("memories","cleaning"),store= in_memory_store))
+data_cleaning_tools.append(create_search_memory_tool(namespace=("memories","cleaning"), store= in_memory_store))
+data_cleaning_tools.append(report_intermediate_progress)
+if not use_local_llm:
+    init_analyst_tools.append(create_manage_memory_tool(namespace=("memories","initial_description"),store= in_memory_store))
+    init_analyst_tools.append(create_search_memory_tool(namespace=("memories","initial_description"), store= in_memory_store))
+    init_analyst_tools.append(report_intermediate_progress)
+analyst_tools.append(create_manage_memory_tool(namespace=("memories","analysis"),store= in_memory_store))
+analyst_tools.append(create_search_memory_tool(namespace=("memories","analysis"), store= in_memory_store))
+analyst_tools.append(report_intermediate_progress)
+report_generator_tools.append(create_manage_memory_tool(namespace=("memories","reports"),store= in_memory_store))
+report_generator_tools.append(create_search_memory_tool(namespace=("memories","reports"), store= in_memory_store))
+report_generator_tools.append(report_intermediate_progress)
+file_writer_tools.append(create_manage_memory_tool(namespace=("memories","files"),store= in_memory_store))
+file_writer_tools.append(create_search_memory_tool(namespace=("memories","files"), store= in_memory_store))
+file_writer_tools.append(report_intermediate_progress)
+visualization_tools.append(create_manage_memory_tool(namespace=("memories","visualization"),store= in_memory_store))
+visualization_tools.append(create_search_memory_tool(namespace=("memories","visualization"), store= in_memory_store))
+visualization_tools.append(report_intermediate_progress)
+def _dedupe_tools(tools):
+  seen = set()
+  out = []
+  for t in tools:
+    name = getattr(t, "name", None) or repr(t)
+    if name in seen:
+        continue
+    seen.add(name)
+    out.append(t)
+  return out
+
+init_analyst_tools = _dedupe_tools(init_analyst_tools)
+analyst_tools = _dedupe_tools(analyst_tools)
+data_cleaning_tools = _dedupe_tools(data_cleaning_tools)
+report_generator_tools = _dedupe_tools(report_generator_tools)
+visualization_tools = _dedupe_tools(visualization_tools)
+
+# Pull in the file management toolkit only once for file_writer

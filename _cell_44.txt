@@ -1,0 +1,292 @@
+from langchain.agents.structured_output import ToolStrategy, ProviderStrategy
+
+
+if use_local_llm:
+    print("Using local LLM")
+
+
+prehook = make_middleware(summary_llm, model_budget_tokens=200_000, max_summary_tokens=2048) if not use_local_llm else make_middleware(summary_llm, model_budget_tokens=40000, max_summary_tokens=4096)
+prehook_quick = make_middleware(quick_summary_llm, model_budget_tokens=180_000, max_summary_tokens=512) if not use_local_llm else make_middleware(quick_summary_llm, model_budget_tokens=32000, max_summary_tokens=1024)
+prehook_complex = make_middleware(complex_summary_llm, model_budget_tokens=250_000, max_summary_tokens=5120) if not use_local_llm else make_middleware(complex_summary_llm, model_budget_tokens=46000, max_summary_tokens=4096)
+prehook_critical_complex = make_middleware(critical_complex_summary_llm, model_budget_tokens=250_000, max_summary_tokens=10000) if not use_local_llm else make_middleware(critical_complex_summary_llm, model_budget_tokens=64000, max_summary_tokens=6144)
+# If you prefer to overwrite the graph state's messages entirely, return:
+# return {"messages": [RemoveMessage(REMOVE_ALL_MESSAGES), *trimmed]}
+
+# -------------------------
+# Agent factories
+# -------------------------
+
+
+tool_descrips_mini = {
+"get_dataframe_schema": "Summarizes columns, dtypes, and samples.",
+"get_column_names": "Lists DataFrame column names.",
+"check_missing_values": "Shows missing values per column.",
+"drop_column": "Removes a column from the DataFrame.",
+"delete_rows": "Deletes rows matching given conditions.",
+"fill_missing_median": "Fills column NaNs with its median.",
+"query_dataframe": "Selects/aggregates columns with optional filter.",
+"get_descriptive_statistics": "Returns descriptive statistics for columns.",
+"calculate_correlation": "Computes Pearson correlation between columns.",
+"perform_hypothesis_test": "Performs one-sample t-test on a column.",
+"create_sample": "Saves a numbered outline to file.",
+"read_file": "Reads a safe file snippet.",
+"write_file": "Writes text to a scoped path.",
+"edit_file": "Inserts lines and saves a file.",
+"python_repl_tool": "Executes Python code in sandbox.",
+"create_histogram": "Generates histogram(s) from numeric columns.",
+"create_scatter_plot": "Creates scatter plots with overlays.",
+"create_correlation_heatmap": "Builds a correlation heatmap.",
+"create_box_plot": "Creates grouped/overlayed box plots."
+}
+def create_data_cleaner_agent(initial_description: InitialDescription, df_ids: List[str] = []):
+
+    checkpointer = InMemorySaver()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in data_cleaning_tools) if not use_local_llm else "\n".join(f"{key}: {tool_descrips_mini[key]}" for key in tool_descrips_mini.keys() if key in [t.name for t in data_cleaning_tools])
+    init_df_id_str = ", \n".join(df_ids)
+    init_dc_vars = {"available_df_ids":init_df_id_str,"dataset_description":initial_description.dataset_description,
+                    "tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES,"output_format" : CleaningMetadata.model_json_schema(),"memories" : "No memories yet",
+                    "data_sample":initial_description.data_sample}
+    prompt = data_cleaner_prompt_template.partial(**init_dc_vars)
+    # Access the template string directly without triggering validation/formatting
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+
+    # NOTE: response_format prefers a Pydantic model class, not a JSON schema string
+    _prehook = prehook_quick if not use_local_llm else chain_pre_hooks(
+        prehook_quick,          # your existing prehook
+        qwen3_middleware     # wraps ToolMessages -> <tool_response> + adds stop tokens
+
+    )
+    _after_model  = None if not use_local_llm else qwen3_after_model
+    base_agent = create_agent(
+        data_cleaner_llm,
+        tools=data_cleaning_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format=None if USE_STRICT_JSON_SCHEMA_FINAL_HOP else ToolStrategy(CleaningMetadata),
+        middleware =[_prehook],
+        system_prompt=system_prompt,
+        name="data_cleaner",
+    ).with_config({
+        "run_name": f"agent:data_cleaner",
+    "tags": [f"agent:data_cleaner"],
+        "metadata": {"agent_name": "data_cleaner"},
+    })
+
+    # if USE_STRICT_JSON_SCHEMA_FINAL_HOP:
+    # # Swap in a strict JSON-Schema finalization step (OpenAI json_schema-compatible).
+    #     return _strict_final_wrapper(base_agent,data_cleaner_llm, CleaningMetadata)
+    # else:
+        # Your original behavior (create_agent parses into structured_response)
+    return base_agent
+
+def create_initial_analysis_agent(user_prompt: str, df_ids: List[str] = []):
+    init_df_id_str = ", \n".join(df_ids)
+
+    checkpointer = InMemorySaver()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in init_analyst_tools) if not use_local_llm else "\n".join(f"{key}: {tool_descrips_mini[key]}" for key in tool_descrips_mini.keys()if key in [t.name for t in init_analyst_tools])
+    init_ia_vars = {"available_df_ids":init_df_id_str,"dataset_description":initial_description.dataset_description,
+                    "tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES,"output_format" : InitialDescription.model_json_schema(),"memories" : "No memories yet",
+                    "data_sample":initial_description.data_sample,"user_prompt":user_prompt}
+    prompt = analyst_prompt_template_initial.partial(**init_ia_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    _prehook = prehook_quick if not use_local_llm else chain_pre_hooks(
+        prehook_quick,          # your existing prehook
+        qwen3_middleware     # wraps ToolMessages -> <tool_response> + adds stop tokens
+
+    )
+    _after_model  = None if not use_local_llm else qwen3_after_model
+    base_agent= create_agent(
+        initial_analyst_llm, #for use_local_llm, lets try using a dynamic model to distinguish between thinking and tool-calling steps (and possibly structured output generation steps as well)
+        tools=init_analyst_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format= ToolStrategy(InitialDescription),
+        middleware =[prehook_quick],
+        system_prompt=system_prompt if not use_local_llm else None,
+        name="initial_analysis",
+    ).with_config({
+    "run_name": f"agent:initial_analysis",
+    "tags": [f"agent:initial_analysis"],
+    "metadata": {"agent_name": "initial_analysis"},
+})
+
+    # if USE_STRICT_JSON_SCHEMA_FINAL_HOP:
+    # # Swap in a strict JSON-Schema finalization step (OpenAI json_schema-compatible).
+    #     return _strict_final_wrapper(base_agent, initial_analyst_llm,InitialDescription)
+    # else:
+        # Your original behavior (create_agent parses into structured_response)
+    return base_agent
+
+def create_analyst_agent(initial_description: InitialDescription, df_ids: List[str] = []):
+    init_df_id_str = ", \n".join(df_ids)
+    checkpointer = InMemorySaver()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in analyst_tools)
+    init_analyst_vars = {"available_df_ids":init_df_id_str,"cleaned_dataset_description":initial_description.dataset_description,
+                    "tool_descriptions":tool_descriptions,"output_format" : AnalysisInsights.model_json_schema(),"memories" : "No memories yet",
+                    "data_sample":initial_description.data_sample}
+    prompt = analyst_prompt_template_main.partial(**init_analyst_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    return create_agent(
+        analyst_llm,
+        tools=analyst_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format=ToolStrategy(AnalysisInsights),
+        middleware =[prehook_critical_complex],
+        system_prompt=system_prompt,
+        name="analyst",
+    ).with_config({
+        "run_name": f"agent:analyst",
+    "tags": [f"agent:analyst"],
+        "metadata": {"agent_name": "analyst"},
+    })
+
+
+def create_file_writer_agent(df_ids: List[str] = []):
+    init_df_id_str = ", \n".join(df_ids)
+    checkpointer = InMemorySaver()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in file_writer_tools)
+    init_fw_vars = {"available_df_ids":init_df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : FileResult.model_json_schema(),
+                    "memories" : "No memories yet", "file_content": "No content yet","file_name": "No file name yet", "file_type": "No file type yet"}
+    # NOTE: response_format prefers a Pydantic model class, not a JSON schema string
+    prompt = file_writer_prompt_template.partial(**init_fw_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    return create_agent(
+        file_writer_llm,
+        tools=file_writer_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        system_prompt=system_prompt,
+        response_format=ToolStrategy(FileResult),
+        middleware =[prehook],
+        name="file_writer",
+    ).with_config({
+        "run_name": f"agent:file_writer",
+    "tags": [f"agent:file_writer"],
+        "metadata": {"agent_name": "file_writer"},
+    })
+
+def create_visualization_agent(df_ids: List[str] = []):
+    init_df_id_str = ", \n".join(df_ids)
+    checkpointer = InMemorySaver()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in visualization_tools)
+    init_vis_vars = {"available_df_ids":init_df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : VisualizationResults.model_json_schema(),
+                    "memories" : "No memories yet", "analysis_insights": "No analysis insights yet","cleaned_dataset_description": "No cleaned dataset description yet"}
+
+    prompt = visualization_prompt_template.partial(**init_vis_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    return create_agent(
+        visualization_orchestrator_llm,
+        tools=visualization_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format=ToolStrategy(VisualizationResults),
+        middleware =[prehook_complex],
+        system_prompt=system_prompt,
+        name="visualization",
+    ).with_config({
+        "run_name": f"agent:visualization",
+    "tags": [f"agent:visualization"],
+        "metadata": {"agent_name": "visualization"},
+    })
+
+def create_viz_evaluator_agent():
+    checkpointer = InMemorySaver()
+
+    init_viz_vars = {"output_format" : VizFeedback.model_json_schema(), "memories" : "No memories yet", "analysis_insights": "No analysis insights yet","cleaned_dataset_description": "No cleaned dataset description yet",
+                    "visualization_results": "No visualization results yet"}
+    prompt = viz_evaluator_prompt_template.partial(**init_viz_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    return create_agent(
+        viz_evaluator_llm,
+        tools=[list_visualizations, get_visualization],
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format=ToolStrategy(VizFeedback),
+        middleware =[prehook],
+        system_prompt=system_prompt,
+        name="viz_evaluator",
+    ).with_config({
+        "run_name": f"agent:viz_evaluator",
+    "tags": [f"agent:viz_evaluator"],
+        "metadata": {"agent_name": "viz_evaluator"},
+    })
+
+def create_report_generator_agent(df_ids: List[str] = [], rg_agent_task : Literal["outline","section","package"] = "outline"):
+    init_df_id_str = ", \n".join(df_ids)
+    checkpointer = InMemorySaver()
+    output_format_map = {"outline" : {"output_format" : ReportOutline, "report_task": "generate a report outline", "name": "report_orchestrator","llm": report_orchestrator_llm},
+                    "section" : {"output_format" : Section, "report_task": "generate a section of the report", "name": "report_section_worker","llm": report_section_worker_llm},
+                    "package" : {"output_format" : ReportResults, "report_task": "generate a full report package in PDF, Markdown, and HTML", "name": "report_packager","llm": report_packager_llm}}
+    output_format = output_format_map[rg_agent_task]
+    report_task = output_format["report_task"]
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in report_generator_tools)
+    init_rg_vars = {"available_df_ids":init_df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : output_format,
+                    "memories" : "No memories yet", "analysis_insights": "No analysis insights yet", "cleaned_dataset_description": "No cleaned dataset description yet",
+                    "visualization_results": "No visualization results yet", "report_task": report_task}
+
+    prompt = report_generator_prompt_template.partial(**init_rg_vars)
+    try:
+        # If it is a SystemMessagePromptTemplate (most common)
+        system_prompt = prompt.messages[0].prompt.template
+    except AttributeError:
+        # If it is a direct SystemMessage or string
+        system_prompt = prompt.messages[0].content
+    return create_agent(
+        output_format_map[rg_agent_task]["llm"],
+        tools=report_generator_tools,
+        state_schema=State,
+        checkpointer=checkpointer,
+        store=in_memory_store,
+        response_format=ToolStrategy(output_format["output_format"]),
+        middleware =[prehook_critical_complex],
+        system_prompt=system_prompt,
+        name=output_format_map[rg_agent_task]["name"],
+    ).with_config({
+        "run_name": f"agent:report_generator",
+        "tags": [f"agent:report_generator"],
+        "metadata": {"agent_name": "report_generator"}})
+
+# (optional) simple memory write helper
+@lru_cache(maxsize=128)
+def update_memory(state: Union[MessagesState, State], config: RunnableConfig, *, memstore: Union[BaseStore,InMemoryStore]):
+    user_id = str(config.get("configurable", {}).get("user_id", "user"))
+    namespace = (user_id, "memories")
+    memory_id = str(uuid.uuid4())
+    memstore.put(namespace, memory_id, {"memory": state["messages"][-1].text})

@@ -72,7 +72,9 @@ def load_api_key():
             continue
         if not _valid_openai_api_key(key):
             saw_invalid = True
-            print(f"WARN Ignoring invalid OPENAI_API_KEY from {source} environment scope")
+            print(
+                f"WARN Ignoring invalid OPENAI_API_KEY from {source} environment scope"
+            )
             continue
         os.environ["OPENAI_API_KEY"] = key
         print(f"OK  OPENAI_API_KEY loaded from {source} environment scope")
@@ -164,7 +166,9 @@ def load_langsmith_env():
 def select_kernel_name() -> str:
     """Determine available kernel: prefer py312-codex over stale python3 spec."""
     try:
-        _ks = subprocess.check_output(["jupyter", "kernelspec", "list", "--json"], text=True)
+        _ks = subprocess.check_output(
+            ["jupyter", "kernelspec", "list", "--json"], text=True
+        )
         import json as _json
 
         _kernels = _json.loads(_ks).get("kernelspecs", {})
