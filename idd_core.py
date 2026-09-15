@@ -868,8 +868,18 @@ class DataFrameRegistry:
 
             if df_id in self.registry:
                 self.registry[df_id]["df"] = df
-                self.registry[df_id]["raw_path"] = str(path)
-                self.df_id_to_raw_path[df_id] = str(path)
+                if raw_path:\n",
+                  self.registry[df_id][\"raw_path\"] = str(path)\n",
+                  self.df_id_to_raw_path[df_id] = str(path)  # FIX: keep mapping in sync\n",
+                elif df is not None:\n",
+                  # If registered directly from memory (no raw_path), try to persist to default\n",
+                  try:\n",
+                      default_path = PathlibPath(getattr(self, 'data_dir', WORKING_DIRECTORY)) / f\"{df_id}.csv\"\n",
+                      self._write_df(df, default_path)\n",
+                      self.df_id_to_raw_path[df_id] = str(default_path)\n",
+                      self.registry[df_id][\"raw_path\"] = str(default_path)\n",
+                  except Exception as e:\n",
+                      print(f\"Warning: could not persist in-memory DataFrame {df_id}: {e}\")\n",
                 if df is not None:
                     self._touch_cache(df_id, df)
                 return df_id
