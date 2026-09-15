@@ -16,7 +16,7 @@ class TestPromptTemplateFormattingFixes(unittest.TestCase):
         """Load the notebook for testing."""
         notebook_path_str = os.environ.get(
             "NOTEBOOK_PATH",
-            str(Path(__file__).parent / "IntelligentDataDetective_beta_v4.ipynb")
+            str(Path(__file__).parent / "IntelligentDataDetective_beta_v5.ipynb")
         )
         self.notebook_path = Path(notebook_path_str)
         with open(self.notebook_path, 'r', encoding='utf-8') as f:
