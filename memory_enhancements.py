@@ -172,6 +172,22 @@ def load_memory_policy(config_path: Optional[str] = None) -> tuple[Dict[str, Mem
         policies = {kind: default_policy for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]}
         return policies, RankingWeights()
 
+# Analytical keywords and role weights for importance estimation
+ANALYTICAL_KEYWORDS = [
+    "insight", "correlation", "anomaly", "pattern", "trend", "significant",
+    "analysis", "conclusion", "finding", "result", "discovery", "error",
+    "warning", "exception", "critical", "important", "key", "summary"
+]
+
+ROLE_WEIGHTS = {
+    "analysis": 0.9,
+    "insights": 0.95,
+    "cleaning": 0.7,
+    "visualization": 0.6,
+    "conversation": 0.5,
+    "errors": 0.8
+}
+
 # Global policy configuration
 MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
 KNOWN_MEMORY_KINDS = (
@@ -224,25 +240,12 @@ def estimate_importance(kind: str, text: str) -> float:
     length_score = min(1.0, len(text.split()) / 100.0)  # Cap at 100 tokens for full score
     
     # Keyword-based importance
-    analytical_keywords = [
-        "insight", "correlation", "anomaly", "pattern", "trend", "significant",
-        "analysis", "conclusion", "finding", "result", "discovery", "error",
-        "warning", "exception", "critical", "important", "key", "summary"
-    ]
-    
-    keyword_count = sum(1 for keyword in analytical_keywords if keyword.lower() in text.lower())
+    text_lower = text.lower()
+    keyword_count = sum(1 for keyword in ANALYTICAL_KEYWORDS if keyword in text_lower)
     keyword_score = min(1.0, keyword_count / 5.0)  # Cap at 5 keywords for full score
     
     # Role-based weighting
-    role_weights = {
-        "analysis": 0.9,
-        "insights": 0.95,
-        "cleaning": 0.7,
-        "visualization": 0.6,
-        "conversation": 0.5,
-        "errors": 0.8
-    }
-    role_weight = role_weights.get(kind, 0.5)
+    role_weight = ROLE_WEIGHTS.get(kind, 0.5)
     
     # Combine scores
     base_importance = (length_score * 0.3 + keyword_score * 0.4 + role_weight * 0.3)
