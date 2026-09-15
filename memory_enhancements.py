@@ -271,7 +271,7 @@ class MemoryPolicyEngine:
             return items_by_kind
         except Exception as e:
             self.logger.error(f"Failed to fetch and group memories: {e}")
-            return {}
+            raise
     
     def insert(self, record: MemoryRecord) -> MemoryRecord:
         """
