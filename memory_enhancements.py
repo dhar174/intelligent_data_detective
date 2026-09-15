@@ -25,9 +25,13 @@ from typing import Dict, List, Optional, Union, Literal, Any
 from dataclasses import dataclass, field
 from langgraph.store.memory import InMemoryStore
 try:
-    from langgraph.store.base import Put
+    from langgraph.store.base import PutOp as Put
 except ImportError:
     Put = None
+    try:
+        from langgraph.store.base import Put
+    except ImportError:
+        Put = None
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.messages import BaseMessage
 from langgraph.graph import MessagesState
