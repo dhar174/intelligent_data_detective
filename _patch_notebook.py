@@ -121,6 +121,154 @@ CELL81_NEW = (
     "        assert report_results is not None and isinstance(report_results, ReportResults)"
 )
 
+MEMORY_POLICY_MARKER = "MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()\n"
+
+MEMORY_POLICY_HELPERS = """MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
+KNOWN_MEMORY_KINDS = (
+    "conversation", "analysis", "cleaning",
+    "visualization", "insights", "errors"
+)
+
+# Multiply the configured retention cap by this factor for maintenance
+# operations (prune, report, importance recalculation) so that even an
+# over-capacity namespace can be fully observed.
+MAINTENANCE_SEARCH_FACTOR = 4
+
+def _configured_memory_search_limit(kinds: Optional[List[str]] = None, *, maintenance: bool = False) -> int:
+    selected_kinds = kinds or list(KNOWN_MEMORY_KINDS)
+    base = max(
+        1,
+        sum(
+            max(
+                1,
+                MEMORY_POLICIES.get(kind, MemoryPolicy()).max_items,
+                MEMORY_CONFIG["kinds"].get(kind, {}).get("limit", MEMORY_CONFIG["fallback_limit"])
+            )
+            for kind in selected_kinds
+        ),
+    )
+    return base * MAINTENANCE_SEARCH_FACTOR if maintenance else base
+
+def _group_memories_by_kind(items: List[Any]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+
+    for item in items:
+        item_value = item.value if hasattr(item, "value") else item
+        if not isinstance(item_value, dict):
+            continue
+
+        kind = item_value.get("kind")
+        if not kind and hasattr(item, "namespace") and len(item.namespace) >= 2:
+            kind = item.namespace[1]
+
+        if not kind:
+            continue
+
+        if "id" not in item_value and hasattr(item, "key"):
+            item_value = item_value.copy()
+            item_value["id"] = item.key
+
+        grouped.setdefault(kind, []).append(item_value)
+
+    return grouped
+
+def _get_all_memories_grouped_by_kind(
+    store: Union[BaseStore,InMemoryStore], limit: Optional[int] = None
+) -> Dict[str, List[Dict[str, Any]]]:
+    search_limit = limit or _configured_memory_search_limit(maintenance=True)
+    all_items = store.search(("memories",), query="", limit=search_limit)
+    grouped = _group_memories_by_kind(all_items)
+    if grouped:
+        return grouped
+
+    fallback_grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for kind in KNOWN_MEMORY_KINDS:
+        namespace = ("memories", kind)
+        items = store.search(
+            namespace,
+            query="",
+            limit=_configured_memory_search_limit([kind], maintenance=True),
+        )
+        per_kind_grouped = _group_memories_by_kind(items)
+        if per_kind_grouped.get(kind):
+            fallback_grouped[kind] = per_kind_grouped[kind]
+
+    if fallback_grouped:
+        logging.warning(
+            "Falling back to per-kind memory searches because parent-namespace search returned no results."
+        )
+
+    return fallback_grouped
+"""
+
+PRUNE_FETCH_OLD = """            for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
+                namespace = ("memories", kind)
+                policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+
+                try:
+                    # Get all items in namespace
+                    items = self.store.search(namespace, query="", limit=10000)  # Large limit to get all
+"""
+
+PRUNE_FETCH_NEW = """            items_by_kind = _get_all_memories_grouped_by_kind(self.store)
+            if not items_by_kind:
+                return report
+
+            for kind in KNOWN_MEMORY_KINDS:
+                policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+                items = items_by_kind.get(kind, [])
+                if not items:
+                    continue
+
+                try:
+"""
+
+REPORT_FETCH_OLD = """        # Check each kind against its policy
+        for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
+            try:
+                namespace = ("memories", kind)
+                items = store.search(namespace, query="", limit=10000)
+"""
+
+REPORT_FETCH_NEW = """        items_by_kind = _get_all_memories_grouped_by_kind(store)
+
+        # Check each kind against its policy
+        for kind in KNOWN_MEMORY_KINDS:
+            try:
+                items = items_by_kind.get(kind, [])
+"""
+
+RECALC_FETCH_OLD = """        kinds_to_process = kinds or ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]
+
+        total_updated = 0
+        for kind in kinds_to_process:
+            try:
+                namespace = ("memories", kind)
+                items = store.search(namespace, query="", limit=10000)
+"""
+
+RECALC_FETCH_NEW = """        kinds_to_process = kinds or list(KNOWN_MEMORY_KINDS)
+
+        if kinds:
+            items_by_kind = {}
+            for kind in kinds_to_process:
+                namespace = ("memories", kind)
+                items_by_kind[kind] = _group_memories_by_kind(
+                    store.search(
+                        namespace,
+                        query="",
+                        limit=_configured_memory_search_limit([kind], maintenance=True),
+                    )
+                ).get(kind, [])
+        else:
+            items_by_kind = _get_all_memories_grouped_by_kind(store)
+
+        total_updated = 0
+        for kind in kinds_to_process:
+            try:
+                items = items_by_kind.get(kind, [])
+"""
+
 
 def join_source(src):
     return "".join(src) if isinstance(src, list) else src
@@ -214,6 +362,29 @@ def main():
         print("✅ Cell idx 81: fixed final_report → report_results")
     else:
         print("⚠️  Cell idx 81: 'final_report' key not found - skipping")
+
+    # --- Patch memory lifecycle helpers in the notebook cell ---
+    for i, cell in enumerate(cells):
+        src = join_source(cell["source"])
+        if "class MemoryPolicyEngine:" not in src or "def memory_policy_report(" not in src:
+            continue
+
+        new_src = src
+        if "KNOWN_MEMORY_KINDS = (" not in new_src:
+            new_src = new_src.replace(MEMORY_POLICY_MARKER, MEMORY_POLICY_HELPERS)
+        new_src = new_src.replace(PRUNE_FETCH_OLD, PRUNE_FETCH_NEW)
+        new_src = new_src.replace(REPORT_FETCH_OLD, REPORT_FETCH_NEW)
+        new_src = new_src.replace(RECALC_FETCH_OLD, RECALC_FETCH_NEW)
+
+        if new_src != src:
+            cell["source"] = new_src
+            if cell["cell_type"] == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            print(f"✅ Patched memory lifecycle cell at index {i}")
+        else:
+            print(f"ℹ️  Memory lifecycle cell at index {i} already patched")
+        break
 
     # --- Patch cell idx 7: fix _is_colab() false-positive on Windows ---
     # On this machine C:\content exists (old Colab artifact), causing _is_colab() to return True.
@@ -12747,12 +12918,82 @@ def main():
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
 
+    # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
+    _W14I_VIZ_MEMBERSHIP_GUARD = "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
     # --- W14I-TOOL-ERROR-HARDENING: close scoped error-handling review gaps in data tools ---
     _W14I_TOOL_ERROR_GUARD = "# W14I-TOOL-ERROR-HARDENING"
     for idx, cell in enumerate(cells):
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
+        if "def viz_evaluator_node(state: State):" not in src or _W14I_VIZ_MEMBERSHIP_GUARD in src:
+            continue
+        if (
+            'normalized_spec_result_keys = {' in src
+            and 'normalized_visualization_id = (' in src
+        ):
+            print(f"ℹ️  Cell idx {idx}: W14I-VIZ-MEMBERSHIP already present in source notebook")
+            break
+        old = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+        )
+        new = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            f'            {_W14I_VIZ_MEMBERSHIP_GUARD}\n'
+            '            task_result_titles = {r.visualization_title for r in task_result_map.values()}\n'
+            '            spec_result_ids = {res.visualization_id for res in spec_result_map.values()}\n'
+            '            normalized_spec_result_keys = {\n'
+            '                s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)\n'
+            '            }\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    normalized_visualization_id = (\n'
+            '                        r.visualization_id.lower().strip()\n'
+            '                        if isinstance(r.visualization_id, str)\n'
+            '                        else None\n'
+            '                    )\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in task_result_titles:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif (\n'
+            '                        r.visualization_id in spec_result_ids\n'
+            '                        or normalized_visualization_id in normalized_spec_result_keys\n'
+            '                    ):\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+        )
+        if old not in src:
+            print(f"⚠️  W14I-VIZ-MEMBERSHIP anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14I-VIZ-MEMBERSHIP keeps normalized spec-key matching")
         if (
             "# Error Handling and Validation Framework" not in src
             or "def drop_column(df_id: str, column_name: str) -> str:" not in src

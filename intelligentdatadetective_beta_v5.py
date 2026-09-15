@@ -16216,6 +16216,13 @@ def viz_evaluator_node(state: State):
             if t not in task_result_map.keys() and t not in result_task_map.values():
                 final_grade.redo_list.append(t)
         vr_results = state.get("viz_results", []) or []
+        # Pre-calculate sets for membership testing to improve performance from O(N*M) to O(N+M)
+        task_result_titles = {r.visualization_title for r in task_result_map.values()}
+        spec_result_ids = {res.visualization_id for res in spec_result_map.values()}
+        normalized_spec_result_keys = {
+            s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)
+        }
+
         for r in results:
             if r.visualization_title in final_grade.redo_list:
                 results.remove(r)
@@ -16224,13 +16231,21 @@ def viz_evaluator_node(state: State):
                         vr_results.remove(vr)
                         break
             else:
+                normalized_visualization_id = (
+                    r.visualization_id.lower().strip()
+                    if isinstance(r.visualization_id, str)
+                    else None
+                )
                 if r.visualization_id in result_task_map.keys():
                     tasks.remove(result_task_map[r.visualization_id])
-                elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:
+                elif r.visualization_title in task_result_titles:
                     tasks.remove(r.visualization_title)
                 if r.visualization_id in result_spec_map.keys():
                     specs.remove(result_spec_map[r.visualization_id])
-                elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:
+                elif (
+                    r.visualization_id in spec_result_ids
+                    or normalized_visualization_id in normalized_spec_result_keys
+                ):
                     specs.remove(result_spec_map[r.visualization_title])
         memory_text = f"The Visualization Evaluator has produced feedback on the latest run of visualizations. The final grade is {final_grade.grade} with the following feedback: {final_grade.feedback}.\n"
         for res in results:

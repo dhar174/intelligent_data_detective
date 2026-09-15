@@ -51,7 +51,7 @@ class Registry:
 
 
 def _load_tools(registry):
-    source = (Path(__file__).resolve().parents[2] / "intelligentdatadetective_beta_v5.py").read_text()
+    source = (Path(__file__).resolve().parents[2] / "intelligentdatadetective_beta_v5.py").read_text('utf-8')
     start = source.index("# Error Handling and Validation Framework")
     end = source.index("data_cleaning_tools = [", start)
     namespace = {
