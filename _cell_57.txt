@@ -1,0 +1,1862 @@
+# Node Functions (revised)
+
+
+def initial_analysis_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+    global_df_registry = get_global_df_registry()
+    initial_description = state.get("initial_description") or InitialDescription(dataset_description="No description yet", data_sample="No sample available",notes="None yet", expect_reply=False, reply_msg_to_supervisor="No reply yet", finished_this_task=False)
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in init_analyst_tools]) if not use_local_llm else "\n".join(f"{key}: {tool_descrips_mini[key]}" for key in tool_descrips_mini.keys()if key in [t.name for t in init_analyst_tools])
+
+    output_format = InitialDescription.model_json_schema() if not use_local_llm else "Please stop when you have enough information from your tools to fill in the following fields: \n dataset_description: A brief but informative description of the dataset. \n data_sample: A representative sample of the data. \n notes: Any additional notes or comments."
+
+    ia_vars = {"available_df_ids":df_id_str,"dataset_description":initial_description.dataset_description, "tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES,
+                    "tool_descriptions":tool_descriptions,"output_format" : InitialDescription.model_json_schema(),"memories" : enhanced_retrieve_mem(state),
+                    "data_sample":initial_description.data_sample,"user_prompt":user_prompt}
+    system_message_content = analyst_prompt_template_initial
+
+
+
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else "Please provide an initial description of the dataset, including its structure and characteristics, and a small representative sample of the data."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+    supervisor_message = AIMessage(content=default_instruction,name="supervisor") if not use_local_llm else HumanMessage(content=default_instruction,name="user")
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,supervisor_message],**ia_vars)
+
+    if state.get("emergency_reroute") == "initial_analysis" or (state.get("supervisor_to_agent_msgs") and len(state.get("supervisor_to_agent_msgs")) > 0 and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs")) and any(m.recipient == "initial_analysis" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "initial_analysis" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor") if not use_local_llm else HumanMessage(content=emerg_msg.message, name="user")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    #use a generator from msgs_tmp
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "initial_analysis" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor") if not use_local_llm else HumanMessage(content=emer_msg_txt, name="user")
+                    emerg_msg.delivery_status = True
+            for m in msgs_tmp:
+                if not m.delivery_status and m.recipient == "initial_analysis":
+                    tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                    m.delivery_status = True
+            rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,*tmp_basemsgs,main_emer_msg],**ia_vars)
+    if count_last_cycle_tool_calls(rendered) >= 40 and use_local_llm:
+        rendered.append(HumanMessage(content="Do not call tools again. Summarize and conclude, finalizing the data needed for the output format.", name="user"))
+
+
+    result = initial_analysis_agent.invoke(
+        {
+            "messages": rendered,
+            "user_prompt": user_prompt,
+            # "output_format": output_format,
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "analysis_config": state.get("analysis_config", default_an_config),
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "run_id": state.get("run_id") or state.get("_config", {}).get("run_id", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+
+
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+        pass
+    # --- NEW: robust extraction + type check ---
+    structured = result.get("structured_response")
+    if structured is None:
+        # If you ever switch wrappers or a future LC update changes keys
+        raise RuntimeError("Agent returned no 'structured_response' — check wrapper or create_agent response_format.")
+    if not isinstance(structured, InitialDescription):
+        # In strict mode it should already be parsed; nice to assert anyway.
+        raise TypeError(f"structured_response is not InitialDescription: {type(structured)}")
+    assert isinstance(result["structured_response"], InitialDescription)
+
+    memory_text = f"Initial Analysis produced the following initial description of the dataset: {result['structured_response'].dataset_description} and a small representative sample of the data: {result['structured_response'].data_sample}"
+    update_memory_with_kind(state, state["_config"], "initial_description", in_memory_store or get_store(), text=memory_text)
+
+
+    update = {
+        "messages": result["messages"],
+        "initial_analysis_complete": True if (result["structured_response"] and isinstance(result["structured_response"], InitialDescription) and result["structured_response"].finished_this_task) else False,
+        "initial_description": result["structured_response"],
+        "dataset_description": result["structured_response"].dataset_description,
+        "data_sample": result["structured_response"].data_sample,
+        "last_agent_message": result["messages"][-1],
+        "last_agent_expects_reply": result["structured_response"].expect_reply,
+        "last_agent_reply_msg": result["structured_response"].reply_msg_to_supervisor,
+        "last_agent_finished_this_task": result["structured_response"].finished_this_task,
+        "final_turn_msgs_list": [result["messages"][-1]],
+        "last_created_obj": "initial_description" if (result["structured_response"] and isinstance(result["structured_response"], InitialDescription) and result["structured_response"].finished_this_task) else None,
+        "last_agent_id": "initial_analysis",
+        "current_turn_agent_id": "supervisor",
+
+
+    }
+    return update
+
+
+def data_cleaner_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+    global_df_registry = get_global_df_registry()
+
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in data_cleaning_tools])
+    output_format = CleaningMetadata.model_json_schema()
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+    initial_description = state.get("initial_description") or InitialDescription(dataset_description="No description yet", data_sample="No sample available",notes="None yet", expect_reply=False, reply_msg_to_supervisor="No reply yet", finished_this_task=False)
+    dc_vars = {"available_df_ids":df_id_str,"dataset_description":initial_description.dataset_description,
+                    "tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES,"output_format" : CleaningMetadata.model_json_schema(),"memories" : enhanced_retrieve_mem(state),
+                    "data_sample":initial_description.data_sample}
+    # Safe sample fallback: try to pull from the first available df_id, otherwise leave None
+    if initial_description.data_sample is None or initial_description.data_sample == "No sample available":
+        try:
+            df_id0 = (state.get("available_df_ids") or [None])[0]
+            if df_id0:
+                _df0 = global_df_registry.get_dataframe(df_id0, load_if_not_exists=True)
+                if _df0 is not None and not _df0.empty:
+                    sample = _df0.head(5).to_string() if _df0 is not None else "No sample available"
+                    initial_description.data_sample = sample[:2000]
+        except Exception:
+            pass  # leave as None
+
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else"Please perform expert data cleaning tasks on the dataset."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+
+    base_prompt = data_cleaner_prompt_template
+    system_message_content = base_prompt.partial(**dc_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")],**dc_vars)
+    # --- NEW: emergency reroute handling (data_cleaner) ---
+    if state.get("emergency_reroute") == "data_cleaner" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "data_cleaner" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "data_cleaner" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "data_cleaner" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "data_cleaner":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **dc_vars
+        )
+    # --- END NEW ---
+
+    result = data_cleaner_agent.invoke(
+        {
+            "messages": rendered,
+            "user_prompt": user_prompt,
+            "tool_descriptions": tool_descriptions,
+            # "output_format": output_format,
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "dataset_description": initial_description.dataset_description,
+            "data_sample": initial_description.data_sample,
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "analysis_config": state.get("analysis_config", default_an_config),
+            "run_id": state.get("run_id", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+        pass
+    # --- NEW: robust extraction + type check ---
+    structured = result.get("structured_response")
+    if structured is None:
+        # If you ever switch wrappers or a future LC update changes keys
+        raise RuntimeError("Agent returned no 'structured_response' — check wrapper or create_agent response_format.")
+    if not isinstance(structured, CleaningMetadata):
+        # In strict mode it should already be parsed; nice to assert anyway.
+        raise TypeError(f"structured_response is not CleaningMetadata: {type(structured)}")
+    assert isinstance(result["structured_response"], CleaningMetadata)
+    cleaning_metadata: CleaningMetadata = result["structured_response"]
+    initial_description.dataset_description = cleaning_metadata.data_description_after_cleaning
+
+    steps_str = f"{len(cleaning_metadata.steps_taken)} steps taken: {cleaning_metadata.steps_taken}"
+    for i in range(len(cleaning_metadata.steps_taken)):
+        steps_str += f"\n{i+1}. {cleaning_metadata.steps_taken[i]}\n"
+    steps_str += "\n"
+    memory_text = f"Date Cleaning produced the following description of the dataset after cleaning: {cleaning_metadata.data_description_after_cleaning}. There were {steps_str}"
+    update_memory_with_kind(state, state["_config"], "cleaning", in_memory_store or get_store(), text=memory_text)
+    update = {
+        "messages": result["messages"],
+        "cleaning_metadata": cleaning_metadata,
+        "data_cleaning_complete": True if cleaning_metadata.finished_this_task else False,
+        "dataset_description": cleaning_metadata.data_description_after_cleaning,
+        "initial_description": initial_description,
+        "last_agent_message": result["messages"][-1],
+        "last_agent_expects_reply": cleaning_metadata.expect_reply,
+        "last_agent_reply_msg": cleaning_metadata.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": cleaning_metadata.finished_this_task,
+        "final_turn_msgs_list": [result["messages"][-1]],
+        "last_created_obj": "cleaning_metadata" if cleaning_metadata.finished_this_task else None,
+        "last_agent_id": "data_cleaner",
+        "current_turn_agent_id": "supervisor",
+    }
+    return update
+
+
+def analyst_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+    initial_description = state.get("initial_description") or InitialDescription(dataset_description="No description yet", data_sample="No sample available",notes="None yet", expect_reply=False, reply_msg_to_supervisor="No reply yet", finished_this_task=False)
+
+    global_df_registry = get_global_df_registry()
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in analyst_tools])
+    output_format = AnalysisInsights.model_json_schema()
+    analyst_vars = {"available_df_ids":df_id_str,"cleaned_dataset_description":initial_description.dataset_description, "analysis_config": state.get("analysis_config", default_an_config),
+                    "user_prompt": user_prompt,
+                    "tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES,"output_format" : AnalysisInsights.model_json_schema(),"memories" : enhanced_retrieve_mem(state),
+                    "data_sample":initial_description.data_sample}
+    cm = state.get("cleaning_metadata")
+    if not cm or not isinstance(cm, CleaningMetadata) or not cm.data_description_after_cleaning:
+
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [MessagesPlaceholder(variable_name="messages"), HumanMessage("Please run data_cleaner first. I received no cleaning metadata.")]
+                ).format_messages(messages=state.get("messages", []))
+            },
+        )
+    if isinstance(cm, CleaningMetadata) and (cm.data_description_after_cleaning or "").strip() == "":
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [MessagesPlaceholder(variable_name="messages"), HumanMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.")]
+                ).format_messages(messages=state.get("messages", []))
+            },
+        )
+    cleaning_metadata = cm  # type: ignore
+    analyst_vars["cleaning_metadata"] = "\n".join(cleaning_metadata.steps_taken)
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else "Perform expert analysis on the dataset and provide insights. Use the tools available to you along with the cleaning metadata."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    base_prompt = analyst_prompt_template_main
+    system_message_content = base_prompt.partial(**analyst_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **analyst_vars)
+    # --- NEW: emergency reroute handling (analyst) ---
+    if state.get("emergency_reroute") == "analyst" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "analyst" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "analyst" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "analyst" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "analyst":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **analyst_vars
+        )
+    # --- END NEW ---
+
+    result = analyst_agent.invoke(
+        {
+            "messages": rendered,
+            "user_prompt": user_prompt,
+            "tool_descriptions": tool_descriptions,
+            # "output_format": output_format,
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "dataset_description": cleaning_metadata.data_description_after_cleaning,
+            "cleaned_dataset_description": cleaning_metadata.data_description_after_cleaning,
+            "cleaning_metadata": cleaning_metadata,
+            "data_sample": state.get("data_sample", None),
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "analysis_config": state.get("analysis_config", default_an_config),
+            "run_id": state.get("run_id", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+
+
+
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+        pass
+    insights: AnalysisInsights = result["structured_response"]
+    # Build a simple list of viz tasks from recommended_visualizations
+    viz_specs = insights.recommended_visualizations if insights and insights.recommended_visualizations else []
+    for spec in viz_specs:
+        if not spec.viz_id:
+            spec.viz_id = uuid.uuid4().hex
+        if spec.title is None or spec.title == "":
+            spec.title = f"Visualization {spec.viz_id} in style {spec.viz_style}"
+        if not spec.viz_instructions:
+            spec.viz_instructions = f"Create a { _guess_viz_type(spec.title) } for: {spec.title}. {spec.description}"
+
+    viz_tasks = [spec.viz_instructions for spec in viz_specs]
+
+    memory_text = f"Analysis produced the following insights: \n"
+    for insight in insights.anomaly_insights:
+        memory_text += f"{insight}\n"
+    for insight in insights.correlation_insights:
+        memory_text += f"{insight}\n"
+    memory_text += f"Those insights were summarized as follows: {insights.summary}. \n The recommended visualizations are: \n"
+    for spec in insights.recommended_visualizations:
+        memory_text += f"{spec.title}: \n {spec.description}\n"
+        memory_text += f"Instructions: {spec.viz_instructions}\n\n"
+    memory_text += "The analyst also recommended the following next steps: \n"
+    for i, step in enumerate(insights.recommended_next_steps):
+        memory_text += f"{i+1}. {step}\n"
+
+
+    update_memory_with_kind(state, state["_config"], "analysis", in_memory_store or get_store(), text=memory_text)
+
+    update = {
+        "messages": result["messages"],
+        "analysis_insights": insights,
+        "analyst_complete": True,
+        "viz_tasks": viz_tasks,
+        "viz_specs": viz_specs,
+        "last_agent_message": result["messages"][-1],
+        "last_agent_expects_reply": insights.expect_reply,
+        "last_agent_reply_msg": insights.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": insights.finished_this_task,
+        "final_turn_msgs_list": [result["messages"][-1]],
+        "last_created_obj": "analysis_insights" if insights.finished_this_task else None,
+        "last_agent_id": "analyst",
+        "current_turn_agent_id": "supervisor",
+    }
+    return update
+
+
+def _normalize_meta(meta_obj) -> dict:
+    if meta_obj is None:
+        return {}
+    if isinstance(meta_obj, dict):
+        return {k: v for k, v in meta_obj.items() if v is not None}
+    # Pydantic v2:
+    try:
+        return meta_obj.model_dump(exclude_none=True)
+    except Exception:
+        return {}
+
+def file_writer_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+    global_df_registry = get_global_df_registry()
+
+    # FIX: newline string & safety
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+
+    tool_descriptions = "\n".join(
+        f"{tool.name}: {tool.description}" for tool in file_writer_tools
+    )
+
+    report = state.get("report_results")    # ReportResults (may be Pydantic)
+    viz    = state.get("viz_results")       # VisualizationResults (may be list/dicts)
+    meta   = _normalize_meta(state.get("next_agent_metadata"))
+    default_content_str = (
+        "if you're reading this, please find the file if there are any clues to what or "
+        "why you are writing this file. If it is not otherwise clearly communicated to you, "
+        "please communicate with the supervisor."
+    )
+    content = ""
+    file_name = ""
+    file_type = ""
+    # tolerate absent keys
+    if isinstance(meta, dict):
+        file_type = meta.get("file_type", "auto")
+        file_name = meta.get("file_name") or "please invent appropriate name"
+        content = meta.get("file_content", default_content_str)
+    else:
+        file_type = getattr(meta, "file_type", "auto")  # Pydantic model
+        file_name = getattr(meta, "file_name", "please invent appropriate name")
+
+
+
+
+
+    output_format = FileResult.model_json_schema()
+
+    # safest way to grab the newest message
+    _msgs = (state.get("messages") or [])
+    newest_msg = (
+        (_msgs[-1] if _msgs else None)
+        or state.get("last_agent_message")
+        or AIMessage(content="No message available")
+    )
+
+    final_report_str = f"""Please write the Final Report to a file, as well as any visualizations. When finished, return the file name, path, type and a description as FileResult class with the 'is_final_report' field set to True.
+    You will save three differently formatted files: One PDF, one Markdown, and one in HTML.
+
+    To write the content of the files, use your tools and for each section, use each numbered section either from 'sections' state key to read them as Section class files, or from 'written_sections' for a list of formatted strings. Use these to write the content to the three files in order of the sections and in a sensible, accessible way.
+    Be sure to include expected visualizations from the 'expected_figures' field of each Section object in 'sections' in appropriate places.
+    The 'expected_figures' field of Section is a list of DataVisualization objects, each one representing a visualization to be present in that section, with these fields: 'path' which is very important for accessing the file path of the actual visualization, as well as 'visualization_type', 'visualization_description', 'visualization_title', 'visualization_style', and 'visualization_id'.
+    """
+
+    fw_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : ListOfFiles.model_json_schema(),
+                    "memories" : enhanced_retrieve_mem(state), "file_content": content,"file_name": file_name, "file_type": file_type}
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else final_report_str
+    is_final = False
+    if not state.get("report_generator_complete", False):
+        is_final = True
+        default_instruction_supervisor = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else ""
+        default_instruction = f"{default_instruction_supervisor} Please write the specified data to a file. When finished, return the file name, path, type and a description as FileResult class within the ListOfFiles class."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    base_prompt = file_writer_prompt_template
+    system_message_content = base_prompt.partial(**fw_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **fw_vars)
+    # --- NEW: emergency reroute handling (file_writer) ---
+    if state.get("emergency_reroute") == "file_writer" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "file_writer" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "file_writer" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "file_writer" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "file_writer":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **fw_vars
+        )
+    # --- END NEW ---
+
+    result = file_writer_agent.invoke(
+        {
+            "messages": rendered,
+            "tool_descriptions": tool_descriptions,
+            "file_type": file_type,
+            "file_name": file_name,
+            "file_content": content,
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "report_results": report if report else None,
+            "viz_results": viz if viz else None,
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+            "viz_paths": state.get("viz_paths", None) or state.get("_config",{}).get("viz_dir",None) or str((WORKING_DIRECTORY / "visualizations").resolve()),
+            "report_paths": state.get("report_paths", "/reports"),
+            "run_id": state.get("run_id", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+        pass
+    if isinstance(result, dict):
+        file_results: ListOfFiles = result["structured_response"]
+    else:
+        file_results = result
+    assert isinstance(file_results, ListOfFiles)
+    final_report_path = None
+    for fr in file_results.files:
+        if getattr(fr, "is_final_report", False):
+            final_report_path = getattr(fr, "file_path", None)
+            if final_report_path:
+                break
+
+    report_paths = [
+        fr.file_path
+        for fr in file_results.files
+        if getattr(fr, "write_success", False)
+        and (getattr(fr, "category_tag", "") or "").lower().strip() == "report"
+        and getattr(fr, "file_path", None)
+    ]
+
+    viz_paths = [
+        fr.file_path
+        for fr in file_results.files
+        if getattr(fr, "write_success", False)
+        and (getattr(fr, "category_tag", "") or "").lower().strip() == "visualization"
+        and getattr(fr, "file_path", None)
+    ]
+    update = {
+        "messages": result["messages"],
+        # "file_writer_complete": all(getattr(fr, "write_success", False) for fr in file_results.files),
+        "file_writer_complete": True if is_final and all(getattr(fr, "write_success", False) for fr in file_results.files) else False,
+        "final_report_path": final_report_path,
+        "report_paths": report_paths,
+        "viz_paths": viz_paths,
+        "file_results": file_results.files,
+        "last_agent_message": result["messages"][-1],
+        "last_agent_expects_reply": file_results.expect_reply,
+        "last_agent_reply_msg": file_results.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": True if (file_results.finished_this_task and all([file_results.write_success for file_results in file_results.files])) else False,
+        "final_turn_msgs_list": [result["messages"][-1]],
+        "last_created_obj": "file_results" if (file_results.finished_this_task or any([file_results.write_success for file_results in file_results.files])) else None,
+        "last_agent_id": "file_writer",
+        "current_turn_agent_id": "supervisor",
+    }
+    return update
+
+
+
+# --- Optional: a tiny spec-normalizer (keeps your state using dicts) ---
+
+MANDATORY_SPEC_KEYS = {"title", "type", "df_id"}
+ALLOWED_SPEC_KEYS   = {
+    "title", "viz_type", "df_id", "columns", "x", "y", "hue", "bins",
+    "style", "agg", "limit", "query", "description"
+}
+
+def _guess_viz_type(name_or_desc: str) -> str:
+    s = name_or_desc.lower()
+    if "scatter" in s: return "scatter"
+    if "hist" in s or "distribution" in s: return "histogram"
+    if "bar" in s or "count" in s: return "bar"
+    if "box" in s: return "box"
+    if "line" in s or "trend" in s or "time" in s: return "line"
+    return "auto"
+
+def _norm_title(s: str) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:120]  # keep shortish
+    # title: str
+    # viz_type: Literal["histogram","scatter","bar","line","box","auto"]
+    # df_id: str
+    # columns: Optional[List[str]] = None
+    # x: Optional[str] = None
+    # y: Optional[str] = None
+    # hue: Optional[str] = None
+    # bins: Optional[int | str] = None
+    # agg: Optional[str] = None
+    # query: Optional[str] = None
+    # description: Optional[str] = None
+    # limit: Optional[int] = None
+def _normalize_viz_spec(raw: VizSpec, *, default_df_id: str, fallback_title: str) -> VizSpec:
+    """Return a clean dict spec with required keys and safe defaults."""
+    spec = raw.model_dump()
+    spec.setdefault("title", _norm_title(spec.get("title") or fallback_title))
+    spec.setdefault("viz_type",  _guess_viz_type(spec.get("type") or spec.get("title", "") or ""))
+    spec.setdefault("df_id", default_df_id)
+
+    # Drop unknown keys (keep state compact / JSON-safe)
+    spec = {k: v for k, v in spec.items() if k in ALLOWED_SPEC_KEYS}
+
+    # Very light validation
+    missing = MANDATORY_SPEC_KEYS - set(spec)
+    if missing:
+        raise ValueError(f"viz_spec missing required keys: {sorted(missing)}")
+    try:
+      spec = VizSpec.model_validate(spec)
+    except ValidationError as e:
+        VizSpec(**spec)
+    if not isinstance(spec, VizSpec):
+        return raw
+    return spec
+
+
+# ---------- 1) Orchestrator ----------
+def visualization_orchestrator(state: State) -> Dict[str, Any]:
+    """
+    Prepare `viz_tasks` and `viz_specs` for fan-out.
+    Sources:
+      - state.viz_tasks / state.viz_specs (if user or a prior node filled them)
+      - OR: derive from state.analysis_insights.recommended_visualizations (your model)
+
+    Writes:
+      - viz_tasks: list[str]          (tasks/prompts for each worker)
+      - viz_specs: list[dict]         (paired spec dicts; length matches tasks)
+      - progress_reports[...]         (short summary line)
+      - visualization_complete=False  (reset; we’re starting a new round)
+    """
+    # 0) Helpers & context
+    registry = get_global_df_registry()
+    available = state.get("available_df_ids", []) or []
+    default_df_id = available[0] if available else None
+
+    # 1) If already supplied (e.g., analyst or user), accept them (and validate)
+    tasks   = state.get("viz_tasks") or []
+    if not isinstance(tasks, list):
+        tasks = [tasks]
+    specs   = state.get("viz_specs") or []
+
+    # 2) Or derive from analysis insights if nothing provided
+    if not tasks:
+        insights = state.get("analysis_insights")
+        if insights and getattr(insights, "recommended_visualizations", None):
+            recs = insights.recommended_visualizations  # Dict[name -> description]
+            # Convert the dict into (task, spec) pairs
+            for name, desc in recs:
+                tasks.append(f"Create a { _guess_viz_type(name) } for: {name}. {desc}")
+                specs.append({
+                    "title": name,
+                    "viz_type":  _guess_viz_type(name),
+                    "description": desc,
+                })
+
+    # 3) Fallback: if still empty, create a gentle default
+    if not tasks:
+        if not default_df_id:
+            # We have no dataframe, nothing to do. Leave state unchanged.
+            return {
+                "progress_reports": [
+                    *(state.get("progress_reports") or []),
+                    f"viz_orchestrator_{datetime.now().isoformat(timespec='seconds')}: Visualization skipped: no available_df_ids."
+                ]
+            }
+        tasks = [
+            "Overview distribution of review ratings",
+            "Top products by average rating",
+            "Review count by month (trend)"
+        ]
+        specs = [
+
+            VizSpec(title="Overview distribution of review ratings", viz_type="histogram", columns=["rating"], df_id=default_df_id,description="Overview distribution of review ratings", viz_instructions = "Plot a histogram of review ratings",limit=20,viz_id=uuid.uuid4().hex, x="rating", agg="count",query="rating > 0", bins=20, finished_this_task=True, expect_reply=False, reply_msg_to_supervisor="", hue="rating",y= None, style=None),
+            VizSpec(title="Top products by rating", viz_type="bar", columns=["product_title", "rating"], agg="mean", limit=20, df_id=default_df_id, description="Top 20 products by average rating", viz_instructions = "Plot a bar chart of the top 20 products by average rating",viz_id=uuid.uuid4().hex, x="product_title", y="rating", hue="product_title", finished_this_task=True, expect_reply=False, reply_msg_to_supervisor="", style=None, bins=None, query=None),
+            VizSpec(title="Monthly review counts", viz_type="line", columns=["date", "review_id"], agg="count", df_id=default_df_id, description="Monthly review counts (trend)", viz_instructions = "Plot a line chart of monthly review counts",viz_id=uuid.uuid4().hex, x="date", y="review_id", hue="date", finished_this_task=True, expect_reply=False, reply_msg_to_supervisor="", style=None, bins=None, query=None,limit=12)
+
+        ]
+
+    # 4) Normalize/validate
+    norm_specs: List[dict] = []
+    for i, t in enumerate(tasks):
+        raw_spec = specs[i] if i < len(specs) else None
+        if not raw_spec:
+            break
+        try:
+            assert isinstance(raw_spec, VizSpec)
+            norm_specs.append(_normalize_viz_spec(
+                raw_spec, default_df_id=(raw_spec.df_id or default_df_id or ""),
+                fallback_title=(raw_spec.title or t)
+            ))
+        except Exception as e:
+            # If one spec is invalid, drop the pair (or log it)
+            msg_key = f"viz_orch_skip_{i}_{datetime.now().strftime('%H%M%S')}"
+            pr = {}
+            pr[msg_key] = f"Skipping task {i}: {e}"
+            # remove the task to keep pairs aligned
+            tasks.pop(i)
+            continue
+
+    # prune skipped tasks
+    tasks = [t for t in tasks if t is not None]
+    # keep norm_specs aligned with tasks length
+    norm_specs = norm_specs[:len(tasks)]
+
+    # 5) Basic df_id existence check (non-fatal warning if not loaded)
+    warnings = []
+    for i, spec in enumerate(norm_specs):
+        df_id = spec["df_id"]
+        if registry.get_dataframe(df_id) is None:
+            warnings.append(f"[Orchestrator] df_id '{df_id}' is not loaded; worker may need to load it from registry path.")
+
+    # 6) Progress message (helps streaming debug)
+    summary_lines = [
+        f"Prepared {len(tasks)} visualization task(s).",
+        *(warnings[:3])  # avoid spam; cap
+    ]
+    plan_preview = "\n".join([f"  - {spec['title']} ({spec['type']}) on {spec.get('df_id','?')}" for spec in norm_specs[:5]])
+    if plan_preview:
+        summary_lines.append("Plan:\n" + plan_preview)
+
+    progress_key = f"viz_orchestrator_{datetime.now().isoformat(timespec='seconds')}"
+    progress_reports = progress_key + "\n".join(summary_lines)
+
+    # 7) Optionally emit a message for stream viewers
+    msg_text = f"[Visualization Orchestrator] The Visualization Orchestrator has begun preparing visualization tasks with the following plans for them: \n {summary_lines[0]}\n{plan_preview}"
+    messages = [AIMessage(content=msg_text, name="visualization_orchestrator")]
+    update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=msg_text)
+
+    return {
+        "viz_tasks": tasks,
+        "viz_specs": norm_specs,
+        "progress_reports": [progress_reports],
+        "visualization_complete": False,
+        "messages": messages,
+        "last_agent_message": messages[-1],
+        "last_agent_expects_reply": False,
+        "last_agent_reply_msg": "Begun visualization tasks.",
+        "last_agent_finished_this_task": False,
+        "final_turn_msgs_list": messages,
+        "last_created_obj": "viz_specs" if norm_specs else None,
+        "last_agent_id": "visualization_orchestrator",
+        "current_turn_agent_id": "supervisor",
+
+    }
+
+def viz_worker(state: State):
+
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+
+    tool_descriptions = "\n".join([f"{tool.name}: {tool.description}" for tool in visualization_tools])
+    output_format = DataVisualization.model_json_schema()
+    global_df_registry = get_global_df_registry()
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    task = state.get("individual_viz_task",{state.get("viz_spec", None)})
+    task_vizid = ""
+    if isinstance(task, VizSpec):
+        task_vizid = task.viz_id
+        task = task.viz_instructions
+    if not task:
+        if not state.get("viz_spec", False):
+            task = state["viz_specs"][-1].viz_instructions if state["viz_specs"] not in state["viz_results"] else None
+        else:
+            task = state["viz_spec"].viz_instructions
+            task_vizid = state["viz_spec"].viz_id
+    if not task:
+        return Command(
+            goto="visualization_orchestrator",
+            update={
+                "messages": [AIMessage(content="No viz tasks assigned. If this doesn't sound right, inform Supervisor agent")],
+            },
+        )
+    if isinstance(task, VizSpec):
+        task = task.viz_instructions
+    if not isinstance(task, str):
+        task = str(task)
+    if task_vizid == "":
+        specs = state.get("viz_specs", [])
+        for spec in specs:
+            if (spec.viz_instructions.strip() in task.strip() or task.strip() in spec.viz_instructions.strip() or spec.viz_instructions.strip() == task.strip())  and spec.viz_id:
+                task_vizid = spec.viz_id
+                break
+    if task_vizid == "":
+        task_vizid = uuid.uuid4().hex
+    default_instruction = state.get("next_agent_prompt","") if (isinstance(state.get("next_agent_prompt",None), str) and state.get("next_agent_prompt","") != "") else  f"Your tasks is to: {task}\nPlease provide visualization(s) of the data provided in the visualization spec."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+
+
+    vis_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : DataVisualization.model_json_schema(),
+                "memories" : enhanced_retrieve_mem(state), "visualization_task": task, "user_prompt": user_prompt,
+                "analysis_insights": state.get("analysis_insights", None), "cleaned_dataset_description": state.get("cleaned_dataset_description", None)}
+
+    cm = state.get("cleaning_metadata")
+    if cm is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=default_instruction,name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="viz_worker")]),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no cleaning metadata.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="viz_worker")],
+
+
+            },
+        )
+    if isinstance(cm, CleaningMetadata) and cm.data_description_after_cleaning is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=default_instruction,name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="viz_worker")]),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no description of the dataset after cleaning.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="viz_worker")],
+
+
+            },
+        )
+    cleaning_metadata = cm  # type: ignore
+
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+
+    base_prompt = visualization_prompt_template
+    system_message_content = base_prompt.partial(**vis_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **vis_vars)
+    # --- NEW: emergency reroute handling (viz_worker) ---
+    if state.get("emergency_reroute") == "viz_worker" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "viz_worker" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "viz_worker" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "viz_worker" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "viz_worker":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **vis_vars
+        )
+    # --- END NEW ---
+
+    result = visualization_agent.invoke(
+        {
+            "messages": rendered,
+            "user_prompt": user_prompt,
+            "tool_descriptions": tool_descriptions,
+            # "output_format": output_format,  # <-- schema
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "cleaned_dataset_description": cleaning_metadata.data_description_after_cleaning,
+            "analysis_insights": state.get("analysis_insights", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+            "run_id": state.get("run_id", None),
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+            "visualization_task": task,
+            "individual_viz_task": task,
+            "viz_spec": state.get("viz_spec", None),
+            "viz_paths": state.get("viz_paths", None) or state.get("_config",{}).get("viz_dir",None) or str((WORKING_DIRECTORY / "visualizations").resolve()),
+            "report_paths": state.get("report_paths", "/reports"),
+
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+        pass
+    if not isinstance(result, dict) and isinstance(result, DataVisualization):
+        sr = result
+        result = {"messages":[*rendered,AIMessage(content=f"Task with ID {task_vizid} completed.", name="viz_worker")], "structured_response": sr}
+    else:
+        sr = result.get("structured_response")
+
+    if not sr:
+        # Gracefully no-op (log a progress note)
+        pr = ["No structured_response from visualization_agent."]
+        return {"progress_reports": pr}
+    if isinstance(sr, DataVisualization) and task_vizid:
+        if sr.visualization_id != task_vizid:
+            sr.visualization_id = task_vizid
+        expects_reply = sr.expect_reply
+        reply_msg_to_supervisor = sr.reply_msg_to_supervisor
+        finished_this_task = sr.finished_this_task
+        fin_str = ("finished" if finished_this_task else "not finished", f"should be saved at path: {sr.path}" if (sr.path and sr.finished_this_task and sr.path != "") else "could not be saved")
+        memory_text = f"Viz Worker assigned to task #{task_vizid} produced a Data Visualization titled {sr.visualization_title} with ID {sr.visualization_id} of type {sr.visualization_type} in style {sr.visualization_style}. \n"
+        memory_text += f"The visualization with id {sr.visualization_id} was produced to align with the following task instructions: {task}.\n"
+        memory_text += f"The visualization with id {sr.visualization_id} produced the following description: {sr.visualization_description}.\n"
+        memory_text += f"The Viz Worker that produced the visualization with id {sr.visualization_id} left to following message to supervisor: \n{sr.reply_msg_to_supervisor} \nand this Viz Worker expects reply if True or does not if False: {sr.expect_reply}.\n"
+        memory_text += f"The visualization with id {sr.visualization_id} was {fin_str[0]} and {fin_str[1]}\n\n"
+        update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=memory_text)
+
+        # Each worker contributes one item (or list) to viz_results
+        return save_viz_for_state(state, sr, copy_mode="copy", make_relative=True).update({"messages": result["messages"], "last_agent_message": result["messages"][-1], "last_agent_expects_reply": expects_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task,
+                                                                                       "last_created_obj": "visualization_results" if sr.finished_this_task else None,
+                                                                                       })
+    else:
+        return result
+
+# ---------- 5) Assign VIZ workers (conditional -> Send[]) ----------
+def assign_viz_workers(state: State):
+    tasks = state.get("viz_tasks", []) or []
+    viz_specs = state.get("viz_specs", []) or []
+    if not tasks:
+        return Send("report_orchestrator", {"messages": AIMessage(content="No viz tasks to assign. If this doesn't sound right, inform Supervisor agent or visualization agent")})
+    for sp in viz_specs:
+        if not sp.viz_id:
+            sp.viz_id = uuid.uuid4().hex
+    return [Send("viz_worker", {"individual_viz_task": t, "viz_spec": viz_specs[i]}) for i, t in enumerate(tasks) if i < len(viz_specs)]
+
+
+ALIASES = {f.alias: name for name, f in DataVisualization.model_fields.items() if f.alias}
+
+# ---------- 6) Join (viz synthesizer) ----------
+def viz_join(state: State):
+    # Nothing special besides marking as complete; fan-in happens automatically into viz_results
+    all_viz = state.get("visualization_results") or None
+
+    if not all_viz or not isinstance(all_viz, VisualizationResults) or not all_viz.visualizations or len(all_viz.visualizations) == 0:
+        all_viz = state.get("viz_results", []) or []
+        _all_viz = []
+        for v in all_viz:
+            if isinstance(v, dict):
+                try:
+                    v = DataVisualization(**v)
+                except:
+                    for k, vv in v.items():
+                        if k in ALIASES:
+                            v[ALIASES[k]] = vv
+                    v = DataVisualization(**v)
+
+            if not isinstance(v, DataVisualization):
+                continue
+            _all_viz.append(DataVisualization.model_validate(v, strict=True))
+        all_viz = VisualizationResults.model_validate(VisualizationResults(visualizations=_all_viz, expect_reply=False, reply_msg_to_supervisor="", finished_this_task=True), strict=True)
+
+        n = len(all_viz.visualizations) if all_viz else 0
+        pr = {}
+        pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
+    else:
+        n = len(all_viz.visualizations) if all_viz else 0
+        pr = {}
+        pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
+
+    memory_text = ""
+    for v in all_viz.visualizations:
+        memory_text += f"Viz Worker assigned to task #{v.visualization_id} produced a Data Visualization titled {v.visualization_title} with ID {v.visualization_id} of type {v.visualization_type} in style {v.visualization_style}.\n"
+        memory_text += f"The visualization with id {v.visualization_id} produced the following description: {v.visualization_description}.\n"
+        memory_text += f"Th visualization with id {v.visualization_id} was finished and saved at path: {v.path}.\n\n"
+    update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=memory_text)
+
+    return {
+        "visualization_complete": True,
+        "visualization_results": all_viz,
+        "progress_reports": [str(val) for val in pr.values()],
+        "messages": [AIMessage(content=f"[viz_join] Collected {n} figure(s).", name="viz_join")],
+        "last_agent_message": AIMessage(content=f"[viz_join] Collected {n} figure(s).", name="viz_join"),
+        "last_agent_expects_reply": False,
+        "last_agent_reply_msg": "",
+        "final_turn_msgs_list": [AIMessage(content=f"[viz_join] Collected {n} figure(s).", name="viz_join")],
+        "last_agent_finished_this_task": True,
+        "last_created_obj": "visualization_results" if all_viz else None,
+        "last_agent_id": "viz_join",
+        "current_turn_agent_id": "supervisor",
+    }
+# ---------- 7) Evaluator (loop until acceptable) ----------
+def viz_evaluator_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+    ALIASES = {f.alias: name for name, f in DataVisualization.model_fields.items() if f.alias}
+    tasks = state.get("viz_tasks", []) or []
+    results = state["visualization_results"].visualizations if isinstance(state["visualization_results"], VisualizationResults) else []
+    if not results:
+        resultsa = state.get("viz_results", []) or []
+        for r in resultsa:
+            if isinstance(r, dict):
+                try:
+                    r = DataVisualization(**r)
+                except:
+                    for k, v in r.items():
+                        if k in ALIASES:
+                            r[ALIASES[k]] = v
+                    r = DataVisualization(**r)
+                results.append(r)
+    if not tasks:
+        return Command(
+            goto="visualization_orchestrator",
+            update={
+                "messages": [AIMessage(content="No viz tasks assigned. If this doesn't sound right, inform Supervisor agent or visualization agent")],
+            },
+        )
+    specs = state.get("viz_specs", []) or []
+    spec_task_map = {spec.viz_id: t for i, (t, spec) in enumerate(zip(tasks, specs)) if (i < len(tasks) and t.strip() in spec.viz_instructions.strip())}
+    task_spec_map = {t: spec for t, spec in zip(tasks, specs) if t.strip() in spec.viz_instructions.strip()}
+    spec_result_map = {spec.viz_id: r for i, (r, spec) in enumerate(zip(results, specs)) if (i < len(results) and spec.viz_id == r.visualization_id)}
+    result_spec_map = {r.visualization_id: spec for r, spec in zip(results, specs) if r.visualization_id == spec.viz_id}
+    task_result_map = {t: r for t, r in zip(tasks, results) if t.strip() in r.visualization_title.strip()}
+    result_task_map = {r.visualization_id: t for r in results for t in tasks if t.strip() in r.visualization_title.strip()}
+    # result_to_task_map = {r.visualization_id: t for r in results for t in tasks if t.strip() in r.visualization_title.strip()}
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    global_df_registry = get_global_df_registry()
+
+
+
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else "Please evaluate the generated visualizations."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    vis_vars = {"available_df_ids":df_id_str, "output_format" : VizFeedback.model_json_schema(),
+                "memories" : enhanced_retrieve_mem(state),  "visualization_results": results,
+                "user_prompt": user_prompt,
+                "analysis_insights": state.get("analysis_insights", None), "cleaned_dataset_description": state.get("cleaned_dataset_description", None)}
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+    base_prompt = ChatPromptTemplate.from_messages([*viz_evaluator_prompt_template.messages,
+            MessagesPlaceholder("messages", optional=True),
+        ])
+    system_message_content = base_prompt.partial(
+        **vis_vars
+    )
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg], **vis_vars)
+    # --- NEW: emergency reroute handling (viz_evaluator) ---
+    if state.get("emergency_reroute") == "viz_evaluator" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "viz_evaluator" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "viz_evaluator" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "viz_evaluator" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "viz_evaluator":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **vis_vars
+        )
+    # --- END NEW ---
+
+    final_msgs =  [*rendered, HumanMessage(content=default_instruction)]
+
+
+    # Quick rule: if we didn't produce at least half of the tasks, force revise
+    if len(results) < max(1, int(0.5 * len(tasks))):
+        final_grade = VizFeedback(grade="revise", feedback=f"Only {len(results)} / {len(tasks)} visualizations. Add missing ones.", redo_list=[t for t in tasks if t.strip() not in [r.visualization_title.strip() for r in results] or t not in task_result_map.keys()],reply_msg_to_supervisor= "Only {len(results)} / {len(tasks)} visualizations. Missing ones need to be added.", expect_reply=True, finished_this_task=False)
+        expect_reply = final_grade.expect_reply
+        reply_msg_to_supervisor = final_grade.reply_msg_to_supervisor
+        finished_this_task = final_grade.finished_this_task
+    else:
+        # Let LLM score quality
+        fb = viz_evaluator_agent.invoke({
+            "viz_tasks": tasks,
+            "viz_results": results,
+            "user_prompt": user_prompt,
+            "messages": state.get("messages", []),
+            "analysis_insights": state.get("analysis_insights", None),
+            "cleaned_dataset_description": state.get("cleaned_dataset_description", None),
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+        }, config=state["_config"])
+        # Reasoning
+        try:
+          for block in result.content_blocks:
+              if block["type"] == "reasoning":
+                for summary in block["summary"]:
+                    print(summary["text"], end="")
+        except Exception:
+            pass
+        try:
+            parsed = fb["structured_response"]
+        except:
+            parsed = fb
+        if not isinstance(parsed, VizFeedback):
+            if isinstance(parsed, dict):
+                parsed = VizFeedback(**parsed)
+        assert isinstance(parsed, VizFeedback)
+        expect_reply = parsed.expect_reply
+        reply_msg_to_supervisor = parsed.reply_msg_to_supervisor
+        finished_this_task = parsed.finished_this_task
+
+        # now parsed is a VizFeedback
+        grade = parsed.grade
+        feedback = parsed.feedback
+        final_grade = VizFeedback(grade=parsed.grade, feedback=parsed.feedback, redo_list=parsed.redo_list, reply_msg_to_supervisor=parsed.reply_msg_to_supervisor, expect_reply=parsed.expect_reply, finished_this_task=parsed.finished_this_task)
+        for i, t in enumerate(tasks):
+            if t not in task_result_map.keys() and t not in result_task_map.values():
+                final_grade.redo_list.append(t)
+        vr_results = state.get("viz_results", []) or []
+        for r in results:
+            if r.visualization_title in final_grade.redo_list:
+                results.remove(r)
+                for vr in vr_results:
+                    if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:
+                        vr_results.remove(vr)
+                        break
+            else:
+                if r.visualization_id in result_task_map.keys():
+                    tasks.remove(result_task_map[r.visualization_id])
+                elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:
+                    tasks.remove(r.visualization_title)
+                if r.visualization_id in result_spec_map.keys():
+                    specs.remove(result_spec_map[r.visualization_id])
+                elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:
+                    specs.remove(result_spec_map[r.visualization_title])
+        memory_text = f"The Visualization Evaluator has produced feedback on the latest run of visualizations. The final grade is {final_grade.grade} with the following feedback: {final_grade.feedback}.\n"
+        for res in results:
+            memory_text += f"[Successfully Completed Visualization]: The visualization with id {res.visualization_id} was successfully completed. "
+            memory_text += f"It was produced the following description: {res.visualization_description}.\n"
+            memory_text += f"[Successfully Saved Visualization]: The visualization with id {res.visualization_id} was finished and saved at path: {res.path}.\n\n"
+        update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=memory_text)
+
+        return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,  "last_agent_message": fb["messages"][-1], "last_agent_expects_reply": expect_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task, "last_created_obj": "viz_feedback" if fb["structured_response"] else None, "last_agent_id": "viz_evaluator", "current_turn_agent_id": "supervisor"}
+    return {"viz_grade": final_grade.grade, "viz_feedback": final_grade.feedback, "viz_results": results, "viz_specs": specs,  "last_agent_message": fb["messages"][-1], "last_agent_expects_reply": expect_reply, "last_agent_reply_msg": reply_msg_to_supervisor, "last_agent_finished_this_task": finished_this_task, "last_created_obj": "viz_feedback" if fb["structured_response"] else None, "last_agent_id": "viz_evaluator", "current_turn_agent_id": "supervisor"}
+
+def route_viz(state: State) -> Literal["Accepted", "Revise"]:
+    return "Accepted" if state.get("viz_grade") == "acceptable" else "Revise"
+# ---------- 8) Report Orchestrator (plan sections with structured output) ----------
+def report_orchestrator(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+
+    topic = state.get("user_prompt", "Comprehensive, insightful EDA Report on the provided dataset")
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    draft = state.get("report_draft", "") or ""
+
+    output_format = ReportOutline.model_json_schema()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in report_generator_tools)
+    default_instruction = state["next_agent_prompt"] if (isinstance(state.get("next_agent_prompt"), str) and state.get("next_agent_prompt","") != "") else "Please provide a comprehensive report outline based on the provided context and the users intentions, including a list of sections, each with a title and a description."
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : ReportOutline.model_json_schema(), "user_prompt": user_prompt,
+               "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", ""),"cleaned_dataset_description": state.get("cleaned_dataset_description", ""), "viz_results": state.get("viz_results", ""),
+               "report_task": "think through and plan a report outline based on the provided context and the users intentions. Draft a concise, logically ordered report outline. Include sections that synthesize data cleaning, EDA insights, and visualizations. Return only the structured object described by the schema."}
+    cm = state.get("cleaning_metadata")
+    if cm is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=default_instruction,name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_orchestrator")]),
+                "last_agent_message": AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_orchestrator"),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no cleaning metadata.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_orchestrator")],
+                "last_agent_finished_this_task": False
+
+
+            },
+        )
+    if isinstance(cm, CleaningMetadata) and cm.data_description_after_cleaning is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=default_instruction,name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_orchestrator")]),
+                "last_agent_message": AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_orchestrator"),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no description of the dataset after cleaning.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_orchestrator")],
+                "last_agent_finished_this_task": False
+
+
+            },
+        )
+
+    cleaning_metadata = cm  # type: ignore
+
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+
+    base_prompt = report_generator_prompt_template
+    system_message_content = base_prompt.partial(**rg_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **rg_vars)
+    # --- NEW: emergency reroute handling (report_orchestrator) ---
+    if state.get("emergency_reroute") == "report_orchestrator" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "report_orchestrator" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "report_orchestrator" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "report_orchestrator" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "report_orchestrator":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **rg_vars
+        )
+    # --- END NEW ---
+
+
+    invoke_state = {"messages": rendered, "user_prompt": user_prompt, "tool_descriptions": tool_descriptions,
+                    "available_df_ids": state.get("available_df_ids", []), "cleaning_metadata": cleaning_metadata,
+                    "analysis_insights": state.get("analysis_insights", None), "viz_results": state.get("viz_results", None), "next_agent_prompt": state.get("next_agent_prompt", None),
+                    "next_agent_metadata": state.get("next_agent_metadata", None)}
+    outline_response = report_generator_agent.invoke(invoke_state,config=state["_config"])
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+      pass
+    memory_text = f"The Report Orchestrator has produced the report outline. The report outline is titled {outline_response['structured_response'].title} and contains has the following description: {outline_response['structured_response'].description}.\n"
+    memory_text += f"The report outline has specified the following goals for the report:"
+    for i, goal in enumerate(outline_response['structured_response'].goals):
+        memory_text += f"{i+1}. {goal}\n"
+    memory_text += f"The report outline has specified the following sections for the report:"
+    sections = sorted(outline_response['structured_response'].sections, key=lambda x: x.section_num)
+    for section in sections:
+        memory_text += f"{section.section_num}: {section.name}\n"
+        memory_text += f"   {section.description}\n"
+        memory_text += f"This section, section number {section.section_num} with name {section.name}, has the following goals for the section:"
+        for i, goal in enumerate(section.goals):
+            memory_text += f"   {i+1}. {goal}\n"
+        memory_text += f"This section, will have a word target of {section.word_target} words.\n"
+        memory_text += f"This section,section number {section.section_num} with name {section.name}, will require the following data signals:"
+        for key, signal in section.data_signals_needed.items():
+            memory_text += f"   {key}: {signal}\n"
+        memory_text += f"The following data signals are available for this section, section number {section.section_num} with name {section.name}:"
+        for i, signal in enumerate(section.data_signals_available):
+            memory_text += f"   {i+1}. {signal}\n"
+        memory_text += f"The following visualizations are expected to be included in this section with section number {section.section_num} with name {section.name}, and can be found at the corresponding paths:\n"
+        for viz in section.expected_figures:
+            memory_text += f"Title: {viz.visualization_title} : with id : {viz.visualization_id} Type: {viz.visualization_type} Description: {viz.visualization_description} : Path: {viz.path} \n"
+        update_memory_with_kind(state, state["_config"], "reports", in_memory_store or get_store(), text=memory_text)
+    return {"report_outline": outline_response["structured_response"], "messages": outline_response["messages"], "last_agent_message": outline_response["messages"][-1], "last_agent_expects_reply": outline_response["structured_response"].expect_reply, "last_agent_reply_msg": outline_response["structured_response"].reply_msg_to_supervisor, "last_agent_finished_this_task": outline_response["structured_response"].finished_this_task,
+            "last_created_obj": "report_outline" if outline_response["structured_response"] else None, "last_agent_id": "report_orchestrator", "current_turn_agent_id": "supervisor"}
+
+
+# ---------- 9) Section Worker (fan-out) ----------
+def section_worker(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+
+    section: SectionOutline = state["section"]
+    if not section:
+        return Command(goto="report_orchestrator", update={"messages": AIMessage(content="No SectionOutline received",name = "SectionWorker")})
+    def enhanced_retrieve_mem(state):
+        store = get_store()
+        return store.search(("memories",), query=state.get("next_agent_prompt") or state.get("user_prompt",""), limit=5)
+
+    topic = state.get("user_prompt", "Comprehensive, insightful EDA Report on the provided dataset")
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+    draft = state.get("report_draft", "") or ""
+    mems = enhanced_retrieve_mem(state)
+    output_format = Section.model_json_schema()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in report_generator_tools)
+
+    rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : Section.model_json_schema(), "user_prompt": user_prompt, "memories" : mems, "analysis_insights": state.get("analysis_insights", ""),"cleaned_dataset_description": state.get("cleaned_dataset_description", ""), "viz_results": state.get("viz_results", ""), "report_task": "You are a professional data scientist. You write crisp, technical report sections. Be specific and cite numeric values when available. Write a concise Markdown section for an EDA report. Include no preamble."}
+    cm = state.get("cleaning_metadata")
+    if cm is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=f"Work on section {section.name}",name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_section_worker")]),
+                "last_agent_message": AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_section_worker"),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no cleaning metadata.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no cleaning metadata.",name="report_section_worker")],
+                "last_agent_finished_this_task": False
+
+
+            },
+        )
+    if isinstance(cm, CleaningMetadata) and cm.data_description_after_cleaning is None:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [AIMessage(content=f"Work on section {section.name}",name="supervisor"),MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_section_worker")]),
+                "last_agent_message": AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_section_worker"),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no description of the dataset after cleaning.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no description of the dataset after cleaning.",name="report_section_worker")],
+                "last_agent_finished_this_task": False
+
+
+            },
+        )
+    cleaning_metadata = cm  # type: ignore
+    insights = state.get('analysis_insights',None) if isinstance(state.get('analysis_insights',None), AnalysisInsights) else None
+    if not insights:
+        return Command(
+            goto="analyst",
+            update={
+                "messages": ChatPromptTemplate.from_messages([AIMessage(content=f"Work on section {section.name}",name="supervisor"),
+                    MessagesPlaceholder(variable_name="messages")]
+                ).format_messages(messages=[AIMessage("Please run analyst first. I received no analysis insights.",name="report_section_worker")]),
+                "last_agent_message": AIMessage("Please run data_cleaner first. I received no analysis insights.",name="report_section_worker"),
+                "last_agent_expects_reply": True,
+                "last_agent_reply_msg": "Please run data_cleaner first. I received no analysis insights.",
+                "final_turn_msgs_list": [AIMessage("Please run data_cleaner first. I received no analysis insights.",name="report_section_worker")],
+                "last_agent_finished_this_task": False
+            },
+        )
+    user_t = f"""Write the section titled: "{section.name},
+Purpose: {section.goals}
+Description: {section.description}
+Visualizations expected in Report: {section.expected_figures}
+Target length: ~{section.word_target} words.
+
+Use available context:
+- Cleaning (short): {cm.data_description_after_cleaning}
+- Insights (short): {insights.summary}
+- Correlations: {insights.correlation_insights}
+- Anomalies: {insights.anomaly_insights}
+- Visualizations to mention/reference: {section.expected_figures}
+- Memories (if helpful): {mems}
+- DataFrame IDs: {df_id_str}
+
+Write as Markdown. Do not include the H1 report title; just this section content with an H2 header.
+"""
+    default_instruction = f"{user_t}\n Goals for section: {section.goals}\n The following data signals will be needed for this section: {section.data_signals_needed}\n\n The following data signal df_ids are available: {section.data_signals_available}\n\n The following visualizations are expected to be included in the report, and can be found at the corresponding paths: \n {expected_viz_str}\n If needed, reference available charts verbally."
+    if state.get("next_agent_prompt", None) is not None:
+        default_instruction_b = f"{state.get('next_agent_prompt', None)}. {default_instruction}"
+        default_instruction = default_instruction_b
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+
+    expected_viz = section.expected_figures if section else []
+    expected_viz_str = f"The following figures are expected to be included in the report, and can be found at the corresponding paths:\n"
+    for viz in expected_viz:
+        expected_viz_str += f"Title: {viz.visualization_title} : Type: {viz.visualization_type} Description: {viz.visualization_description} : Path: {viz.path} with id : {viz.visualization_id}\n"
+
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+    base_prompt = report_generator_prompt_template
+    system_message_content = base_prompt.partial(**rg_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **rg_vars)
+    # --- NEW: emergency reroute handling (report_section_worker) ---
+    if state.get("emergency_reroute") == "report_section_worker" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "report_section_worker" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "report_section_worker" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "report_section_worker" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "report_section_worker":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **rg_vars
+        )
+    # --- END NEW ---
+
+
+
+    msg = report_section_agent.invoke({
+        "messages": rendered,
+        "available_df_ids": state.get("available_df_ids", []),
+        "cleaning_metadata": cleaning_metadata,
+        "analysis_insights": state.get("analysis_insights", None),
+        "viz_results": state.get("viz_results", None),
+        "user_prompt": user_prompt,
+        "section": section,
+        "run_id": state.get("run_id", None),
+        "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+        "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+        "reports_path": state.get("reports_path", None) or state.get("_config",{}).get("reports_dir",None) or str((WORKING_DIRECTORY / "reports").resolve()),
+        "visualization_path": state.get("viz_paths", None) or state.get("_config",{}).get("viz_dir",None) or str((WORKING_DIRECTORY / "visualizations").resolve()),
+        "next_agent_prompt": state.get("next_agent_prompt", None),
+        "next_agent_metadata": state.get("next_agent_metadata", None),
+    }, config=state["_config"])
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                print(summary["text"], end="")
+    except Exception:
+      pass
+    if isinstance(msg, dict) and "structured_response" in msg:
+        section_text = msg["structured_response"]
+    else:
+        section_text = msg
+    if isinstance(section_text, dict) and "structured_response" in section_text:
+        section_text = Section(**section_text["structured_response"])
+    elif not isinstance(section_text, Section) and isinstance(section_text, dict):
+        section_text = Section(**section_text)
+    elif not isinstance(section_text, Section):
+        return {}
+    content = section_text.content
+    assert isinstance(section_text, Section)
+    expect_reply = section_text.expect_reply
+    reply_msg_to_supervisor = section_text.reply_msg_to_supervisor
+    finished_this_task = section_text.finished_this_task
+    completed_str = "successfully completed" if section_text.finished_this_task else "failed to complete"
+    memory_text = f"Section worker working on section number {section.section_num} with name {section.name} and has {completed_str} it."
+    update_memory_with_kind(state, state["_config"], "reports", in_memory_store or get_store(), text=memory_text)
+    return {
+        "written_sections": [f"## {section.name}\n\n{content}".strip()],
+        "messages": [AIMessage(content=msg["messages"][-1].content, name="report_section_worker")],
+        "section_complete": True if (isinstance(section_text, Section) and section_text.content.strip() != "") else False,
+        "sections": [section_text],
+        "last_agent_message": msg["messages"][-1],
+        "last_agent_expects_reply": expect_reply,
+        "last_agent_reply_msg": reply_msg_to_supervisor,
+        "final_turn_msgs_list": [AIMessage(content=msg["messages"][-1].content, name="report_section_worker")],
+        "last_agent_finished_this_task": finished_this_task,
+        "last_created_obj": "sections" if section_text.finished_this_task else None,
+        "last_agent_id": "report_section_worker",
+        "current_turn_agent_id": "supervisor"
+    }
+
+
+# ---------- helper: fan-out router returning Send(...) ----------
+def dispatch_sections(state: State):
+    """
+    Emit Send events to run one section_worker per section in the outline.
+    """
+    outline = state.get("report_outline",None)
+    if not isinstance(outline, ReportOutline) or not outline or not outline.sections:
+        return []  # nothing to do
+    sends = []
+    for s in outline.sections:
+        payload = {"section": s.model_dump(mode="json", exclude_none=True)}
+        sends.append(Send("report_section_worker", payload))
+    return sends
+
+
+# ---------- 10) Assign Section workers ----------
+def assign_section_workers(state: State):
+    outline = state.get("report_outline",None)
+    if not outline or not isinstance(outline, ReportOutline):
+        return []
+    secs = outline.sections
+    return [Send("report_section_worker", {"section": s}) for s in secs]
+
+# ---------- 11) Report Join (synthesizer) ----------
+def report_join(state: State):
+    parts = state.get("written_sections", []) or []
+    draft = "\n\n---\n\n".join(parts)
+    return {"report_draft": draft}
+
+def report_packager_node(state: State):
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+    outline: ReportOutline = state["report_outline"]
+    title = outline.title if outline else "Analysis Report"
+    written_sections: List[str] = state.get("written_sections", []) or []
+    sections = state["sections"]
+    assert all(isinstance(s, Section) for s in sections), "sections is not a list of Sections"
+    draft = f"# {title}\n\n" + "\n\n".join(written_sections)
+    df_id_str = ", \n".join(state.get("available_df_ids", []))
+
+    default_instruction = f"Package the provided report draft plus referenced visualizations into Markdown, HTML, and PDF files. These files must be created before your task can be considered successfully completed. Return only the structured object described by the schema."
+    if state.get("next_agent_prompt", None) is not None:
+        default_instruction_b = f"{state.get('next_agent_prompt', None)}. {default_instruction} \n\n<report_draft>\n{draft}\n</report_draft>"
+        default_instruction = default_instruction_b
+    if not isinstance(default_instruction, str):
+        default_instruction = str(default_instruction)
+    global_df_registry = get_global_df_registry()
+    tool_descriptions = "\n".join(f"{t.name}: {t.description}" for t in report_generator_tools)
+    rg_vars = {"available_df_ids":df_id_str,"tool_descriptions":tool_descriptions,"tooling_guidelines" : DEFAULT_TOOLING_GUIDELINES, "output_format" : ReportResults.model_json_schema(), "user_prompt": user_prompt,
+               "memories" : enhanced_retrieve_mem(state), "analysis_insights": state.get("analysis_insights", None),"cleaned_dataset_description": state.get("cleaned_dataset_description", None), "viz_results": state.get("viz_results", None),
+               "report_task": default_instruction}
+    # 1) Merge sections into a draft
+
+
+    # 2) Call your existing report_generator_agent (it already has response_format=ReportResults)
+    tool_descriptions = "\n".join([f"{t.name}: {t.description}" for t in report_generator_tools])
+    cleaning = state.get("cleaning_metadata")
+    insights = state.get("analysis_insights")
+    viz = state.get("viz_results")
+    output_format = ReportResults.model_json_schema()
+
+    # Use your original prompt template (system) and pass draft + artifacts via messages.
+
+    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content=f"File Writer Agent: {default_instruction}",name="supervisor")
+
+
+    base_prompt = ChatPromptTemplate.from_messages([*report_generator_prompt_template.messages,
+            MessagesPlaceholder("messages", optional=True),
+        ])
+    system_message_content = base_prompt.partial(**rg_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg], **rg_vars)
+    # --- NEW: emergency reroute handling (report_packager) ---
+    if state.get("emergency_reroute") == "report_packager" or (
+        state.get("supervisor_to_agent_msgs")
+        and len(state.get("supervisor_to_agent_msgs")) > 0
+        and all(isinstance(m, SendAgentMessage) for m in state.get("supervisor_to_agent_msgs"))
+        and any(m.recipient == "report_packager" for m in state["supervisor_to_agent_msgs"] if not m.delivery_status)
+    ):
+        spvsr_to_agent_msgs = state["supervisor_to_agent_msgs"]
+        msgs_tmp = []
+        emerg_msg = None
+        main_emer_msg = None
+        tmp_basemsgs = []
+        if spvsr_to_agent_msgs:
+            for m in reversed(spvsr_to_agent_msgs):
+                if m.recipient == "report_packager" and not m.delivery_status:
+                    if emerg_msg is None:
+                        emerg_msg = m
+                    else:
+                        msgs_tmp.append(m)
+            if emerg_msg:
+                msgs_tmp.append(emerg_msg)
+        if emerg_msg and isinstance(emerg_msg, SendAgentMessage):
+            main_emer_msg = AIMessage(content=emerg_msg.message, name="supervisor")
+            emerg_msg.delivery_status = True
+
+            if not main_emer_msg:
+                if msgs_tmp:
+                    emer_msg_txt = ""
+                    for m in msgs_tmp:
+                        if m.recipient == "report_packager" and not m.delivery_status:
+                            emer_msg_txt = m.message
+                            break
+                    main_emer_msg = AIMessage(content=emer_msg_txt, name="supervisor")
+                    emerg_msg.delivery_status = True
+        for m in msgs_tmp:
+            if not m.delivery_status and m.recipient == "report_packager":
+                tmp_basemsgs.append(AIMessage(content=m.message, name="supervisor"))
+                m.delivery_status = True
+        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **rg_vars
+        )
+    # --- END NEW ---
+
+    # Include the draft in the user message to the agent.
+    final_msgs =  [*rendered, AIMessage(content=default_instruction,name="supervisor")]
+
+    result = report_packager_agent.invoke(
+        {
+            "messages": final_msgs,
+            "user_prompt": user_prompt,
+            "tool_descriptions": tool_descriptions,
+            # "output_format": ReportResults,
+            "available_df_ids": state.get("available_df_ids", []),
+            "memories": enhanced_retrieve_mem(state),
+            "cleaning_metadata": cleaning,
+            "analysis_insights": insights,
+            "viz_results": viz,
+            "written_sections": written_sections,
+            "sections": sections,
+            "report_draft": draft,
+            "report_outline": outline,
+            "run_id": state.get("run_id", None),
+            "artifacts_path": state.get("artifacts_path", None) or state.get("_config",{}).get("artifacts_dir",None) or str((WORKING_DIRECTORY / "artifacts").resolve()),
+            "logs_path": state.get("logs_path", None) or state.get("_config",{}).get("logs_dir",None) or str((WORKING_DIRECTORY / "logs").resolve()),
+            "reports_path": state.get("reports_path", None) or state.get("_config",{}).get("reports_dir",None) or str((WORKING_DIRECTORY / "reports").resolve()),
+            "visualization_path": state.get("viz_paths", None) or state.get("_config",{}).get("viz_dir",None) or str((WORKING_DIRECTORY / "visualizations").resolve()),
+            "next_agent_prompt": state.get("next_agent_prompt", None),
+            "next_agent_metadata": state.get("next_agent_metadata", None),
+        },
+        config=state["_config"]
+    )
+    # Reasoning
+    try:
+      for block in result.content_blocks:
+          if block["type"] == "reasoning":
+              for summary in block["summary"]:
+                  print(summary["text"], end="")
+    except Exception:
+        pass
+    # Expect your agent to return a structured_response=ReportResults
+    rr = result["structured_response"]
+    # In some setups this may already be a ReportResults; if it's a dict, coerce:
+    if isinstance(rr, dict):
+        rr = ReportResults(**rr)
+    memory_text = f"The Report Packager has produced the report results. The pdf can be found at {rr.pdf_report_path}, the html can be found at {rr.html_report_path}, and the markdown can be found at {rr.markdown_report_path}."
+    update_memory_with_kind(state, state["_config"], "reports", in_memory_store or get_store(), text=memory_text)
+    # Check the existence of the files at each of the three paths
+    pdf_exists = os.path.exists(rr.pdf_report_path) and os.path.isfile(rr.pdf_report_path) and os.path.getsize(rr.pdf_report_path) > 0
+    html_exists = os.path.exists(rr.html_report_path) and os.path.isfile(rr.html_report_path) and os.path.getsize(rr.html_report_path) > 0
+    markdown_exists = os.path.exists(rr.markdown_report_path) and os.path.isfile(rr.markdown_report_path) and os.path.getsize(rr.markdown_report_path) > 0
+    finished_this_task = pdf_exists and html_exists and markdown_exists
+    filetype_str_lst = []
+    file_type_str = "na"
+    if pdf_exists:
+        filetype_str_lst.append("pdf, ")
+    if html_exists:
+        filetype_str_lst.append("html, ")
+    if markdown_exists:
+        filetype_str_lst.append("markdown")
+    file_type_str = "".join(filetype_str_lst)
+    update = {
+        "messages": [AIMessage(content=result["messages"][-1].content, name="report_packager")],
+        "report_draft": draft,
+        "report_results": rr,
+        "report_generator_complete": True,
+        "last_agent_message": result["messages"][-1],
+        "last_agent_expects_reply": rr.expect_reply,
+        "last_agent_reply_msg": rr.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": rr.finished_this_task,
+        "last_created_obj": "report_results" if rr.finished_this_task else None,
+        "final_turn_msgs_list": [AIMessage(content=result["messages"][-1].content, name="report_packager")],
+        "last_agent_id": "report_packager",
+        "current_turn_agent_id": "supervisor"
+
+    }
+    if not finished_this_task:
+      update["next_agent_metadata"]= NextAgentMetadata(df_id = "report_results", file_type = file_type_str, file_name = f"report on {outline.title}", section_name = "n/a", viz_spec = None, notes = f"The final report has been generated, but has not been written to {file_type_str} files yet. Please write them now based on the file_content.", file_content = draft, reply_msg_to_supervisor = f"The final report has been generated, but has not been written to {file_type_str} files yet. Please write them now based on the file_content.",finished_this_task=False, expect_reply = False)
+      return Command(goto="file_writer", update=update)
+    return update
+
+def emergency_correspondence_node(state: State):
+
+
+
+    msg_obj_candidates: List[SendAgentMessage] = state.get("supervisor_to_agent_msgs") or [SendAgentMessage(message="No messages to send", recipient="supervisor", delivery_status=False, expect_reply=False, finished_this_task=False, reply_msg_to_supervisor="",agent_obj_needs_recreated_bool=False, is_message_critical = False, immediate_emergency_reroute_to_recipient = False)]
+    if not msg_obj_candidates or len(msg_obj_candidates) == 0:
+        return Send("supervisor", {"message": "No agent messages to send"})
+    msg_obj_candidates = [_msg_obj for _msg_obj in msg_obj_candidates if isinstance(_msg_obj, SendAgentMessage) and not _msg_obj is not None]
+    if not msg_obj_candidates or len(msg_obj_candidates) == 0:
+        return Send("supervisor", {"message": "No agent messages to send"})
+    assert msg_obj_candidates is not None and isinstance(msg_obj_candidates, list) and len(msg_obj_candidates) > 0 and all(isinstance(_msg_obj, SendAgentMessage) for _msg_obj in msg_obj_candidates), "Invalid msg_obj_candidates"
+    msg_obj = None
+    for _msg_obj in reversed(msg_obj_candidates):
+        if isinstance(_msg_obj, SendAgentMessage) and not _msg_obj.delivery_status:
+            msg_obj = _msg_obj
+            break
+
+    assert msg_obj is not None and isinstance(msg_obj, SendAgentMessage)
+
+    # Declare with the union type UP FRONT
+    candidate: str = (
+        state.get("emergency_reroute")
+        or msg_obj.recipient
+        or state.get("last_agent_id")
+        or "supervisor"
+    )
+    if state.get("next") != "EMERGENCY_MSG":
+        # Cast here if Send() expects AgentOrSupervisor
+        target = cast(AgentOrSupervisor, state.get("next") or "supervisor")
+    else:
+        target = candidate
+    # Upgrade candidate based on last_created_obj, if possible
+    last_known = [ob for ob in ["report_results", "report_outline", "written_sections", "sections", "report_draft", "visualization_results", "analysis_insights", "cleaning_metadata", "initial_analysis","initial_description"] if ob in state][0] if state.get("last_created_obj") is None else state.get("last_created_obj")
+    if not last_known or last_known == "" or last_known is None:
+        last_known = "none"
+    last_known = str(last_known)
+    assert isinstance(last_known, str)
+    obj = state.get(str(state.get("last_created_obj")),state.get(str(last_known),None))
+    fit_last_obj: bool = False
+    if obj is not None and isinstance(obj, BaseNoExtrasModel) and obj.expect_reply:
+        for k, v in CLASS_TO_AGENT.items():
+            if isinstance(obj, k):
+                if v != cast(AgentOrSupervisor, candidate):
+                    if candidate == state.get("emergency_reroute") or candidate == msg_obj.recipient:
+                        candidate = cast(AgentOrSupervisor, candidate)
+                        break
+                candidate = v            # v is AgentId, but candidate is str
+                fit_last_obj = True
+                break
+    if candidate != target:
+        try:
+            nxt: AgentOrSupervisor =cast(AgentOrSupervisor, candidate)
+        except:
+            nxt = cast(AgentOrSupervisor, target)
+    else:
+        nxt = cast(AgentOrSupervisor, candidate)
+    # Validate/cast the final value into AgentOrSupervisor
+    ALLOWED: set[str] = {"supervisor"} | set(AgentId.__args__)  # type: ignore[attr-defined]
+    nxt: AgentOrSupervisor = cast(AgentOrSupervisor, candidate if candidate in ALLOWED else "supervisor")
+
+    msg = AIMessage(content=msg_obj.message, name="supervisor")
+    orig_agent_msg = None
+    if state.get("last_created_obj") is not None and fit_last_obj and isinstance(state["last_created_obj"], BaseNoExtrasModel) and state["last_created_obj"].reply_msg_to_supervisor is not None:
+        orig_agent_msg = AIMessage(content=state["last_created_obj"].reply_msg_to_supervisor, name=msg_obj.recipient)
+    elif (lam := state.get("last_agent_message")) is not None and isinstance(lam, AIMessage) and lam.name == msg_obj.recipient:
+        orig_agent_msg = lam
+    elif state.get("last_agent_reply_msg") is not None:
+        orig_agent_msg = AIMessage(content=state.get("last_agent_reply_msg"), name=msg_obj.recipient)
+
+
+    return Command(goto=nxt, update={"messages": msg, "last_agent_message": orig_agent_msg, "last_agent_expects_reply": msg_obj.expect_reply, "last_agent_reply_msg": msg_obj.reply_msg_to_supervisor, "last_agent_finished_this_task": msg_obj.finished_this_task, "final_turn_msgs_list": [msg]})

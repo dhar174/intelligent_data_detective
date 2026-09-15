@@ -1,0 +1,154 @@
+Loaded notebook with 98 cells
+Γ£à Cell idx 48: replaced Kaggle download with fixture CSV injection
+Γ£à Cell idx 81: fixed final_report ΓåÆ report_results
+Γ£à Cell idx 7: fixed _is_colab() false-positive on Windows
+Γ£à Cell idx 7: fixed bool_or reducer (None-safe) ΓÇö root cause of double data_cleaner run
+Γ£à Cell idx 72: recursion_limit increased to 400
+Γ£à Cell idx 22: Fix B1 ΓÇö State._viz_retry_count field added
+Γ£à Cell idx 22: Fix V1 ΓÇö State._report_dispatched field added
+Γ£à Cell idx 22: Fix AR-3 ΓÇö report_paths reducer ΓåÆ safe dict-merge lambda
+Γ£à Cell idx 32: query_dataframe patched ΓÇö explicit params arg + extraction logic
+Γ£à Cell idx 57: initial_analysis_node patched (safe invoke + recursion cap=80 + recovery)
+Γ£à Cell idx 57: data_cleaner_node patched (safe invoke + recursion cap=160 + force flags)
+  Γ£à analyst_node: re-route guards patched
+Γ£à Cell idx 57: analyst_node patched (safe invoke + recursion cap=50 + recovery + reroute guards)
+Γ£à Cell idx 57: report_packager_node patched (safe invoke + recursion cap=120 + recovery)
+OK Cell idx 57: Fix AB applied ΓÇö report_packager rg_vars gets cleaning_metadata + visualization_results
+OK Cell idx 22: Fix AC applied ΓÇö report_draft gets use-last reducer
+  AD-1: route_to_writer fixed
+  AD-2: write_output_to_file fixed
+OK Cell idx 60: Fix AD applied ΓÇö routing/write functions now reach END
+Γ£à Cell idx 46: supervisor_node patched ΓÇö force analyst routing after cleaning
+Γ£à Cell idx 46: supervisor shortcut 0 added (initial_analysisΓåÆdata_cleaner)
+Γ£à Cell idx 46: supervisor routing protected ΓÇö 4 routing_llm.invoke calls wrapped with retry
+Γ£à Cell idx 46: supervisor shortcut diagnostic logging added
+Γ£à Cell idx 46: supervisor shortcuts 2+3 added (analystΓåÆvisualization, vizΓåÆreport_orchestrator)
+Γ£à Cell idx 46: Fix D applied ΓÇö SHORTCUT2 _in_viz_round race gate added
+Γ£à Cell idx 46: Fix B2 applied ΓÇö viz escape hatch after 4 retries
+Γ£à Cell idx 46: Fix V2 applied ΓÇö SHORTCUT3 _in_report_round race gate added
+Γ£à Cell idx 46: Fix AH applied ΓÇö SHORTCUT4 (all_done ΓåÆ write_output_to_file)
+Γ£à Cell idx 46: P1-E supervisor config guard patched (13 sites)
+ΓÜá∩╕Å  Cell idx 46: P1-B stop removal ΓÇö pattern ',stop=["\\r\\r\\n"]' not found
+Γ£à Cell idx 46: P1-C messages guard patched (3 routing + 1 conv_resp)
+Γ£à Cell idx 46: P1-D Router.model_validate fixed (2 sites)
+Γ£à Cell idx 46: P1-G assert fallback patched (8sp:3 28sp:1 12sp:2 conv:1)
+Γ£à Cell idx 57: viz_worker patched (safe invoke + recursion cap=60 + recovery)
+  Γ£à viz_evaluator_node: quick-rule fb init + invoke replacement patched
+Γ£à Cell idx 57: viz_evaluator_node patched (safe invoke + retry + fb init fix)
+Γ£à Cell idx 57: Fix T applied ΓÇö viz_evaluator no-tasks CommandΓåÆdict
+Γ£à Cell idx 94: Fix U applied ΓÇö migrate_thread None-writer guard + outer try/except
+Γ£à Cell idx 57: Fix E applied (regex fallback) ΓÇö viz_worker returns dict
+Γ£à Cell idx 75: stream_graph_output patched (PipelineLogger + stage logging)
+Γ£à Cell idx 83: final-state cell patched (_log_final_state injection)
+Γ£à Cell idx 10: P1-A MyChatOpenai prompt_cache_key filter added
+Γ£à Cell idx 60: P2-A SqliteSaver checkpointer injected
+Γ£à Cell idx 72: P2-B(thread_id save) patched
+Γ£à Cell idx 75: P2-C/E stream resume patch applied
+Γ£à Cell idx 60: Fix G-1 supervisor loop cleaned (removed viz/report nodes)
+Γ£à Cell idx 60: Fix G-2 supervisor removed from route_to_writer loop
+Γ£à Cell idx 60: Fix H assign_viz_workers path_map expanded
+Γ£à Cell idx 32: Fix I sandbox read exemption applied
+Γ£à Cell idx 32: Fix J matplotlib Agg/MPLCONFIGDIR injection applied
+Γ£à Cell idx 32: Fix AI-1 applied ΓÇö report_intermediate_progress description corrected
+Γ£à Cell idx 32: Fix AK-2 applied ΓÇö escalating counter in report_intermediate_progress
+Γ£à Cell idx 25: Fix AI-2 applied ΓÇö respond termination instruction added to: main-analyst, mini-analyst, data-cleaner
+Γ£à Cell idx 25: Fix AI-2b applied ΓÇö respond termination added to: initial-analyst, report-generator
+Γ£à Cell idx 25: Fix AI-2c applied ΓÇö respond termination added to: data-cleaner-main
+Γ£à Cell idx 57: Fix AJ applied ΓÇö state snapshot logging for: analyst, data_cleaner
+Γ£à Cell idx 57: Fix M viz_orchestrator: List[VizSpec] iteration fixed
+Γ£à Cell idx 57: Fix O-1 MANDATORY_SPEC_KEYS 'type'ΓåÆ'viz_type'
+Γ£à Cell idx 57: Fix O-2 _normalize_viz_spec model_copy + setdefaultΓåÆif-not
+Γ£à Cell idx 57: Fix O-3 viz_orchestrator dict/VizSpec attr + loop mutation fixed
+Γ£à Cell idx 57: Fix O-4 assign_viz_workers dict coercion + empty-specs routing
+Γ£à Cell idx 57: Fix AM-1 ΓÇö assign_viz_workers Send now includes cleaning_metadata + analysis_insights
+Γ£à Cell idx 57: Fix AN-1 ΓÇö viz_worker final_turn_msgs_list guard applied
+Γ£à Cell idx 32: Fix AO-1 ΓÇö create_histogram bins simplified to Optional[Union[int, str]]
+Γ£à Cell idx 32: Fix AO-2 ΓÇö binrange simplified to Optional[List[float]]
+Γ£à Cell idx 32: Fix AO-3 ΓÇö x_range simplified to Optional[List[float]]
+Γ£à Cell idx 32: Fix AO-4 ΓÇö binwidth simplified to Optional[float]
+Γ£à Cell idx 7: Fix AO-5 ΓÇö RangeSpec changed to Optional[List[float]]
+Γ£à Cell idx 7: Fix AO-6 ΓÇö Array1D stripped of np.ndarray/pd.Series
+Γ£à Cell idx 32: Fix AO-7 ΓÇö create_correlation_heatmap figsize simplified to List[float]
+ΓÜá∩╕Å  Fix AP-1: report_orchestrator RL pattern not found
+ΓÜá∩╕Å  Fix AP-2: report_packager RL pattern not found in cell 57
+Γ£à Cell idx 32: Fix AO-8 ΓÇö create_box_plot whis simplified
+Γ£à Cell idx 57: Fix P-1 viz_worker unhashable set literal ΓåÆ safe fallback
+Γ£à Cell idx 57: Fix P-2 viz_worker spec.viz_instructions None guard
+Γ£à Cell idx 22: Fix Q ΓÇö last_agent_* fields now have use-last reducers (variant A with _report_dispatched)
+Γ£à Cell idx 22: Fix R ΓÇö final_turn_msgs_list Annotated outermost
+Γ£à Cell idx 22: Fix R ΓÇö supervisor_to_agent_msgs Annotated outermost
+OK Cell idx 22: Fix S - patched last_created_obj: Optional[str]
+OK Cell idx 22: Fix S - patched visualization_results: Optional[Visualiz
+OK Cell idx 22: Fix S - patched run_id: Optional[str]
+OK Cell idx 57: Fix W1 applied ΓÇö route_viz is now retry-aware
+OK Cell idx 57: Fix W2 applied ΓÇö viz_evaluator quick-rule accepts partial results
+OK Cell idx 57: Fix W3 applied ΓÇö report_orchestrator safe invoke wrapper added
+OK Cell idx 22: Fix X1 applied ΓÇö report_outline use-last reducer added
+OK Cell idx 46: Fix X2 applied ΓÇö _in_report_round expanded with viz pipeline nodes
+OK Cell idx 57: Fix X3 applied ΓÇö state[_config] -> state.get(_config) in update_memory_with_kind
+W  Fix X3-rg: unique report_orchestrator anchor not found in cell 57, trying fallback
+OK Cell idx 57: Fix X3-rg applied via fallback ΓÇö cleaning_metadata added to rg_vars
+OK Cell idx 46: Fix Y applied ΓÇö 2 supervisor LLM invoke(s) wrapped in try-except
+OK Cell idx 46: Fix Z applied ΓÇö Z1, Z2, Z3, Z4, Z5, Z6, Z7, Z8, Z9
+OK Cell idx 42: Fix AV applied ΓÇö manage_memory wrapped for viz tools
+OK Cell idx 54: Fix AW applied ΓÇö save_viz_for_state includes supervisor fields
+OK Cell idx 57: Fix AA applied ΓÇö section dictΓåÆSectionOutline conversion
+Γ£à Cell idx 78: replaced input() call(s) for headless execution
+OK Fix AX: post-processing PNG injection cell appended (cell idx 98)
+Γ£à W2-BR7v2 (drop AgentState import): applied to 1 cell(s)
+Γ£à W2-BR7v2 (State class: drop AgentState + add messages): applied to 1 cell(s)
+Γ£à W2-REDUCERS (helper defs): applied to 1 cell(s)
+Γ£à W2-STATE (reducers wired + __active_response_tool__): applied to 1 cell(s)
+Γ£à W2-BR8 (structured_response reducer): applied to 1 cell(s)
+Γ£à W2-BR1b (viz_join flush): applied to 1 cell(s)
+Γ£à W2-BR2b (report_join flush): applied to 1 cell(s)
+Γ£à W2-BR3 (report_packager safe access): applied to 1 cell(s)
+Γ£à W2-BR4b (emergency_reroute clear): applied to 1 cell(s)
+Γ£à W2-BR5 (route_to_writer restrict): applied to 1 cell(s)
+Γ£à W2-BR6 (route_viz mapping): applied to 1 cell(s)
+Γ£à W2-BR6b (viz_evaluator set next): applied to 1 cell(s)
+Γ£à W2-BC (RIP removal): applied to 1 cell(s)
+Γ£à W2-BB (Fix BB ΓÇö RIP threshold=3): applied to 1 cell(s)
+Γ£à W2-RC1 (per-schema TERMINATION blocks): applied to 1 cell(s)
+Γ£à W2-RC1c (response_tool_name partial): applied to 1 cell(s)
+Γ£à W2-RC1c2 (rg_vars response_tool_name): applied to 1 cell(s)
+Γ£à W2-BA-strip[DC]: applied to 1 cell(s)
+Γ£à W2-BA-strip[IA]: applied to 1 cell(s)
+Γ£à W2-BA-strip[AN]: applied to 1 cell(s)
+Γ£à W2-BA-strip[VZ]: applied to 1 cell(s)
+Γ£à W2-BA-strip[VE]: applied to 1 cell(s)
+Γ£à W2-BA-strip[RO]: applied to 1 cell(s)
+Γ£à W2-BA-strip[RP]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[DC]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[IA]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[AN]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[VZ]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[VE]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[RO]: applied to 1 cell(s)
+Γ£à W2-BA-finalhop[RP]: applied to 1 cell(s)
+Γ£à W2-BF1 (dc_vars data_sample sync): applied to 1 cell(s)
+Γ£à W2-BF3 (analyst data_sample): applied to 1 cell(s)
+Γ£à W2-BF4 (viz_worker cleaned_dataset_description): applied to 1 cell(s)
+Γ£à W2-BF5 (report_packager visualization_results): applied to 1 cell(s)
+Γ£à W2-DOCS2c-state (viz_revise_count field): applied to 1 cell(s)
+Γ£à W2-DOCS2c-node (cap enforcement + viz_revise_count emit): applied to 1 cell(s)
+Γ£à W2-DOCS2c-prompt (revise-budget paragraph): applied to 1 cell(s)
+Γ£à W2-DOCS2c-vars (init_viz_vars + vis_vars): applied to 2 cell(s)
+Γ£à W2-BR8d (revert viz_grade/viz_feedback reducer): applied to 1 cell(s)
+Γ£à W2-EMERGENCY (EMERGENCY_MSG edge to supervisor): applied to 1 cell(s)
+Γ£à W2-BF2 (analyst cleaned_dataset_description): applied to 1 cell(s)
+Γ£à W2-BF6[DC] (static data_cleaner system_prompt): applied to 1 cell(s)
+Γ£à W2-BF6[AN] (static analyst system_prompt): applied to 1 cell(s)
+Γ£à W2-REC6 (unknown-tool guard helper): applied to 1 cell(s)
+Γ£à W2-REC6[DC] (unknown-tool guard wire): applied to 1 cell(s)
+Γ£à W2-REC6[IA] (unknown-tool guard wire): applied to 1 cell(s)
+Γ£à W2-REC6[AN] (unknown-tool guard wire): applied to 1 cell(s)
+Γ£à W2-REC6[FW] (unknown-tool guard wire): applied to 1 cell(s)
+Γ£à W2-REC6[VIS] (unknown-tool guard wire): applied to 1 cell(s)
+Γ£à W2-DOCS1 (rename structured_response State channel): applied to 2 cell(s)
+Γ£à W2-DOCS2a (per-LLM timeouts): applied to 1 cell(s)
+Γ£à W2-BR8b (viz_tasks reducer): applied to 1 cell(s)
+Γ£à W2-BR8c (report_results reducer): applied to 1 cell(s)
+Γ£à W2-DOCS3 (drop dead create_react_agent import): applied to 1 cell(s)
+
+Γ£à Patched notebook saved to: IntelligentDataDetective_beta_v5_patched.ipynb
