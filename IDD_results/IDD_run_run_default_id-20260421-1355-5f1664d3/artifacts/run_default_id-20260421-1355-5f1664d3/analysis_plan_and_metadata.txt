@@ -1,0 +1,44 @@
+Goal: Provide a quick profile of sample_dirty and outline the next cleaning/visualization steps to enable full reporting.
+
+Quick profile (based on current data in df_id 'sample_dirty'):
+- Shape: (53 rows, 5 columns)
+- Dtypes: id int64, name object, value float64, category object, score float64
+- Missing values: id 0, name 0, value 6, category 0, score 3
+- Duplicates: 3 duplicate rows detected
+- Min/Max (numeric cols): value min 1.0, max 95.0; score min 0.1, max 0.93
+- Sample rows (first 5):
+  1: id=1, name=Alice, value=63.0, category=B, score=0.58
+  2: id=2, name=Bob, value=18.0, category=A, score=0.18
+  3: id=3, name=Carol, value=90.0, category=C, score=0.85
+  4: id=4, name=Dave, value=44.0, category=C, score=0.39
+  5: id=5, name=Eve, value=34.0, category=B, score=0.27
+
+Plan for next steps (full analysis and reporting):
+- Step 1: Quick profiling refinements
+  - Compute/confirm shape, missingness per column, per-row duplicates, and distributions (value, score).
+- Step 2: Cleaning actions (in-order, reversible)
+  - Deduplicate by id (keep row with fewest missing values)
+  - Normalize category labels (uppercase; map synonyms to canonical A/B/C)
+  - Impute numeric values (per-category median; fall back to global median)
+  - Impute missing names with 'Unknown'
+  - Detect and flag outliers (IQR) and winsorize to 1st/99th percentile
+- Step 3: Artifacts
+  - Save cleaned DataFrame as sample_dirty_cleaned and as sample_dirty_cleaned.csv
+  - Create cleaning_log.csv and cleaning_summary.json with detailed counts
+- Step 4: Visualizations (to be produced)
+  - Value/Score distributions (histograms/boxplots)
+  - Category distribution bar chart
+  - Scatter value vs score colored by category
+- Step 5: Report generation
+  - PDF, Markdown, HTML versions with provenance from cleaning_summary.json
+
+CleaningMetadata (draft; to be updated after cleaning completes):
+{
+  "reply_msg_to_supervisor": "Starting full analysis and cleaning for dataset 'sample_dirty'. Will output cleaned dataset and artifacts; visuals and reports to follow.",
+  "finished_this_task": false,
+  "expect_reply": false,
+  "steps_taken": [
+    "Preliminary profiling completed: shape, dtypes, missingness, duplicates, min/max captured."
+  ],
+  "data_description_after_cleaning": "Not yet cleaned; pending deduplication, imputation, outlier handling, and winsorization."
+}

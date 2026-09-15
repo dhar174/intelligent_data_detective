@@ -1,0 +1,147 @@
+89: # --- Patch cell idx 48 (the kagglehub download code cell) ---
+113: # --- Patch cell idx 81: fix final_report → report_results ---
+142: # --- Patch cell idx 7: fix _is_colab() false-positive on Windows ---
+173: # --- Patch cell idx 7 (also): fix bool_or reducer to handle None initial values ---
+206: # --- Patch cell idx 72: increase recursion_limit (120 is too low; data cleaner loops) ---
+233: # --- Fix B1: Add _viz_retry_count field to State class ---
+263: # --- Fix V1: Add _report_dispatched field to State class ---
+303: # --- Fix AR-3: Change report_paths reducer from operator.add → safe dict-merge lambda ---
+336: # --- Patch query_dataframe: align flat-arg function with nested args_schema ---
+424: # --- Patch initial_analysis_node: cap sub-agent recursion + recovery InitialDescription ---
+523: # --- Patch cell 57 (data_cleaner_node): cap sub-agent recursion + force finished_this_task=True ---
+725: # --- Patch cell 57 (analyst_node): cap recursion + recovery AnalysisInsights ---
+913: # --- Patch cell 57 (report_packager_node): cap recursion + recovery ReportResults ---
+1133: # --- Fix AB: add missing rg_vars keys (cleaning_metadata, visualization_results) in report_packager_node ---
+1179: # --- Fix AC: add use-last reducer to report_draft in State class (parallel update fix) ---
+1209: # --- Fix AD: fix route_to_writer + write_output_to_file to reach END when report is done ---
+1271: # --- Patch cell 46 (supervisor_node): deterministic data_cleaner → analyst routing ---
+1339: # --- Patch supervisor_node: shortcut 0 (initial_analysis → data_cleaner, bypasses first LLM call) ---
+1398: # --- Patch supervisor_node: protect routing_llm.invoke() with retry (Run 22 fix) ---
+1508: # --- Patch supervisor shortcut: add diagnostic logging (v2 upgrade) ---
+1553: # --- Patch supervisor_node: shortcuts 2 (analyst→viz) + 3 (viz→report_orchestrator) ---
+1631: # --- Fix D: SHORTCUT2 race gate — guard against re-entering visualization mid-round ---
+1681: # --- Fix B2: escape hatch — bail out of viz loop after 4 retries ---
+1754: # --- Fix V2: SHORTCUT3 race gate — guard against re-entering report pipeline mid-round ---
+1840: # --- Fix AH: SHORTCUT4 — all stages done → route directly to write_output_to_file ---
+1927: # --- Patch supervisor_node: P1-B remove stop=["\\r\\r\\n"] from first routing call ---
+1961: # --- Patch supervisor_node: P1-C fix routing["messages"] -> routing.get("messages", []) ---
+1992: # --- Patch supervisor_node: P1-D fix Router.model_validate(**routing) -> Router.model_validate(routing) ---
+2023: # --- Patch supervisor_node: P1-G replace assert isinstance with _routing_parse_fallback ---
+2281: # --- Patch viz_evaluator_node: safe invoke wrapper + fix undefined `fb` in quick-rule path ---
+2402: # --- Fix T: viz_evaluator_node no-tasks Command → plain dict ---
+2468: # --- Fix U: migrate_thread last_writer=None → InvalidUpdateError: Ambiguous update ---
+2526: # --- Fix E: viz_worker returns None — fix dict.update() chaining ---
+2739: # --- Patch final-state cell: add _log_final_state call ---
+2774: # --- Patch Cell 5 (MyChatOpenai): P1-A filter prompt_cache_key from OpenAI payload ---
+2809: # --- Patch main graph compile: P2-A replace MemorySaver with SqliteSaver ---
+2872: # --- Patch thread_id cell: P2-B save thread_id + P2-C/E resume support ---
+2957: # --- Patch stream cell (cell 75): P2-C/E resume support before stream_graph_output call ---
+3019: # --- Fix G: Remove conflicting edges in graph compilation cell ---
+3084: # --- Fix H: Expand assign_viz_workers path_map to include report_orchestrator ---
+3130: # --- Fix I: sandbox_filesystem — allow reads outside sandbox (only block writes) ---
+3188: # --- Fix J: inject matplotlib Agg backend + MPLCONFIGDIR inside sandbox before each REPL call ---
+3243: # --- Fix AI-1: Fix report_intermediate_progress description ---
+3287: # --- Fix AK-2: Add escalating call-counter warning to report_intermediate_progress ---
+3290: fixak2_patched = False
+3291: FIXAK2_GUARD = "# Fix AK-2: escalating counter in report_intermediate_progress"
+3292: FIXAK2_OLD = (
+3310: FIXAK2_DECL = '_rip_counts: dict = {}  # Fix AK-2: module-level call counter for report_intermediate_progress\n'
+3312: FIXAK2_DECL_ANCHOR = '@tool("report_intermediate_progress")\ndef report_intermediate_progress(\n'
+3313: FIXAK2_NEW = (
+3349: if FIXAK2_GUARD in src:
+3351: fixak2_patched = True
+3353: if FIXAK2_OLD in src:
+3354: new_src = src.replace(FIXAK2_OLD, FIXAK2_NEW, 1)
+3356: if FIXAK2_DECL not in new_src and FIXAK2_DECL_ANCHOR in new_src:
+3357: new_src = new_src.replace(FIXAK2_DECL_ANCHOR, FIXAK2_DECL + '@tool("report_intermediate_progress")\ndef report_intermediate_progress(\n', 1)
+3362: fixak2_patched = True
+3366: if not fixak2_patched:
+3369: # --- Fix AI-2: Add `respond` tool termination instruction to analyst and data_cleaner prompts ---
+3372: import re as _re_fixai2
+3373: fixai2_patched = False
+3374: FIXAI2_GUARD = "# Fix AI-2: respond tool termination instruction added"
+3375: RESPOND_INSTRUCTION = (
+3386: FIXAI2_ANALYST_OLD = "Return your structured result using the schema:\n{output_format}\n\n## Memories"
+3387: FIXAI2_ANALYST_NEW = RESPOND_INSTRUCTION + "Return your structured result using the schema:\n{output_format}\n\n## Memories"
+3389: FIXAI2_MINI_OLD = "evidence (ids/metrics/slices).\n\nOUTPUT\n{output_format}\nInclude: descriptive_stats"
+3390: FIXAI2_MINI_NEW = "evidence (ids/metrics/slices).\n\nOUTPUT\n" + RESPOND_INSTRUCTION + "{output_format}\nInclude: descriptive_stats"
+3392: FIXAI2_DC_OLD = "STOP using tools and finalize!\n\nOUTPUT\n{output_format}\nAlso include"
+3393: FIXAI2_DC_NEW = "STOP using tools and finalize!\n\nOUTPUT\n" + RESPOND_INSTRUCTION + "{output_format}\nAlso include"
+3400: if FIXAI2_GUARD in src:
+3402: fixai2_patched = True
+3406: if FIXAI2_ANALYST_OLD in new_src:
+3407: new_src = new_src.replace(FIXAI2_ANALYST_OLD, FIXAI2_ANALYST_NEW, 1)
+3411: if FIXAI2_MINI_OLD in new_src:
+3412: new_src = new_src.replace(FIXAI2_MINI_OLD, FIXAI2_MINI_NEW, 1)
+3416: if FIXAI2_DC_OLD in new_src:
+3417: new_src = new_src.replace(FIXAI2_DC_OLD, FIXAI2_DC_NEW, 1)
+3425: f"# {FIXAI2_GUARD}\nanalyst_prompt_template_initial = ",
+3432: fixai2_patched = True
+3434: if not fixai2_patched:
+3437: # --- Fix AI-2b: Add `respond` termination to analyst_prompt_template_initial + report_generator ---
+3439: fixai2b_patched = False
+3440: FIXAI2B_GUARD = "# Fix AI-2b: respond termination for initial/report prompts"
+3442: FIXAI2B_IA_OLD = (
+3445: FIXAI2B_IA_NEW = (
+3447: + RESPOND_INSTRUCTION
+3451: FIXAI2B_RG_OLD = (
+3454: FIXAI2B_RG_NEW = (
+3456: + RESPOND_INSTRUCTION
+3465: if FIXAI2B_GUARD in src:
+3467: fixai2b_patched = True
+3471: if FIXAI2B_IA_OLD in new_src:
+3472: new_src = new_src.replace(FIXAI2B_IA_OLD, FIXAI2B_IA_NEW, 1)
+3476: if FIXAI2B_RG_OLD in new_src:
+3477: new_src = new_src.replace(FIXAI2B_RG_OLD, FIXAI2B_RG_NEW, 1)
+3484: f"# {FIXAI2B_GUARD}\nanalyst_prompt_template_initial = ",
+3491: fixai2b_patched = True
+3493: if not fixai2b_patched:
+3496: # --- Fix AI-2c: Add `respond` termination to data_cleaner_prompt_template (MAIN) ---
+3500: fixai2c_patched = False
+3501: FIXAI2C_GUARD = "# Fix AI-2c: respond termination for data_cleaner main prompt"
+3502: FIXAI2C_DC_OLD = (
+3506: FIXAI2C_DC_NEW = (
+3508: + RESPOND_INSTRUCTION
+3517: if FIXAI2C_GUARD in src:
+3519: fixai2c_patched = True
+3523: if FIXAI2C_DC_OLD in new_src:
+3524: new_src = new_src.replace(FIXAI2C_DC_OLD, FIXAI2C_DC_NEW, 1)
+3531: f"# {FIXAI2C_GUARD}\ndata_cleaner_prompt_template = ",
+3538: fixai2c_patched = True
+3540: if not fixai2c_patched:
+3608: # --- Fix M: visualization_orchestrator List[VizSpec] iteration ---
+3689: # --- Fix O-1: MANDATORY_SPEC_KEYS "type" → "viz_type" ---
+3717: # --- Fix O-2: _normalize_viz_spec — fix setdefault(None) + return model_copy ---
+3786: # --- Fix O-3: visualization_orchestrator — fix dict/VizSpec attribute access + normalization loop ---
+3900: # --- Fix O-4: assign_viz_workers — dict coercion + empty viz_specs routing ---
+3959: # --- Fix AM-1: assign_viz_workers — pass cleaning_metadata + analysis_insights in Send state ---
+4006: # --- Fix AN-1: guard state["final_turn_msgs_list"][-1] in viz_worker ---
+4041: # --- Fix AO-1: simplify bins type in create_histogram to valid JSON schema ---
+4075: # --- Fix AO-2: binrange RangeSpec → Optional[List[float]] ---
+4104: # --- Fix AO-3: x_range RangeSpec → Optional[List[float]] ---
+4133: # --- Fix AO-4: binwidth BinWidthSpec → Optional[float] (np.ndarray/pd.Series → invalid schema) ---
+4162: # --- Fix AO-5: RangeSpec type alias → Optional[List[float]] (fixes scatter/box/violin) ---
+4203: # --- Fix AO-6: Array1D removes np.ndarray / pd.Series (invalid OpenAI schema) ---
+4244: # --- Fix AO-7: create_correlation_heatmap figsize Tuple → List[float] ---
+4274: # --- Fix AP-1: increase report_orchestrator recursion_limit to 80 ---
+4304: # --- Fix AP-2: increase report_packager recursion_limit to 80 ---
+4333: # --- Fix AO-8: create_box_plot whis Tuple → List[float] ---
+4372: # --- Fix P-1: viz_worker unhashable set literal crash ---
+4406: # --- Fix P-2: viz_worker spec.viz_instructions.strip() None guard ---
+4447: # --- Fix Q: Add 'lambda a,b:b' reducers to last_agent_* State fields ---
+4551: # --- Fix R: Fix Optional[Annotated[...]] → Annotated[Optional[...], reducer] ---
+4605: # --- Fix S: add use-last reducers for remaining fields written by parallel viz_workers ---
+4662: # --- Fix W1: route_viz retry-aware — accept partial viz after first round ---
+4729: # --- Fix W2: viz_evaluator quick-rule accepts partial results (len(results) >= 1) ---
+4782: # --- Fix W3: report_orchestrator safe invoke wrapper ---
+4965: # --- Fix X1: report_outline use-last reducer in State TypedDict ---
+4996: # --- Fix X2: Expand _in_report_round to block premature SHORTCUT3 ---
+5035: # --- Fix X3: Fix state["_config"] → state.get("_config") in update_memory_with_kind ---
+5063: # --- Fix X3-rg: Add cleaning_metadata and missing template vars to rg_vars in report_orchestrator ---
+5160: # --- Fix Y: wrap supervisor planning_supervisor_llm.invoke() calls in try-except ---
+5207: # --- Fix Z: wrap ALL remaining unprotected LLM invoke calls in supervisor_node ---
+5426: # --- Fix AV: wrap manage_memory in visualization_tools to strip id on create ---
+5494: # --- Fix AW: save_viz_for_state DataVisualization missing required supervisor fields ---
+5582: # --- Fix AA: section_worker receives dict from dispatch_sections, needs SectionOutline conversion ---
+5622: # --- Patch all cells: replace input() calls that block headless execution ---
+5642: # --- Fix AX: Add post-processing cell to inject PNGs into HTML after run completes ---
