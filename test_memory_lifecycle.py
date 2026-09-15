@@ -427,6 +427,25 @@ class TestMemoryLifecycle(unittest.TestCase):
         self.assertIn("metrics", report)
         self.assertIn("kind_status", report)
         self.assertIn("analysis", report["kind_status"])
+
+    def test_grouped_search_falls_back_for_exact_namespace_store(self):
+        """Parent-namespace grouping should fall back for exact-match stores."""
+        engine = MemoryPolicyEngine(self.store, debug=True)
+        record = MemoryRecord(
+            id="fallback-test",
+            kind="analysis",
+            text="Test grouped fallback",
+            base_importance=0.5
+        )
+        engine.insert(record)
+        self.store.search_calls.clear()
+
+        grouped = engine._get_all_memories_grouped_by_kind()
+
+        self.assertIn("analysis", grouped)
+        self.assertEqual(grouped["analysis"][0]["id"], "fallback-test")
+        self.assertEqual(self.store.search_calls[0][0], ("memories",))
+        self.assertIn(("memories", "analysis"), [call[0] for call in self.store.search_calls])
     
     def test_backward_compatibility(self):
         """Test that existing functions still work."""
@@ -513,6 +532,32 @@ class TestMemoryLifecycle(unittest.TestCase):
         # Test recalculation
         updated_count = recalculate_importance(self.store, ["analysis"])
         self.assertGreater(updated_count, 0)
+
+    def test_recalculate_importance_subset_avoids_parent_namespace_scan(self):
+        """Subset recalculation should only query requested kinds."""
+        engine = MemoryPolicyEngine(self.store)
+        for record in (
+            MemoryRecord(
+                id="analysis-only",
+                kind="analysis",
+                text="Analysis memory",
+                base_importance=0.5
+            ),
+            MemoryRecord(
+                id="conversation-only",
+                kind="conversation",
+                text="Conversation memory",
+                base_importance=0.5
+            ),
+        ):
+            engine.insert(record)
+
+        self.store.search_calls.clear()
+        updated_count = recalculate_importance(self.store, ["analysis"])
+
+        self.assertEqual(updated_count, 1)
+        self.assertEqual([call[0] for call in self.store.search_calls], [("memories", "analysis")])
+        self.assertGreaterEqual(self.store.search_calls[0][2], 1)
 
 
 class TestMemoryIntegrationLifecycle(unittest.TestCase):

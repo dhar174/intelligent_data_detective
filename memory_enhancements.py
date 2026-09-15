@@ -170,6 +170,25 @@ def load_memory_policy(config_path: Optional[str] = None) -> tuple[Dict[str, Mem
 
 # Global policy configuration
 MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
+KNOWN_MEMORY_KINDS = (
+    "conversation", "analysis", "cleaning",
+    "visualization", "insights", "errors"
+)
+
+def _configured_memory_search_limit(kinds: Optional[List[str]] = None) -> int:
+    """Derive search limits from configured retention and retrieval budgets."""
+    selected_kinds = kinds or list(KNOWN_MEMORY_KINDS)
+    return max(
+        1,
+        sum(
+            max(
+                1,
+                MEMORY_POLICIES.get(kind, MemoryPolicy()).max_items,
+                MEMORY_CONFIG["kinds"].get(kind, {}).get("limit", MEMORY_CONFIG["fallback_limit"])
+            )
+            for kind in selected_kinds
+        ),
+    )
 
 def estimate_importance(kind: str, text: str) -> float:
     """
@@ -244,35 +263,56 @@ class MemoryPolicyEngine:
         if debug:
             self.logger.setLevel(logging.DEBUG)
 
-    def _get_all_memories_grouped_by_kind(self, limit: int = 60000) -> Dict[str, List[Dict[str, Any]]]:
-        """Fetch all memories under ('memories',) and group them by kind."""
+    def _group_memories_by_kind(self, items: List[Any]) -> Dict[str, List[Dict[str, Any]]]:
+        """Group search results by memory kind."""
+        items_by_kind = {}
+
+        for item in items:
+            item_value = item.value if hasattr(item, "value") else item
+            if not isinstance(item_value, dict):
+                continue
+
+            kind = item_value.get("kind")
+            if not kind and hasattr(item, "namespace") and len(item.namespace) >= 2:
+                kind = item.namespace[1]
+
+            if kind:
+                if kind not in items_by_kind:
+                    items_by_kind[kind] = []
+
+                if "id" not in item_value and hasattr(item, "key"):
+                    item_value = item_value.copy()
+                    item_value["id"] = item.key
+
+                items_by_kind[kind].append(item_value)
+
+        return items_by_kind
+
+    def _get_all_memories_grouped_by_kind(self, limit: Optional[int] = None) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch all memories under ('memories',), with exact-namespace fallback."""
         try:
-            all_items = self.store.search(("memories",), query="", limit=limit)
-            items_by_kind = {}
+            search_limit = limit or _configured_memory_search_limit()
+            all_items = self.store.search(("memories",), query="", limit=search_limit)
+            items_by_kind = self._group_memories_by_kind(all_items)
+            if items_by_kind:
+                return items_by_kind
 
-            for item in all_items:
-                # Handle both dict and potential SearchItem objects
-                item_value = item.value if hasattr(item, "value") else item
-                if not isinstance(item_value, dict):
-                    continue
+            fallback_items_by_kind = {}
+            for kind in KNOWN_MEMORY_KINDS:
+                namespace = ("memories", kind)
+                items = self.store.search(
+                    namespace, query="", limit=_configured_memory_search_limit([kind])
+                )
+                grouped_items = self._group_memories_by_kind(items)
+                if grouped_items.get(kind):
+                    fallback_items_by_kind[kind] = grouped_items[kind]
 
-                # Determine kind from data or from the namespace if available
-                kind = item_value.get("kind")
-                if not kind and hasattr(item, "namespace") and len(item.namespace) >= 2:
-                    kind = item.namespace[1]
+            if fallback_items_by_kind:
+                self.logger.warning(
+                    "Falling back to per-kind memory searches because parent-namespace search returned no results."
+                )
 
-                if kind:
-                    if kind not in items_by_kind:
-                        items_by_kind[kind] = []
-
-                    # Ensure the dict contains necessary fields
-                    if "id" not in item_value and hasattr(item, "key"):
-                        item_value = item_value.copy()
-                        item_value["id"] = item.key
-
-                    items_by_kind[kind].append(item_value)
-
-            return items_by_kind
+            return fallback_items_by_kind
         except Exception as e:
             self.logger.error(f"Failed to fetch and group memories: {e}")
             raise
@@ -410,7 +450,7 @@ class MemoryPolicyEngine:
             report = PruneReport()
             
             # Fetch all items under the memories base namespace in a single call
-            items_by_kind = self._get_all_memories_grouped_by_kind(limit=60000)
+            items_by_kind = self._get_all_memories_grouped_by_kind()
             if not items_by_kind:
                 return report
 
@@ -994,7 +1034,7 @@ def memory_policy_report(store: InMemoryStore) -> Dict[str, Any]:
         
         # Fetch all memories once and group by kind
         engine = MemoryPolicyEngine(store)
-        items_by_kind = engine._get_all_memories_grouped_by_kind(limit=60000)
+        items_by_kind = engine._get_all_memories_grouped_by_kind()
 
         # Check each kind against its policy
         for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
@@ -1103,10 +1143,21 @@ def recalculate_importance(store: InMemoryStore, kinds: Optional[List[str]] = No
     """
     try:
         engine = MemoryPolicyEngine(store)
-        kinds_to_process = set(kinds) if kinds else {"conversation", "analysis", "cleaning", "visualization", "insights", "errors"}
+        kinds_to_process = set(kinds) if kinds else set(KNOWN_MEMORY_KINDS)
 
-        # Fetch all items under the memories base namespace in a single call
-        items_by_kind = engine._get_all_memories_grouped_by_kind(limit=60000)
+        if kinds:
+            items_by_kind = {}
+            for kind in kinds_to_process:
+                namespace = ("memories", kind)
+                items_by_kind[kind] = engine._group_memories_by_kind(
+                    store.search(
+                        namespace,
+                        query="",
+                        limit=_configured_memory_search_limit([kind]),
+                    )
+                ).get(kind, [])
+        else:
+            items_by_kind = engine._get_all_memories_grouped_by_kind()
 
         # Convert grouped items to records
         records_by_kind = {}
