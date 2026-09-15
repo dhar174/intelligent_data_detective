@@ -12747,6 +12747,75 @@ def main():
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
 
+    # --- W14I-TOOL-ERROR-HARDENING: close scoped error-handling review gaps in data tools ---
+    _W14I_TOOL_ERROR_GUARD = "# W14I-TOOL-ERROR-HARDENING"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if (
+            "# Error Handling and Validation Framework" not in src
+            or "def drop_column(df_id: str, column_name: str) -> str:" not in src
+            or "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:" not in src
+        ):
+            continue
+        if _W14I_TOOL_ERROR_GUARD in src:
+            print(f"ℹ️  Cell idx {idx}: W14I-TOOL-ERROR-HARDENING already applied")
+            break
+
+        src = src.replace(
+            "            df_id = None\n\n            # Check first positional argument\n",
+            "            df_id = None\n            df_id_supplied = False\n\n            # Check first positional argument\n",
+            1,
+        )
+        src = src.replace(
+            "def handle_tool_errors(func):\n    \"\"\"Decorator for consistent error handling across tool functions.\n\n    This decorator provides standardized error handling, DataFrame validation,\n    and user-friendly error messages for all tool functions.\n\n    Args:\n        func: The tool function to wrap\n\n    Returns:\n        The wrapped function with error handling\n\n    Examples:\n        >>> @handle_tool_errors\n        ... def my_tool(df_id: str) -> str:\n        ...     # tool implementation\n        ...     return \"success\"\n    \"\"\"\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n",
+            "def handle_tool_errors(func):\n    \"\"\"Decorator for consistent error handling across tool functions.\n\n    This decorator provides standardized error handling, DataFrame validation,\n    and user-friendly error messages for all tool functions.\n\n    Args:\n        func: The tool function to wrap\n\n    Returns:\n        The wrapped function with error handling\n\n    Examples:\n        >>> @handle_tool_errors\n        ... def my_tool(df_id: str) -> str:\n        ...     # tool implementation\n        ...     return \"success\"\n    \"\"\"\n    try:\n        func_signature = inspect.signature(func)\n    except (TypeError, ValueError):\n        func_signature = None\n\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n",
+            1,
+        )
+        src = src.replace(
+            "def validate_dataframe_exists(df_id: str) -> bool:\n    \"\"\"Validates the existence and validity of a dataframe by its ID.\n\n    Args:\n        df_id: The ID of the DataFrame to validate\n\n    Returns:\n        bool: True if DataFrame exists and is valid, False otherwise\n\n    Examples:\n        >>> if validate_dataframe_exists('my_df_id'):\n        ...     # proceed with operations\n        ...     pass\n    \"\"\"\n    if not df_id or not isinstance(df_id, str):\n        return False\n\n    try:\n        # Check if DataFrame exists in registry\n        df = global_df_registry.get_dataframe(df_id)\n        if df is not None:\n            return not df.empty  # DataFrame exists and is not empty\n\n        # Try to load from raw path if not in registry\n        raw_path = global_df_registry.get_raw_path_from_id(df_id)\n        if raw_path and os.path.exists(raw_path):\n            try:\n                df = pd.read_csv(raw_path)\n                if df is not None and not df.empty:\n                    # Register the loaded DataFrame\n                    global_df_registry.register_dataframe(df, df_id, raw_path)\n                    return True\n            except Exception:\n                return False\n\n        return False\n    except Exception:\n        return False\n",
+            "def validate_dataframe_exists(df_id: str) -> bool:\n    \"\"\"Validates the existence and validity of a dataframe by its ID.\n\n    Args:\n        df_id: The ID of the DataFrame to validate\n\n    Returns:\n        bool: True if DataFrame exists and is valid, False otherwise\n\n    Examples:\n        >>> if validate_dataframe_exists('my_df_id'):\n        ...     # proceed with operations\n        ...     pass\n    \"\"\"\n    if not isinstance(df_id, str) or not df_id.strip():\n        return False\n\n    df = global_df_registry.get_dataframe(df_id, load_if_not_exists=True)\n    return df is not None and not df.empty\n",
+            1,
+        )
+        src = src.replace(
+            "            if args and isinstance(args[0], str):\n                df_id = args[0]\n                df_id_supplied = True\n            # Check for df_id in keyword arguments\n            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n                df_id_supplied = True\n            # For functions with params as first arg, check params.df_id\n            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n                df_id_supplied = True\n\n            # Validate DataFrame exists for all explicitly supplied IDs.\n            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):\n                return _tool_error(\n                    func.__name__,\n                    \"DataFrame ID must be a non-empty string.\",\n                    \"Provide the ID of a registered, non-empty DataFrame.\",\n                )\n            if df_id_supplied and not validate_dataframe_exists(df_id):\n",
+            "            try:\n                bound_args = (\n                    func_signature.bind_partial(*args, **kwargs)\n                    if func_signature is not None\n                    else None\n                )\n            except TypeError as exc:\n                return _tool_error(\n                    func.__name__,\n                    f\"Invalid arguments: {exc}\",\n                    \"Check the operation parameters and try again.\",\n                )\n\n            # Bind the declared df_id parameter first, even for non-string values.\n            if bound_args and 'df_id' in bound_args.arguments:\n                df_id = bound_args.arguments['df_id']\n                df_id_supplied = True\n            # Check for df_id in keyword arguments\n            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n                df_id_supplied = True\n            # For functions with params as first arg, check params.df_id\n            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n                df_id_supplied = True\n\n            # Validate DataFrame exists for all explicitly supplied IDs.\n            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):\n                return _tool_error(\n                    func.__name__,\n                    \"DataFrame ID must be a non-empty string.\",\n                    \"Provide the ID of a registered, non-empty DataFrame.\",\n                )\n            if df_id_supplied and not validate_dataframe_exists(df_id):\n",
+            1,
+        )
+        src = src.replace(
+            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception as e:\n                    print(f\"Error loading DataFrame from {path}: {e}\")\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
+            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception:\n                    logging.exception(\"Error loading DataFrame from %s\", path)\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
+            1,
+        )
+        src = src.replace(
+            "    updated_df = df.drop(columns=[column_name])\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return \"Column dropped successfully. New columns: \" + \", \".join(\n        updated_df.columns.tolist()\n    )\n",
+            "    updated_df = df.drop(columns=[column_name])\n    new_columns = \", \".join(map(str, updated_df.columns.tolist()))\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return f\"Column dropped successfully. New columns: {new_columns}\"\n",
+            1,
+        )
+        src = src.replace(
+            "    else:\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            if isinstance(condition_list, (list, tuple))\n            for condition in condition_list\n        ]\n",
+            "    else:\n        invalid_selector_keys = [\n            key\n            for key, condition_list in conditions.items()\n            if not isinstance(condition_list, (list, tuple))\n        ]\n        if invalid_selector_keys:\n            return _tool_error(\n                operation,\n                \"The row selector dictionary contains non-list values.\",\n                \"Provide only list/tuple query clauses for each selector key.\",\n            )\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            for condition in condition_list\n        ]\n",
+            1,
+        )
+        src = src.replace(
+            "    except (KeyError, SyntaxError, ValueError, TypeError) as exc:\n",
+            "    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:\n",
+            1,
+        )
+        if _W14I_TOOL_ERROR_GUARD not in src:
+            src = src.replace(
+                "# Error Handling and Validation Framework\n",
+                "# Error Handling and Validation Framework\n# W14I-TOOL-ERROR-HARDENING\n",
+                1,
+            )
+
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14I-TOOL-ERROR-HARDENING fixes scoped tool validation and copy-before-register safety")
+        break
+
     # ============================  END WAVE 4 PATCHES  ===========================
 
     # ============================  END WAVE 2 PATCHES  ===========================
