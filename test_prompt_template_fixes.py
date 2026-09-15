@@ -7,14 +7,18 @@ import unittest
 import json
 import re
 from pathlib import Path
-
+import os
 
 class TestPromptTemplateFormattingFixes(unittest.TestCase):
     """Test that prompt template formatting issues have been fixed in the notebook."""
     
     def setUp(self):
         """Load the notebook for testing."""
-        self.notebook_path = Path("/home/runner/work/intelligent_data_detective/intelligent_data_detective/IntelligentDataDetective_beta_v4.ipynb")
+        notebook_path_str = os.environ.get(
+            "NOTEBOOK_PATH",
+            str(Path(__file__).parent / "IntelligentDataDetective_beta_v4.ipynb")
+        )
+        self.notebook_path = Path(notebook_path_str)
         with open(self.notebook_path, 'r', encoding='utf-8') as f:
             self.notebook = json.load(f)
     
