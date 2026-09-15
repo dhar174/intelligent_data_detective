@@ -361,7 +361,7 @@ def main():
     """Main validation function."""
     notebook_path_str = os.environ.get(
         "NOTEBOOK_PATH",
-        str(Path(__file__).parent / "IntelligentDataDetective_beta_v4.ipynb")
+        str(Path(__file__).parent / "IntelligentDataDetective_beta_v5.ipynb")
     )
     notebook_path = Path(notebook_path_str)    
     validator = PromptTemplateValidator(notebook_path)
