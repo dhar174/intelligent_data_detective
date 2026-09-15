@@ -14,8 +14,8 @@ In addition, several of the requirements from Epic #119 (Phase 6 Content-Quality
 ## Detail: Missing Implementations and Regressions
 
 ### 1. Error Handling and Validation (Issues #20, #26)
-- **Status:** **Drifted / Missing from `idd_core.py`**
-- **Details:** The `handle_tool_errors` decorator and DataFrame validation logic (`validate_dataframe_exists`) were added to the source notebook and `_patch_notebook.py` (lines ~12770) but were never synced to `idd_core.py`. This means tests running against `idd_core.py` are testing code that lacks the expected robust error boundaries.
+- **Status:** **Drifted / Out of Sync**
+- **Details:** `idd_core.py` defines both `validate_dataframe_exists` and `handle_tool_errors`, but these implementations lag the patcher's hardened behavior: validation retains the legacy direct-CSV reload path, and the decorator lacks the newer bound-argument and structured-error handling. Tests importing `idd_core.py` therefore do not exercise the latest notebook behavior.
 
 ### 2. Duplicate Functions Deduplication (Issue #38)
 - **Status:** **Drifted / Out of Sync**
@@ -26,16 +26,16 @@ In addition, several of the requirements from Epic #119 (Phase 6 Content-Quality
 - **Details:** The enhanced memory system (e.g., `retrieve_memories_with_ranking`, namespaces, and `MemoryPolicyEngine`) is correctly reflected in the notebook and `memory_enhancements.py`. However, `idd_core.py` still relies on legacy structures and doesn't contain these critical updates. The patcher was not updated to bridge this gap in the core extraction.
 
 ### 4. Phase 6/E: Fix `file_writer` Pipeline (Issue #116)
-- **Status:** **Incomplete / Regression**
-- **Details:** The issue explicitly required restricting `file_writer_tools` to *only* keep HTML/MD/PDF write tools to stop the LLM from spamming markers. However, looking at the patched notebook and the source notebook, `list_visualizations` and `get_visualization` are still being appended to `file_writer_tools`. The tool list was not locked down as requested.
+- **Status:** **Superseded / Original Tool Constraint Not Adopted**
+- **Details:** `list_visualizations` and `get_visualization` remain in `file_writer_tools`, so the original E2 implementation constraint was not applied literally. However, Issue #116 was closed as completed/superseded after the W14 proof produced the canonical report artifacts with no marker/status files and passed both final validators; this is design drift from the original task, not evidence of an active regression.
 
 ### 5. Phase 6/F: Tighten Supervisor Completion Gate (RC4) (Issue #117)
-- **Status:** **Incomplete / Regression**
-- **Details:** The requirement was to replace the simple boolean flag (`report_generator_complete`) check in the `supervisor_node` (or routing logic) with content validation: checking that `report_text` length >= 1000, `viz_paths` count >= analyst recommended, and `written_sections` count >= 4. This validation logic does not exist in the source notebook, the patcher, or the compiled state graph. The application still purely relies on `bool(state.get("report_generator_complete"))`.
+- **Status:** **Superseded / Patch-to-Output Drift**
+- **Details:** The source and committed patched graph do not contain the full Issue #117 final-completion gate, and the patched `route_from_supervisor` can still fast-forward on `report_generator_complete` plus `report_results`. However, `_patch_notebook.py` does contain W11 route-readiness logic and a W13N file-writer guard for at least 1,000 content characters and four sections. Issue #117 was closed as completed/superseded by the W14 proof, so document the stale generated output and remaining gate mismatch rather than claiming validation is absent everywhere.
 
 ### 6. LangSmith Tracing Environment (Issue #125)
-- **Status:** **Partially Implemented**
-- **Details:** The issue asks to make the `run_notebook_live.py` load LangSmith tracing variables. The variables are read in the runner, but it was noted in the issue that the `langsmith` CLI isn't installed properly in the environment ("langsmith command not found"), which may still prevent full tracing capability unless the environment definition itself is updated.
+- **Status:** **Resolved**
+- **Details:** `run_notebook_live.py` loads the LangSmith/LangChain tracing variables and verifies their presence in the child kernel without exposing secrets. Issue #125 was closed after dashboard activity and SDK trace queries were confirmed; the optional CLI may still be unavailable locally, but that does not prevent SDK-based tracing.
 
 ## Conclusion and Next Steps
 
