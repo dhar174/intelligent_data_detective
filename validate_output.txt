@@ -1,0 +1,37 @@
+Γ£à Graph compiled OK
+   notebook : IntelligentDataDetective_beta_v5_patched.ipynb
+   compile cell index: 60
+   elapsed  : 15.34s
+
+========================================================================
+Graph topology
+========================================================================
+nodes (15):
+  - EMERGENCY_MSG
+  - FINISH
+  - analyst
+  - data_cleaner
+  - file_writer
+  - initial_analysis
+  - report_join
+  - report_orchestrator
+  - report_packager
+  - report_section_worker
+  - supervisor
+  - visualization
+  - viz_evaluator
+  - viz_join
+  - viz_worker
+edges: 33  (conditional: 21)
+
+Γ£à no unreachable nodes
+Γ£à no dead-end nodes
+
+========================================================================
+State schema
+========================================================================
+fields          : 70
+with reducers   : 39
+plain (no reducer): 31
+
+ΓÜá  runtime 15.34s exceeded soft budget 10.0s
