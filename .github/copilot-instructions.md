@@ -1,271 +1,129 @@
 # Intelligent Data Detective - GitHub Copilot Instructions
 
-**ALWAYS follow these instructions first and fallback to additional search and context gathering only if the information here is incomplete or found to be in error.**
-
-## Working Effectively
-
-Bootstrap, build, and test the repository:
+## Build, Test, and Lint
 
 ```bash
-# Install core dependencies (takes ~2-3 minutes)
-pip install langchain langchain-core langchain-openai langchain_experimental langgraph
-pip install pandas numpy scipy scikit-learn matplotlib seaborn
-pip install pydantic python-dotenv tiktoken openpyxl xhtml2pdf
-pip install tavily-python chromadb joblib
+# Run all tests
+python3 -m pytest -v
+# Expected: 22/22 pass in test_intelligent_data_detective.py, 15/16 in test_error_handling_framework.py (1 known edge-case failure)
 
-# Install development dependencies (takes ~30 seconds)
-pip install pytest black flake8 mypy jupyter
+# Run a single test
+python3 -m pytest test_intelligent_data_detective.py::TestDataFrameRegistry::test_cache_lru_eviction -v
 
-# Run tests to validate setup (takes ~1 second)
-python3 -m pytest test_intelligent_data_detective.py -v
-# Expected: 22 tests pass
-
-# Test error handling framework (takes ~1 second, 1 test may fail - this is acceptable)
-python3 -m pytest test_error_handling_framework.py -v
-# Expected: 15/16 tests pass (1 known failure in edge case)
+# Format and lint
+black test_intelligent_data_detective.py test_error_handling_framework.py
+flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
 ```
 
-**NEVER CANCEL** any long-running operations. Set timeout to 60+ minutes for full workflow execution.
+**Full workflow execution requires API keys and takes 6–25 minutes. Never cancel it.**
 
-## Core Architecture
-
-This is a **Jupyter notebook-based multi-agent system** using LangChain and LangGraph:
-
-- **Main implementation**: `IntelligentDataDetective_beta_v5.ipynb` (27 cells)
-- **Multi-agent workflow**: Data Cleaner → Analyst → Visualization → Report Generator
-- **Execution time**: 6-25 minutes for complete analysis (NEVER CANCEL)
-- **API requirements**: OpenAI API key (required), Tavily API key (optional)
-
-## Environment Setup
-
-**Prerequisites:**
-- Python 3.10+ (validated on 3.12.3)
-- OpenAI API key for LLM operations
-- Tavily API key (optional, for web search features)
-
-**Required environment variables:**
 ```bash
 export OPENAI_API_KEY="your-openai-api-key"
-export TAVILY_API_KEY="your-tavily-api-key"  # Optional
+export TAVILY_API_KEY="your-tavily-api-key"  # Optional – enables web search
+
+export IDD_NOTEBOOK="IntelligentDataDetective_beta_v5_patched.ipynb"
+export IDD_SAMPLE_DATASET="retail_orders"
+python run_notebook_live.py
+
+python validate_run.py --latest --log-path notebook_run_log.txt --window 180
+python validate_artifact_quality.py --latest
 ```
 
-## Running and Testing
+## Architecture
 
-**Primary execution method** - Jupyter notebook:
-```bash
-# Start Jupyter (takes ~5-10 seconds)
-jupyter notebook IntelligentDataDetective_beta_v5.ipynb
+The active W14 runnable notebook is `IntelligentDataDetective_beta_v5_patched.ipynb` (99 cells). Notebook behavior changes are made in `_patch_notebook.py`, which regenerates the patched notebook from `IntelligentDataDetective_beta_v5.ipynb`; do not hand-edit the generated patched notebook. The W14 completion baseline is `IDD_run_run_default_id-20260504-1338-b3079aea`, validated by `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9. Key source areas:
 
-# OR for JupyterLab
-jupyter lab IntelligentDataDetective_beta_v5.ipynb
+| Cell | Purpose |
+|------|---------|
+| Area | Purpose |
+|------|---------|
+| `_patch_notebook.py` | Durable patch source; regenerates the patched notebook |
+| `IntelligentDataDetective_beta_v5_patched.ipynb` | Committed runnable W14 notebook |
+| Early notebook cells | Environment setup, imports, `MyChatOpenai`, models, `State`, `DataFrameRegistry` |
+| Tool cells | All tools + `@handle_tool_errors` decorator and per-agent tool lists |
+| Agent/graph cells | Agent construction, supervisor routing, LangGraph graph wiring |
+| Final cells | Dataset selection, execution entrypoint, report/artifact generation |
+
+**Agent pipeline** (supervisor-worker pattern via LangGraph):
+
+```
+Supervisor → Initial Analysis → Data Cleaner → Analyst → Visualization
+          → Report Orchestrator → Section Workers → Report Packager → File Writer
 ```
 
-**Quick validation** (no API keys needed):
-```bash
-# Test core imports and basic functionality (takes ~3 seconds)
-python3 -c "
-import pandas as pd
-import numpy as np
-from langchain_core.messages import HumanMessage
-from langgraph.graph import StateGraph
-print('All core dependencies working correctly')
-"
+The `State` TypedDict is the shared state object passed through every node. Agents communicate back to the supervisor via `reply_msg_to_supervisor`, `finished_this_task`, and `expect_reply` fields on their response models.
+
+## Key Conventions
+
+### Pydantic models for agent responses
+All agent output models extend `BaseNoExtrasModel` (`model_config = ConfigDict(extra="forbid")`), which requires three base fields: `reply_msg_to_supervisor: str`, `finished_this_task: bool`, `expect_reply: bool`. Omitting any of these breaks supervisor routing.
+
+### State reducers
+The `State` TypedDict uses custom reducers instead of plain annotations. Examples:
+- `Annotated[Optional[AnalysisConfig], keep_first]` – first non-None value wins; never overwritten
+- `Annotated[Optional[Plan], _reduce_plan_keep_sorted]` – merge-sorted plan steps
+- `Annotated[Sequence[BaseMessage], operator.add]` – messages accumulate (standard LangGraph pattern)
+
+Do not use plain field assignments for state fields that have these reducers, or state merges will silently behave incorrectly.
+
+### Visualization fan-in
+W14H intentionally rebuilds visualization fan-in in `viz_join` from `viz_results`, `visualization_results`, `viz_paths`, and discovered PNG artifacts before evaluation. Preserve this union behavior; relying only on the last-writer `visualization_results` channel can drop parallel worker outputs.
+
+### Tool implementation pattern
+Every tool in Cell 13 follows this signature and decorator:
+```python
+@handle_tool_errors
+def my_tool(df_id: str, ...) -> tuple[str, dict]:
+    validate_dataframe_exists(df_id)  # raises on invalid
+    ...
+    return result_message, artifact_dict
 ```
+`@handle_tool_errors` catches exceptions and returns a standardised error string so the agent can recover. `validate_dataframe_exists()` must be the first call in any tool that touches a DataFrame.
 
-**Full workflow execution** (requires API keys):
-- **Duration**: 6-8 minutes (small datasets), 12-15 minutes (medium), 20-25 minutes (large)
-- **NEVER CANCEL**: Always wait for completion
-- **Timeout setting**: Use 60+ minutes minimum
+### Tool list construction
+The per-agent tool lists (`data_cleaning_tools`, `analyst_tools`, `visualization_tools`, etc.) are defined as empty lists early in Cell 13, then populated incrementally with `.append()` / `.extend()` throughout the cell. Tools appear after their function definitions. When adding a new tool, register it in the correct list at the point of definition.
 
-## Testing and Validation
+### DataFrameRegistry
+`DataFrameRegistry` (Cell 8) is the single source of truth for all DataFrames. It uses `threading.RLock` internally. DataFrames are referenced everywhere by a string `df_id` (UUID or custom). Use `registry.register_dataframe(df, df_id)` to add, `registry.get_dataframe(df_id, load_if_not_exists=True)` to retrieve, which will reload from the stored CSV path on a cache miss.
 
-**Run all tests:**
-```bash
-# Core functionality tests (takes ~1 second) - NEVER CANCEL
-python3 -m pytest test_intelligent_data_detective.py -v
-# Expected: 22 tests pass
+### MyChatOpenai
+`MyChatOpenai` (Cell 5) overrides `_get_request_payload_mod` to handle o-series model quirks and the OpenAI Responses API. Use `MyChatOpenai` everywhere in the notebook instead of `ChatOpenAI` directly.
 
-# Error handling tests (takes ~1 second) - NEVER CANCEL  
-python3 -m pytest test_error_handling_framework.py -v
-# Expected: 15/16 tests pass (1 known failure is acceptable)
+### Memory namespaces
+Memory is stored under categorised namespaces: `('memories', '<kind>')` where kind ∈ `{conversation, analysis, cleaning, visualization, insights, errors}`. TTL and per-kind limits are driven by `memory_config.yaml`, not hardcoded. Each agent is mapped to a subset of kinds in that file. When adding a new agent, add its `memory_kinds` mapping there.
 
-# Run all tests together (takes ~2 seconds) - NEVER CANCEL
-python3 -m pytest -v
-```
+### File writes
+All file-writing tools call `_resolve_artifact_path()` which validates that the target is within the artifacts directory (path-traversal protection). Never bypass this by writing directly with `open()`.
 
-**Code quality checks:**
-```bash
-# Format code (takes ~1 second) - NEVER CANCEL
-black test_intelligent_data_detective.py test_error_handling_framework.py
+### Final artifact baseline
+The current completion proof expects canonical root artifacts `final_report.html`, `final_report.md`, and `final_report.pdf`, at least three distinct visualizations, no `.txt` marker/status artifacts, no tiny placeholder files, no path-normalization warnings, and no recovery/final-hop/native-failure markers in the run log.
 
-# Lint code (takes ~1 second) - NEVER CANCEL
-flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
-# Note: Expect some whitespace warnings - these are acceptable
-```
+## Known Issues
 
-## Manual Validation Scenarios
+- `test_error_handling_framework.py`: one test fails due to an edge case in function-signature introspection. This is pre-existing and has no runtime impact.
+- `flake8` reports some whitespace warnings on test files; these are acceptable.
 
-**ALWAYS manually validate changes** by running through these complete scenarios:
+<!-- repo-agent-bootstrap:file-kind=copilot-instructions -->
+<!-- repo-agent-bootstrap:provenance=repo-agent-bootstrap@2026-04-20 -->
+<!-- repo-agent-bootstrap:managed:start -->
+# Repository-wide Copilot instructions
 
-### Scenario 1: Basic Data Analysis Workflow
-```bash
-# Test basic data operations (takes ~3 seconds) - NEVER CANCEL
-python3 -c "
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+This repository uses Python and LangGraph, LangChain, pytest.
 
-# Create test data
-df = pd.DataFrame({
-    'values': np.random.randn(1000),
-    'categories': np.random.choice(['A', 'B', 'C'], 1000)
-})
+When making changes:
+- prefer small, focused diffs
+- preserve existing architecture unless the task explicitly changes it
+- run the relevant validation commands before finishing
+- update `memory-bank/activeContext.md` and `memory-bank/progress.md` when project state shifts
 
-# Basic analysis
-summary = df.describe()
-correlation = df.select_dtypes(include=[np.number]).corr()
-grouped = df.groupby('categories').agg({'values': ['mean', 'std']})
+Important references:
+- `AGENTS.md`
+- `docs/architecture.md`
+- `memory-bank/activeContext.md`
+- `memory-bank/progress.md`
 
-# Create visualization
-plt.figure(figsize=(6, 4))
-sns.boxplot(data=df, x='categories', y='values')
-plt.savefig('/tmp/test_validation.png', dpi=150, bbox_inches='tight')
-plt.close()
-
-print('✅ Basic data analysis workflow validated')
-"
-```
-
-### Scenario 2: Notebook Cell Execution (if API keys available)
-1. Open `IntelligentDataDetective_beta_v5.ipynb`
-2. Run cells 1-5 (setup and imports) - takes ~10-15 seconds - NEVER CANCEL
-3. Verify no import errors
-4. Check sample data loading works correctly
-5. **For full validation**: Run complete workflow - takes 6-25 minutes - NEVER CANCEL
-
-### Scenario 3: Test Pydantic Models and Data Structures
-```bash
-# Validate data models (takes ~1 second) - NEVER CANCEL
-python3 -c "
-from test_intelligent_data_detective import AnalysisConfig, CleaningMetadata
-
-# Test model creation
-config = AnalysisConfig(report_author='Test Author')
-metadata = CleaningMetadata(
-    steps_taken=['remove_duplicates', 'fill_missing'],
-    data_description_after_cleaning='Clean dataset ready for analysis'
-)
-
-print('✅ Pydantic models validated')
-"
-```
-
-## Critical Timing and Timeout Information
-
-**NEVER CANCEL these operations:**
-
-| Operation | Expected Time | Timeout Setting |
-|-----------|---------------|-----------------|
-| Dependency installation | 2-5 minutes | 10+ minutes |
-| Test suite execution | 1-2 seconds | 60+ seconds |
-| Basic data operations | <5 seconds | 60+ seconds |
-| Jupyter notebook startup | 5-10 seconds | 120+ seconds |
-| **Full workflow execution** | **6-25 minutes** | **60+ minutes** |
-| Code formatting (black) | 1-3 seconds | 60+ seconds |
-| Linting (flake8) | 1-3 seconds | 60+ seconds |
-
-**CRITICAL**: The full multi-agent workflow can take up to 25 minutes for large datasets. This is NORMAL behavior - do not cancel or interrupt.
-
-## Common Validation Steps
-
-**Before making changes:**
-1. Run `python3 -m pytest test_intelligent_data_detective.py -v` (22 tests should pass)
-2. Test basic imports: `python3 -c "from langchain_core.messages import HumanMessage; print('OK')"`
-3. Validate core data operations (see Scenario 1 above)
-
-**After making changes:**
-1. Run full test suite: `python3 -m pytest -v`
-2. Check code formatting: `black --check .` (fix if needed)
-3. Run manual validation scenarios
-4. **For API-related changes**: Test notebook execution with real data
-
-## Project Structure Reference
-
-**Key files:**
-- `IntelligentDataDetective_beta_v5.ipynb` - Main implementation (27 cells)
-- `test_intelligent_data_detective.py` - Core functionality tests (22 tests)
-- `test_error_handling_framework.py` - Error handling tests (16 tests)
-- `README.md` - Project documentation and usage examples
-- `complete_memory_integration_analysis.md` - Detailed workflow documentation
-
-**Documentation files:**
-- `IntelligentDataDetective_Documentation.md` - Notebook structure analysis
-- `idd_v5_technical_review.md` - Technical implementation review
-- `Project_Tech_Spec_Intelligent_Data_Detective.md` - Technical specification
-
-**Generated artifacts:**
-- `idd_v4_state_graph.mmd` - Mermaid diagram of agent workflow
-- `idd_v4_state_graph.png` - Visual representation of state graph
-
-## Known Issues and Workarounds
-
-1. **Code formatting**: Test files need formatting fixes
-   - Workaround: Run `black test_intelligent_data_detective.py` before committing
-   - Expected: Some style warnings are acceptable
-
-2. **One test failure** in error handling framework
-   - File: `test_error_handling_framework.py`
-   - Issue: Edge case in function signature handling
-   - Impact: No functional impact on main system
-
-3. **API key requirements**: 
-   - Main notebook functionality requires OpenAI API key
-   - Workaround: Use test scenarios without API calls for basic validation
-
-## Multi-Agent Workflow Details
-
-**Agent Types:**
-- **Supervisor Agent**: Orchestrates workflow and routing decisions
-- **Data Cleaner Agent**: Handles data quality, missing values, outliers
-- **Analyst Agent**: Performs statistical analysis and pattern detection  
-- **Visualization Agent**: Creates charts and graphs
-- **Report Generator Agent**: Synthesizes findings into reports
-
-**Typical Execution Flow:**
-1. **Initial Analysis** (30-60 seconds)
-2. **Data Cleaning** (60-120 seconds) 
-3. **Statistical Analysis** (120-180 seconds)
-4. **Visualization Generation** (90-150 seconds)
-5. **Report Generation** (90-180 seconds)
-6. **File Writing** (20-40 seconds)
-
-**State Management:**
-- Uses LangGraph StateGraph with memory persistence
-- Checkpoint-based recovery for error resilience
-- Streaming execution with real-time updates
-
-## Validation Commands Summary
-
-**Essential validation workflow:**
-```bash
-# 1. Install dependencies (2-5 minutes) - NEVER CANCEL
-pip install langchain langchain-core langchain-openai langchain_experimental langgraph pandas numpy scipy scikit-learn matplotlib seaborn pydantic python-dotenv tiktoken openpyxl xhtml2pdf tavily-python chromadb joblib pytest black flake8 mypy jupyter
-
-# 2. Run tests (1-2 seconds) - NEVER CANCEL  
-python3 -m pytest test_intelligent_data_detective.py -v
-
-# 3. Validate basic functionality (3 seconds) - NEVER CANCEL
-python3 -c "import pandas as pd; from langchain_core.messages import HumanMessage; print('✅ Ready')"
-
-# 4. Format code (1 second) - NEVER CANCEL
-black test_intelligent_data_detective.py
-
-# 5. Manual scenario testing (see scenarios above)
-```
-
-**For notebook changes**: Always test with `jupyter notebook IntelligentDataDetective_beta_v5.ipynb` and run at least the first 5 cells.
-
-**For algorithm changes**: Always run complete manual validation scenarios and check that test suite still passes.
-
-Remember: This system is designed for comprehensive data analysis workflows that naturally take time to complete. Patience during execution is essential for proper validation.
+Do not:
+- edit generated files casually
+- introduce new dependencies without justification
+- remove tests to avoid fixing failures
+<!-- repo-agent-bootstrap:managed:end -->
