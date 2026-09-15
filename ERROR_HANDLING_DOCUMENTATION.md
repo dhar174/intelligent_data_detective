@@ -1,5 +1,35 @@
 # Error Handling and Validation Framework
 
+## Tool error response contract
+
+Data-manipulation tools keep their existing success strings. Failures return a
+dictionary with these stable fields:
+
+```python
+{
+    "status": "error",
+    "operation": "fill_missing_median",
+    "reason": "Column 'name' is not numeric.",
+    "action": "Choose a numeric column before calculating a median.",
+}
+```
+
+`status` distinguishes failures from successful responses, `operation`
+identifies the tool, `reason` explains the failure without exposing a
+traceback, and `action` gives the caller a corrective next step. Unexpected
+exceptions are logged with diagnostic context and return the same safe shape.
+
+The data-cleaning tools validate inputs before mutation:
+
+- `drop_column` requires a non-empty existing column name.
+- `delete_rows` requires one or more non-empty pandas query expressions. An
+  invalid query or an empty match leaves the DataFrame unchanged.
+- `fill_missing_median` requires a numeric column with at least one non-null
+  value. The update is made on a copy and registered only after validation.
+
+For a missing, empty, or invalid DataFrame ID, the decorator returns an error
+with `operation`, `reason`, and `action` before the tool runs.
+
 ## Overview
 
 The Error Handling and Validation Framework provides robust error handling and runtime validation for the IntelligentDataDetective notebook. It consists of two main components:
@@ -83,12 +113,25 @@ def get_column_names(df_id: str) -> str:
 def drop_column(df_id: str, column_name: str) -> str:
     """Drop a specified column from the DataFrame."""
     df = global_df_registry.get_dataframe(df_id)
+    if not isinstance(column_name, str) or not column_name.strip():
+        return _tool_error(
+            "drop_column",
+            "column_name must be a non-empty string.",
+            "Provide the name of an existing column.",
+        )
     if column_name not in df.columns:
-        return f"Error: Column '{column_name}' not found. Available: {list(df.columns)}"
-    
-    df.drop(columns=[column_name], inplace=True)
-    global_df_registry.register_dataframe(df, df_id, global_df_registry.get_raw_path_from_id(df_id))
-    return f"Column '{column_name}' dropped successfully."
+        return _tool_error(
+            "drop_column",
+            f"Column '{column_name}' does not exist.",
+            f"Choose one of: {', '.join(map(str, df.columns))}.",
+        )
+
+    updated_df = df.drop(columns=[column_name])
+    new_columns = ", ".join(map(str, updated_df.columns.tolist()))
+    global_df_registry.register_dataframe(
+        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
+    )
+    return f"Column dropped successfully. New columns: {new_columns}"
 ```
 
 ### Tool Function with File I/O
@@ -122,21 +165,23 @@ The framework automatically handles these error types:
 6. **ParserError**: Data parsing/format issues
 7. **General Exceptions**: Unexpected runtime errors
 
-## Error Message Format
+## Error response behavior
 
-All error messages follow a consistent format:
-- DataFrame validation: `"Error: DataFrame with ID 'df_id' not found or is invalid."`
-- File errors: `"Error: File not found - [details]"`
-- Column errors: `"Error: Column or key 'column_name' not found"`
-- Value errors: `"Error: Invalid value - [details]"`
-- General errors: `"Error in function_name: [details]"`
+Updated data tools return the structured contract above for validation and
+processing failures. Successful responses remain backward-compatible strings.
+The decorator uses the same contract for missing datasets, file errors, missing
+columns, invalid values, parse errors, and unexpected failures.
 
 ## Logging Integration
 
-The framework automatically logs all errors with timestamps:
+The framework logs unexpected failures with timestamps and tracebacks through
+`_tool_failure()`. Expected validation and parsing errors are returned to the
+caller without additional log records.
 
 ```
-2025-07-24 18:16:51,365 - ERROR - get_column_names: Error: DataFrame with ID 'invalid_id' not found or is invalid.
+2026-09-11 18:24:49,981 - ERROR - broken failed: RuntimeError('internal details')
+Traceback (most recent call last):
+...
 ```
 
 ## Testing

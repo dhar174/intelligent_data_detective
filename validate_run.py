@@ -41,15 +41,17 @@ MARKER_TXT_RE = re.compile(
 
 # Recovery / fallback markers (C3, C5).
 RECOVERY_RE = re.compile(r"\bRECOVERY\b|\bW2-BA-finalhop\b|\bW4-")
-FALLBACK_RE = re.compile(r"recovery synthesized|W2-BR-FALLBACK|synthesized via",
-                         re.IGNORECASE)
+FALLBACK_RE = re.compile(
+    r"recovery synthesized|W2-BR-FALLBACK|synthesized via", re.IGNORECASE
+)
 TRACEBACK_RE = re.compile(r"Traceback")
 FINAL_RE = re.compile(r"\bFINAL\b")
 FINAL_FLAGS_RE = re.compile(r"viz=True\s+report=True")
 
 # C12 heuristics.
-CORRELATION_RE = re.compile(r"r\s*=\s*-?\d+\.\d+|correlation[^<]{0,40}?-?\d+\.\d+",
-                            re.IGNORECASE)
+CORRELATION_RE = re.compile(
+    r"r\s*=\s*-?\d+\.\d+|correlation[^<]{0,40}?-?\d+\.\d+", re.IGNORECASE
+)
 ANOMALY_RE = re.compile(r"anomal|outlier|missing", re.IGNORECASE)
 
 # Time at start of a log line: "HH:MM:SS ".
@@ -73,11 +75,13 @@ class Criterion:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def find_latest_run(results_dir: Path) -> Path | None:
     if not results_dir.is_dir():
         return None
-    candidates = [p for p in results_dir.iterdir()
-                  if p.is_dir() and p.name.startswith("IDD_run_")]
+    candidates = [
+        p for p in results_dir.iterdir() if p.is_dir() and p.name.startswith("IDD_run_")
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -86,10 +90,12 @@ def find_latest_run(results_dir: Path) -> Path | None:
 def strip_html_text(html: str) -> str:
     """Remove tags + script/style content, return whitespace-trimmed text."""
     # Drop script & style blocks entirely (their text doesn't count as content).
-    html = re.sub(r"<script\b[^>]*>.*?</script>", " ", html,
-                  flags=re.IGNORECASE | re.DOTALL)
-    html = re.sub(r"<style\b[^>]*>.*?</style>", " ", html,
-                  flags=re.IGNORECASE | re.DOTALL)
+    html = re.sub(
+        r"<script\b[^>]*>.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL
+    )
+    html = re.sub(
+        r"<style\b[^>]*>.*?</style>", " ", html, flags=re.IGNORECASE | re.DOTALL
+    )
     # Strip remaining tags.
     text = re.sub(r"<[^>]+>", " ", html)
     # Collapse whitespace.
@@ -157,8 +163,9 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def load_log_lines_in_window(log_path: Path, center_mtime: float,
-                             window_min: int) -> list[tuple[int, str]]:
+def load_log_lines_in_window(
+    log_path: Path, center_mtime: float, window_min: int
+) -> list[tuple[int, str]]:
     """Return [(lineno, line)] whose HH:MM:SS prefix falls within
     [center - window, center + window], using center_mtime's date."""
     if not log_path.is_file():
@@ -174,13 +181,11 @@ def load_log_lines_in_window(log_path: Path, center_mtime: float,
                 continue
             hh, mm, ss = map(int, m.groups())
             try:
-                ts = center.replace(hour=hh, minute=mm, second=ss,
-                                    microsecond=0)
+                ts = center.replace(hour=hh, minute=mm, second=ss, microsecond=0)
             except ValueError:
                 continue
             # Allow a date roll: pick the date that puts ts closest to center.
-            for cand in (ts, ts - _dt.timedelta(days=1),
-                         ts + _dt.timedelta(days=1)):
+            for cand in (ts, ts - _dt.timedelta(days=1), ts + _dt.timedelta(days=1)):
                 if lo <= cand <= hi:
                     out.append((i, line.rstrip("\n")))
                     break
@@ -191,8 +196,10 @@ def load_log_lines_in_window(log_path: Path, center_mtime: float,
 # Criteria
 # ---------------------------------------------------------------------------
 
-def evaluate(run_dir: Path, log_path: Path,
-             window_min: int = DEFAULT_WINDOW_MIN) -> list[Criterion]:
+
+def evaluate(
+    run_dir: Path, log_path: Path, window_min: int = DEFAULT_WINDOW_MIN
+) -> list[Criterion]:
     run_mtime = run_dir.stat().st_mtime
     log_lines = load_log_lines_in_window(log_path, run_mtime, window_min)
 
@@ -203,7 +210,8 @@ def evaluate(run_dir: Path, log_path: Path,
     if final_html_path:
         try:
             final_html_raw = final_html_path.read_text(
-                encoding="utf-8", errors="replace")
+                encoding="utf-8", errors="replace"
+            )
             final_html_text = strip_html_text(final_html_raw)
         except OSError:
             pass
@@ -221,34 +229,47 @@ def evaluate(run_dir: Path, log_path: Path,
 
     # 1. FINAL marker present (windowed).
     final_lines = [(n, l) for (n, l) in log_lines if FINAL_RE.search(l)]
-    crits.append(Criterion(
-        1, "FINAL marker present",
-        bool(final_lines),
-        f"log line {final_lines[-1][0]}" if final_lines
-        else f"no FINAL within ±{window_min}min of run mtime",
-    ))
+    crits.append(
+        Criterion(
+            1,
+            "FINAL marker present",
+            bool(final_lines),
+            (
+                f"log line {final_lines[-1][0]}"
+                if final_lines
+                else f"no FINAL within ±{window_min}min of run mtime"
+            ),
+        )
+    )
 
     # 2. viz=True report=True on the FINAL line.
     if final_lines:
         last_final = final_lines[-1][1]
         ok = bool(FINAL_FLAGS_RE.search(last_final))
-        crits.append(Criterion(
-            2, "viz=True report=True",
-            ok,
-            "both flags" if ok else f"flags missing in: {last_final[:120]}",
-        ))
+        crits.append(
+            Criterion(
+                2,
+                "viz=True report=True",
+                ok,
+                "both flags" if ok else f"flags missing in: {last_final[:120]}",
+            )
+        )
     else:
-        crits.append(Criterion(2, "viz=True report=True", False,
-                               "no FINAL line to inspect"))
+        crits.append(
+            Criterion(2, "viz=True report=True", False, "no FINAL line to inspect")
+        )
 
     # 3. 0 recoveries / W2-BA-finalhop / W4 negatives (windowed).
     rec_hits = [(n, l) for (n, l) in log_lines if RECOVERY_RE.search(l)]
-    crits.append(Criterion(
-        3, "0 recoveries / W2-BA-finalhop / W4 negatives",
-        not rec_hits,
-        f"{len(rec_hits)} hits"
-        + (f" (first @ line {rec_hits[0][0]})" if rec_hits else ""),
-    ))
+    crits.append(
+        Criterion(
+            3,
+            "0 recoveries / W2-BA-finalhop / W4 negatives",
+            not rec_hits,
+            f"{len(rec_hits)} hits"
+            + (f" (first @ line {rec_hits[0][0]})" if rec_hits else ""),
+        )
+    )
 
     # 4. 0 Tracebacks (windowed log + any *.log inside run dir).
     log_tb = [(n, l) for (n, l) in log_lines if TRACEBACK_RE.search(l)]
@@ -261,38 +282,59 @@ def evaluate(run_dir: Path, log_path: Path,
         if TRACEBACK_RE.search(txt):
             extra_tb_files.append(str(log_in_run.relative_to(run_dir)))
     total_tb = len(log_tb) + len(extra_tb_files)
-    detail4 = "0 hits" if total_tb == 0 else (
-        f"{len(log_tb)} log hits, {len(extra_tb_files)} *.log files: "
-        f"{extra_tb_files[:3]}"
+    detail4 = (
+        "0 hits"
+        if total_tb == 0
+        else (
+            f"{len(log_tb)} log hits, {len(extra_tb_files)} *.log files: "
+            f"{extra_tb_files[:3]}"
+        )
     )
     crits.append(Criterion(4, "0 Tracebacks", total_tb == 0, detail4))
 
     # 5. All structured outputs native Pydantic (no fallback markers).
     fb_hits = [(n, l) for (n, l) in log_lines if FALLBACK_RE.search(l)]
-    crits.append(Criterion(
-        5, "All structured outputs native Pydantic",
-        not fb_hits,
-        "no fallback markers" if not fb_hits
-        else f"{len(fb_hits)} fallback marker(s) (first @ line {fb_hits[0][0]})",
-    ))
+    crits.append(
+        Criterion(
+            5,
+            "All structured outputs native Pydantic",
+            not fb_hits,
+            (
+                "no fallback markers"
+                if not fb_hits
+                else f"{len(fb_hits)} fallback marker(s) (first @ line {fb_hits[0][0]})"
+            ),
+        )
+    )
 
     # 6. PDF in run subdir, non-zero size.
     nonzero_pdfs = [p for p in pdfs if p.stat().st_size > 0]
-    crits.append(Criterion(
-        6, "PDF in run subdir",
-        bool(nonzero_pdfs),
-        (f"{len(nonzero_pdfs)} pdf(s); first="
-         f"{nonzero_pdfs[0].name} ({nonzero_pdfs[0].stat().st_size}B)")
-        if nonzero_pdfs else "no non-empty PDF found",
-    ))
+    crits.append(
+        Criterion(
+            6,
+            "PDF in run subdir",
+            bool(nonzero_pdfs),
+            (
+                (
+                    f"{len(nonzero_pdfs)} pdf(s); first="
+                    f"{nonzero_pdfs[0].name} ({nonzero_pdfs[0].stat().st_size}B)"
+                )
+                if nonzero_pdfs
+                else "no non-empty PDF found"
+            ),
+        )
+    )
 
     # 7. Report HTML text-only content >= 3000 chars.
     text_len = len(final_html_text)
-    crits.append(Criterion(
-        7, "Report HTML text-only content >= 3000 chars",
-        text_len >= 3000,
-        f"text_len={text_len} ({final_html_path.name if final_html_path else 'no html'})",
-    ))
+    crits.append(
+        Criterion(
+            7,
+            "Report HTML text-only content >= 3000 chars",
+            text_len >= 3000,
+            f"text_len={text_len} ({final_html_path.name if final_html_path else 'no html'})",
+        )
+    )
 
     # 8. >= 4 distinct sections.
     sections = 0
@@ -307,11 +349,14 @@ def evaluate(run_dir: Path, log_path: Path,
                 sections, src = md_sections, "md ## headings"
         except OSError:
             pass
-    crits.append(Criterion(
-        8, "Report contains >= 4 distinct sections",
-        sections >= 4,
-        f"{sections} sections via {src}",
-    ))
+    crits.append(
+        Criterion(
+            8,
+            "Report contains >= 4 distinct sections",
+            sections >= 4,
+            f"{sections} sections via {src}",
+        )
+    )
 
     # 9. >= 3 distinct visualizations (sha256 + slug).
     hashes: set[str] = set()
@@ -323,22 +368,33 @@ def evaluate(run_dir: Path, log_path: Path,
             continue
         slugs.add(slug_of(p.name))
     ok9 = len(hashes) >= 3 and len(slugs) >= 3
-    crits.append(Criterion(
-        9, "Viz count >= 3 distinct visualizations",
-        ok9,
-        f"{len(figures)} png file(s), {len(hashes)} unique hash(es), "
-        f"{len(slugs)} unique slug(s)",
-    ))
+    crits.append(
+        Criterion(
+            9,
+            "Viz count >= 3 distinct visualizations",
+            ok9,
+            f"{len(figures)} png file(s), {len(hashes)} unique hash(es), "
+            f"{len(slugs)} unique slug(s)",
+        )
+    )
 
     # 10. PDF size >= 30 KB.
     big_pdfs = [p for p in pdfs if p.stat().st_size >= 30 * 1024]
-    crits.append(Criterion(
-        10, "PDF size >= 30KB",
-        bool(big_pdfs),
-        (f"{big_pdfs[0].name}={big_pdfs[0].stat().st_size}B" if big_pdfs
-         else (f"largest pdf={max((p.stat().st_size for p in pdfs), default=0)}B"
-               " (< 30KB)")),
-    ))
+    crits.append(
+        Criterion(
+            10,
+            "PDF size >= 30KB",
+            bool(big_pdfs),
+            (
+                f"{big_pdfs[0].name}={big_pdfs[0].stat().st_size}B"
+                if big_pdfs
+                else (
+                    f"largest pdf={max((p.stat().st_size for p in pdfs), default=0)}B"
+                    " (< 30KB)"
+                )
+            ),
+        )
+    )
 
     # 11. No stub / marker files in reports/.
     bad_txt: list[str] = []
@@ -352,15 +408,23 @@ def evaluate(run_dir: Path, log_path: Path,
             else:
                 # Any other .txt in reports/ is also a fail per spec.
                 bad_txt.append(name)
-    crits.append(Criterion(
-        11, "No stub/marker files",
-        not bad_txt,
-        ("clean" if not bad_txt
-         else f"{len(bad_txt)} marker/txt file(s); first 3: {bad_txt[:3]}"),
-    ))
+    crits.append(
+        Criterion(
+            11,
+            "No stub/marker files",
+            not bad_txt,
+            (
+                "clean"
+                if not bad_txt
+                else f"{len(bad_txt)} marker/txt file(s); first 3: {bad_txt[:3]}"
+            ),
+        )
+    )
 
     # 12. Report references actual analyst findings.
-    has_corr = bool(CORRELATION_RE.search(final_html_text)) if final_html_text else False
+    has_corr = (
+        bool(CORRELATION_RE.search(final_html_text)) if final_html_text else False
+    )
     has_anom = bool(ANOMALY_RE.search(final_html_text)) if final_html_text else False
     ok12 = has_corr and has_anom
     detail12_parts = []
@@ -370,10 +434,14 @@ def evaluate(run_dir: Path, log_path: Path,
         detail12_parts.append("no anomaly/outlier/missing keyword")
     if ok12:
         detail12_parts.append("correlation + anomaly keyword present")
-    crits.append(Criterion(
-        12, "Report references actual analyst findings", ok12,
-        "; ".join(detail12_parts),
-    ))
+    crits.append(
+        Criterion(
+            12,
+            "Report references actual analyst findings",
+            ok12,
+            "; ".join(detail12_parts),
+        )
+    )
 
     return crits
 
@@ -382,48 +450,75 @@ def evaluate(run_dir: Path, log_path: Path,
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def render_human(run_dir: Path, crits: list[Criterion]) -> str:
     score = sum(1 for c in crits if c.pass_)
     total = len(crits)
-    lines = ["=== validate_run.py ===",
-             f"Run: {run_dir.name}",
-             f"Path: {run_dir.as_posix()}",
-             "",
-             f"{'Criterion':<60}{'Result':<10}Detail"]
+    lines = [
+        "=== validate_run.py ===",
+        f"Run: {run_dir.name}",
+        f"Path: {run_dir.as_posix()}",
+        "",
+        f"{'Criterion':<60}{'Result':<10}Detail",
+    ]
     for c in crits:
         head = f"{c.id:<2}. {c.name}"
         lines.append(f"{head:<60}{('PASS' if c.pass_ else 'FAIL'):<10}{c.detail}")
-    verdict = "PASS — production bar reached" if score == total \
+    verdict = (
+        "PASS — production bar reached"
+        if score == total
         else f"FAIL — production bar = {total}/{total}"
+    )
     lines += ["", f"SCORE: {score} / {total}        ({verdict})"]
     return "\n".join(lines)
 
 
 def render_json(run_dir: Path, crits: list[Criterion]) -> str:
     score = sum(1 for c in crits if c.pass_)
-    return json.dumps({
-        "run": run_dir.name,
-        "path": run_dir.as_posix(),
-        "score": score,
-        "total": len(crits),
-        "criteria": [c.to_dict() for c in crits],
-    }, indent=2)
+    return json.dumps(
+        {
+            "run": run_dir.name,
+            "path": run_dir.as_posix(),
+            "score": score,
+            "total": len(crits),
+            "criteria": [c.to_dict() for c in crits],
+        },
+        indent=2,
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("run_dir", nargs="?", help="Path to an IDD_run_* directory.")
-    p.add_argument("--latest", action="store_true",
-                   help="Auto-pick newest IDD_run_* under IDD_results/.")
-    p.add_argument("--json", action="store_true", dest="as_json",
-                   help="Emit machine-readable JSON instead of a table.")
-    p.add_argument("--log-path", default=str(DEFAULT_LOG),
-                   help="Path to notebook_run_log.txt (default: repo root).")
-    p.add_argument("--results-dir", default=str(DEFAULT_RESULTS_DIR),
-                   help="Where to look for IDD_run_* dirs when --latest.")
-    p.add_argument("--window", type=int, default=DEFAULT_WINDOW_MIN,
-                   help="Log time-window in minutes around run dir mtime.")
+    p.add_argument(
+        "--latest",
+        action="store_true",
+        help="Auto-pick newest IDD_run_* under IDD_results/.",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON instead of a table.",
+    )
+    p.add_argument(
+        "--log-path",
+        default=str(DEFAULT_LOG),
+        help="Path to notebook_run_log.txt (default: repo root).",
+    )
+    p.add_argument(
+        "--results-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+        help="Where to look for IDD_run_* dirs when --latest.",
+    )
+    p.add_argument(
+        "--window",
+        type=int,
+        default=DEFAULT_WINDOW_MIN,
+        help="Log time-window in minutes around run dir mtime.",
+    )
     return p.parse_args(argv)
 
 
@@ -433,8 +528,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.latest:
         run_dir = find_latest_run(Path(args.results_dir))
         if run_dir is None:
-            print(f"ERROR: no IDD_run_* dir found in {args.results_dir}",
-                  file=sys.stderr)
+            print(
+                f"ERROR: no IDD_run_* dir found in {args.results_dir}", file=sys.stderr
+            )
             return 2
     elif args.run_dir:
         run_dir = Path(args.run_dir)
@@ -446,8 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: not a directory: {run_dir}", file=sys.stderr)
         return 2
 
-    crits = evaluate(run_dir.resolve(), Path(args.log_path),
-                     window_min=args.window)
+    crits = evaluate(run_dir.resolve(), Path(args.log_path), window_min=args.window)
     if args.as_json:
         print(render_json(run_dir, crits))
     else:

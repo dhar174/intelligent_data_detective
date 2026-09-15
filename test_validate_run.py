@@ -25,6 +25,7 @@ LOG = REPO_ROOT / "notebook_run_log.txt"
 # Run 88 baseline — must fail the production bar.
 # --------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(not RUN88.is_dir(), reason="Run 88 fixture missing")
 def test_score_run88_is_below_threshold():
     crits = vr.evaluate(RUN88, LOG, window_min=30)
@@ -44,6 +45,7 @@ def test_score_run88_is_below_threshold():
 # --------------------------------------------------------------------------
 # C7 — HTML text stripping.
 # --------------------------------------------------------------------------
+
 
 def test_html_text_strip_basic():
     html = (
@@ -73,6 +75,7 @@ def test_html_text_strip_collapses_whitespace():
 # C9 — PNG distinctness.
 # --------------------------------------------------------------------------
 
+
 def _make_png(path: Path, payload: bytes) -> None:
     # Not a real PNG — validate_run.py only hashes raw bytes.
     path.write_bytes(payload)
@@ -92,8 +95,9 @@ def test_png_distinctness_collapse_same_image_diff_filename(tmp_path):
     # Even adding two distinct content files but same slug shouldn't pass:
     crits = vr.evaluate(tmp_path, LOG, window_min=10**6)
     c9 = next(c for c in crits if c.id == 9)
-    assert c9.pass_ is False, (
-        "Three identical-content PNGs sharing one slug must NOT pass C9")
+    assert (
+        c9.pass_ is False
+    ), "Three identical-content PNGs sharing one slug must NOT pass C9"
 
     # Now add three genuinely distinct images with distinct slugs:
     _make_png(figs_dir / "sample__scatter__xy__11111111.png", other)
@@ -112,6 +116,7 @@ def test_slug_strips_trailing_hex():
 # --------------------------------------------------------------------------
 # C11 — marker / stub file detection.
 # --------------------------------------------------------------------------
+
 
 def test_marker_file_detection(tmp_path):
     reports = tmp_path / "artifacts" / "run_x" / "reports"
@@ -152,6 +157,7 @@ def test_marker_file_detection(tmp_path):
 # Sanity — find_latest_run picks newest mtime.
 # --------------------------------------------------------------------------
 
+
 def test_find_latest_run_picks_newest(tmp_path):
     base = tmp_path / "IDD_results"
     base.mkdir()
@@ -171,6 +177,7 @@ def test_find_latest_run_picks_newest(tmp_path):
 # Output shape.
 # --------------------------------------------------------------------------
 
+
 def test_render_json_shape(tmp_path):
     # Minimal empty run dir — every criterion will fail, but output must be
     # well-formed JSON with the required keys.
@@ -186,11 +193,14 @@ def test_render_json_shape(tmp_path):
 # W14 lightweight regression proof.
 # --------------------------------------------------------------------------
 
+
 def test_w14_patched_notebook_is_committed_and_marked():
     assert PATCHED_NOTEBOOK.is_file(), "patched W14 notebook must stay committed"
     notebook = json.loads(PATCHED_NOTEBOOK.read_text(encoding="utf-8"))
     cells = notebook.get("cells") or []
-    assert len(cells) >= 90, "patched notebook should contain the generated W14 cell set"
+    assert (
+        len(cells) >= 90
+    ), "patched notebook should contain the generated W14 cell set"
     source = "\n".join(
         "".join(cell.get("source") or [])
         for cell in cells

@@ -868,8 +868,18 @@ class DataFrameRegistry:
 
             if df_id in self.registry:
                 self.registry[df_id]["df"] = df
-                self.registry[df_id]["raw_path"] = str(path)
-                self.df_id_to_raw_path[df_id] = str(path)
+                if raw_path:
+                  self.registry[df_id]["raw_path"] = str(path)
+                  self.df_id_to_raw_path[df_id] = str(path)  # FIX: keep mapping in sync\n",
+                elif df is not None:
+                  # If registered directly from memory (no raw_path), try to persist to default
+                  try:
+                      default_path = PathlibPath(getattr(self, 'data_dir', WORKING_DIRECTORY)) / f"{df_id}.csv"
+                      self._write_df(df, default_path)
+                      self.df_id_to_raw_path[df_id] = str(default_path)
+                      self.registry[df_id]["raw_path"] = str(default_path)
+                  except Exception as e:
+                      print(f"Warning: could not persist in-memory DataFrame {df_id}: {e}")
                 if df is not None:
                     self._touch_cache(df_id, df)
                 return df_id
@@ -1081,6 +1091,12 @@ if HAS_LANGCHAIN:
                 return base
         except Exception:
             pass
+
+        env_artifacts = os.environ.get("IDD_ARTIFACTS_DIR")
+        if env_artifacts:
+            base = PathlibPath(env_artifacts)
+            base.mkdir(parents=True, exist_ok=True)
+            return base
 
         base = PathlibPath(WORKING_DIRECTORY) / "artifacts"
         base.mkdir(parents=True, exist_ok=True)
