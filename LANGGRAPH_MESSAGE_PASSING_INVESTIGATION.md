@@ -21,7 +21,7 @@ The Intelligent Data Detective uses a hub-and-spoke architecture with the superv
 
 ### **Actual Graph Nodes in Compiled Graph**
 
-Based on examination of the `IntelligentDataDetective_beta_v4.ipynb` file, the compiled graph contains exactly these 15 nodes:
+Based on examination of the `IntelligentDataDetective_beta_v5.ipynb` file, the compiled graph contains exactly these 15 nodes:
 
 1. **`supervisor`** - Central coordinator node (coordinator_node)
 2. **`initial_analysis`** - Dataset exploration and characterization
@@ -920,7 +920,7 @@ The supervisor continuously updates progress:
 
 ### Happy Path Execution Flow
 
-**Note**: Based on examination of the actual graph construction in `IntelligentDataDetective_beta_v4.ipynb`, the workflow starts directly with `initial_analysis`, not the supervisor.
+**Note**: Based on examination of the actual graph construction in `IntelligentDataDetective_beta_v5.ipynb`, the workflow starts directly with `initial_analysis`, not the supervisor.
 
 #### Phase 1: Initialization  
 1. **START → Initial Analysis** (Direct Edge)

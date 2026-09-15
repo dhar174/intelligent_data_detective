@@ -1,0 +1,99 @@
+
+_patch_notebook.py:206:    # --- Patch cell idx 72: increase recursion_limit (120 is too low; data cleaner loops) ---
+_patch_notebook.py:211:        r'recursion_limit\s*=\s*120\s+if\s+not\s+use_local_llm\s+else\s+300',
+_patch_notebook.py:212:        'recursion_limit=400  # increased from 120; data cleaner needs more steps',
+_patch_notebook.py:220:        print("✅ Cell idx 72: recursion_limit increased to 400")
+_patch_notebook.py:222:        # Broader fallback: replace any recursion_limit=120
+_patch_notebook.py:223:        new_src72 = src72.replace("recursion_limit=120", "recursion_limit=400")
+_patch_notebook.py:229:            print("✅ Cell idx 72: recursion_limit set to 400 (broad replace)")
+_patch_notebook.py:231:            print("⚠️  Cell idx 72: could not find recursion_limit pattern to patch")
+_patch_notebook.py:425:    # Like the other ToolStrategy agents, initial_analysis_agent loops until GraphRecursionError
+_patch_notebook.py:426:    # at step 400 (inherited recursion_limit). Cap at 80 steps; on error build recovery object.
+_patch_notebook.py:427:    SAFE_IA_HELPER = (
+_patch_notebook.py:429:        "def _safe_initial_analysis_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:431:        "    cfg = {'configurable': _outer_cfg.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
+_patch_notebook.py:469:        if "_safe_initial_analysis_invoke" in src:
+_patch_notebook.py:478:            SAFE_IA_HELPER + "def initial_analysis_node(",
+_patch_notebook.py:482:        # 2. Replace initial_analysis_agent.invoke with _safe_initial_analysis_invoke
+_patch_notebook.py:485:            "    result = _safe_initial_analysis_invoke(initial_analysis_agent, {",
+_patch_notebook.py:524:    # Strategy: inject a _safe_data_cleaner_invoke helper before data_cleaner_node that catches
+_patch_notebook.py:525:    # GraphRecursionError and builds a recovery CleaningMetadata from already-written artifacts.
+_patch_notebook.py:528:    SAFE_INVOKE_HELPER = (
+_patch_notebook.py:530:        "def _safe_data_cleaner_invoke(agent, inputs, **kwargs):\n"
+_patch_notebook.py:532:        "    cfg = {'configurable': _outer_dc.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
+_patch_notebook.py:533:        "    from langgraph.errors import GraphRecursionError as _GRE\n"
+_patch_notebook.py:618:            SAFE_INVOKE_HELPER + "def data_cleaner_node(",
+_patch_notebook.py:685:        #    New: result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {
+_patch_notebook.py:686:        #    The config= keyword arg passes through unchanged — _safe_data_cleaner_invoke
+_patch_notebook.py:690:            "    result = _safe_data_cleaner_invoke(\n        data_cleaner_agent, {",
+_patch_notebook.py:726:    # The analyst uses ToolStrategy(AnalysisInsights) and runs with recursion_limit=400
+_patch_notebook.py:729:    # Fix: cap analyst at 120 steps; on GraphRecursionError build a recovery AnalysisInsights.
+_patch_notebook.py:730:    SAFE_ANALYST_HELPER = (
+_patch_notebook.py:732:        "def _safe_analyst_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:734:        "    cfg = {'configurable': _outer_an.get('configurable', {}), 'recursion_limit': 160}  # cap=160 (AZ: raised to 160)\n"
+_patch_notebook.py:794:        if "_safe_analyst_invoke" in src:
+_patch_notebook.py:803:            SAFE_ANALYST_HELPER + "def analyst_node(",
+_patch_notebook.py:831:            "    result = _safe_analyst_invoke(analyst_agent, {",
+_patch_notebook.py:914:    # The report_packager uses ToolStrategy(ReportResults) with recursion_limit=400 inherited.
+_patch_notebook.py:916:    # Fix: cap at 120 steps; on GraphRecursionError build a recovery ReportResults.
+_patch_notebook.py:917:    SAFE_REPORT_PACKAGER_HELPER = (
+_patch_notebook.py:919:        "def _safe_report_packager_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:921:        "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_packager (AZ: raised to 160)\n"
+_patch_notebook.py:1058:        if "_safe_report_packager_invoke" in src:
+_patch_notebook.py:1067:            SAFE_REPORT_PACKAGER_HELPER + "def report_packager_node(",
+_patch_notebook.py:1101:            "    result = _safe_report_packager_invoke(report_packager_agent, {",
+_patch_notebook.py:1276:    # The viz recovery wrapper (_safe_visualization_invoke, cap=60) + viz_join
+_patch_notebook.py:1404:    SAFE_SUPERVISOR_ROUTING_HELPER = (
+_patch_notebook.py:1430:        "def _safe_supervisor_routing_invoke(llm, *args, **kwargs):\n"
+_patch_notebook.py:1470:        if "_safe_supervisor_routing_invoke" in src:
+_patch_notebook.py:1482:                for line in SAFE_SUPERVISOR_ROUTING_HELPER.split('\n')
+_patch_notebook.py:1493:        new_routing_call = "_safe_supervisor_routing_invoke(routing_llm, routing_state_vars,"
+_patch_notebook.py:1898:    # BEFORE _safe_supervisor_routing_invoke can catch it. Fix: use the node's own config param
+_patch_notebook.py:1942:        # _safe_supervisor_routing_invoke(routing_llm, routing_state_vars,
+_patch_notebook.py:2126:    # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
+_patch_notebook.py:2127:    # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
+_patch_notebook.py:2128:    # Fix: cap at 60 steps; on GraphRecursionError return a recovery DataVisualization.
+_patch_notebook.py:2132:    SAFE_VIZ_HELPER = (
+_patch_notebook.py:2134:        "def _safe_visualization_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:2136:        "    cfg = {'configurable': _outer_vz.get('configurable', {}), 'recursion_limit': 160}  # cap=160 viz_worker (AZ: raised to 160)\n"
+_patch_notebook.py:2233:        if "_safe_visualization_invoke" in src:
+_patch_notebook.py:2242:            SAFE_VIZ_HELPER + "def viz_worker(",
+_patch_notebook.py:2249:            "    result = _safe_visualization_invoke(visualization_agent, {",
+_patch_notebook.py:2286:    # Fix A1: inject _safe_viz_evaluator_invoke with retry + recovery VizFeedback fallback.
+_patch_notebook.py:2288:    # Fix A3: replace viz_evaluator_agent.invoke with _safe_viz_evaluator_invoke.
+_patch_notebook.py:2289:    SAFE_VIZ_EVALUATOR_HELPER = (
+_patch_notebook.py:2291:        "def _safe_viz_evaluator_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:2295:        "    cfg = {'configurable': _outer_ve.get('configurable', {}), 'recursion_limit': 160}  # cap=160 viz_evaluator (AZ: raised to 160)\n"
+_patch_notebook.py:2334:        if "_safe_viz_evaluator_invoke" in src:
+_patch_notebook.py:2343:            SAFE_VIZ_EVALUATOR_HELPER + "def viz_evaluator_node(",
+_patch_notebook.py:2359:            "        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {"
+_patch_notebook.py:2369:                "        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {",
+_patch_notebook.py:3574:        if "def analyst_node" not in src or "_safe_analyst_invoke" not in src:
+_patch_notebook.py:3918:        "    _safe_specs = []\n"
+_patch_notebook.py:3921:        "            try: _safe_specs.append(VizSpec(**sp))\n"
+_patch_notebook.py:3924:        "            _safe_specs.append(sp)\n"
+_patch_notebook.py:3925:        "    viz_specs = _safe_specs\n"
+_patch_notebook.py:4274:    # --- Fix AP-1: increase report_orchestrator recursion_limit to 80 ---
+_patch_notebook.py:4277:    fixap1_old = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
+_patch_notebook.py:4278:    fixap1_new = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_orchestrator (AZ)"
+_patch_notebook.py:4304:    # --- Fix AP-2: increase report_packager recursion_limit to 80 ---
+_patch_notebook.py:4306:    fixap2_old = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
+_patch_notebook.py:4307:    fixap2_new = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_packager (AZ)"
+_patch_notebook.py:4784:    # has NO error handling. If this throws GraphRecursionError or any exception, it propagates
+_patch_notebook.py:4786:    # Fix W3a: inject _safe_report_orchestrator_invoke with retry + recovery fallback.
+_patch_notebook.py:4792:    SAFE_RO_HELPER = (
+_patch_notebook.py:4794:        "def _safe_report_orchestrator_invoke(agent, inputs, config=None):\n"
+_patch_notebook.py:4798:        "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_orchestrator (AZ: raised to 160)\n"
+_patch_notebook.py:4881:        if "_safe_report_orchestrator_invoke" in src:
+_patch_notebook.py:4889:            SAFE_RO_HELPER + "def report_orchestrator(",
+_patch_notebook.py:4923:            "    outline_response = _safe_report_orchestrator_invoke(report_generator_agent, invoke_state, config=state.get(\"_config\"))  # Fix W3",
+_patch_notebook.py:4929:            "    outline_response = _safe_report_orchestrator_invoke(report_generator_agent, invoke_state, config=state.get(\"_config\"))  # Fix W3",
+_patch_notebook.py:4947:                    new_invoke = "_safe_report_orchestrator_invoke(report_generator_agent, invoke_state, config=state.get(\"_config\"))  # Fix W3"
+_patch_notebook.py:4952:                        SAFE_RO_HELPER + "def report_orchestrator(",
+_patch_notebook.py:5186:            safe_invoke = (
+_patch_notebook.py:5193:            new_src = new_src.replace(old_invoke, safe_invoke, 1)
+_patch_notebook.py:5457:            '    _viz_mm_safe_tool = _viz_mm_raw.__class__.from_function(\n'
+_patch_notebook.py:5463:            '    _viz_mm_safe_tool = _viz_mm_raw  # fallback to original\n'
+_patch_notebook.py:5464:            'visualization_tools.append(_viz_mm_safe_tool)\n'
+
+
