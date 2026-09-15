@@ -51,7 +51,11 @@ def fix_double_braces_in_notebook(notebook_path: str) -> None:
 
 def main():
     """Main function."""
-    notebook_path = "/home/runner/work/intelligent_data_detective/intelligent_data_detective/IntelligentDataDetective_beta_v4.ipynb"
+    notebook_path_str = os.environ.get(
+        "NOTEBOOK_PATH",
+        str(Path(__file__).parent / "IntelligentDataDetective_beta_v5.ipynb")
+    )
+    notebook_path = Path(notebook_path_str)
     fix_double_braces_in_notebook(notebook_path)
 
 
