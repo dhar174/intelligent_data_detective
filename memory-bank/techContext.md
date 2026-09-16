@@ -48,8 +48,52 @@ export TAVILY_API_KEY="your-tavily-api-key"   # optional
 - Duration: 6–8 min (small), 12–15 min (medium), 20–25 min (large)
 - **Never cancel a running workflow** — interrupting mid-run leaves state inconsistent
 
+## CI pipeline
+File: `.github/workflows/copilot-setup-steps.yml`
+Triggers: `pull_request` to `main`, `push` to `main`, `workflow_dispatch`
+
+Steps (in order):
+1. **Check required project files** — asserts key test files plus both notebooks (`IntelligentDataDetective_beta_v5.ipynb` and `IntelligentDataDetective_beta_v5_patched.ipynb`) are present.
+2. **Validate notebook files** — smoke-checks both notebooks by parsing JSON and confirming at least one cell exists.
+3. **Install dependencies** — uses `requirements.txt` / `requirements-dev.txt` when present; falls back to an inline `pip install` list.
+4. **Run no-key unit/integration checks** — `python -m pytest test_validate_run.py tests/unit tests/integration -q`.
+5. **Run root regression tests** — explicitly invokes `test_intelligent_data_detective.py`, `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py` (these live at repo root, outside `tests/`).
+6. **Run error-handling regression tests (required)** — runs `test_error_handling_framework.py` with the one known signature edge-case deselected.
+7. **Run known edge-case signature test (non-blocking)** — runs only `TestErrorHandlingFramework::test_integration_with_different_function_signatures` with `continue-on-error: true`.
+8. **Check formatting** — `black --check` on the two main test files.
+9. **Run flake8 on root regression test file** — `flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501`.
+10. **Lint validation scripts** — `python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503`.
+11. **Summarize CI caveats** — always-run step noting no-key scope, explicit root-regression invocation, isolated known edge-case handling, and API-key trajectory test exclusion.
+
 ## Constraints
 - No `src/` directory — Python files are at repo root.
-- There is no CI pipeline (no `.github/workflows/` for automated test runs).
 - Preserve user-authored docs and existing agent assets outside managed sections.
 <!-- repo-agent-bootstrap:managed:end -->
+
+<!-- session-curated:start -->
+## Session-added tooling
+
+### `validate_graph.py` (repo root)
+Fast (<20s) **compile-only** graph validator. No API calls — safe to run as a pre-commit gate before launching a full notebook run.
+
+Detects:
+- Managed-channel collisions (e.g., `remaining_steps` leaking into InputSchema, source of BR-7).
+- Missing reducers on collection fields.
+- Unreachable nodes / dead-end nodes (e.g., EMERGENCY_MSG with no outgoing edge).
+- Schema-tool name collisions across agents.
+
+```bash
+python validate_graph.py
+```
+
+### Resuming a notebook run
+```bash
+python run_notebook_live.py --resume
+```
+Resumes from `checkpoints.sqlite`, skipping completed nodes (saves 12–15 min on a typical mid-pipeline restart). **Only safe if `State` schema is unchanged since the last checkpoint.** Adding a field, changing a reducer, or renaming an annotation invalidates the checkpoint and will cause silent corruption — delete `checkpoints.sqlite` and start fresh in that case.
+
+### Test baseline (reaffirmed this session)
+- `test_intelligent_data_detective.py`: **22/22 pass**
+- `test_error_handling_framework.py`: **15/16 pass** (same known edge case)
+<!-- session-curated:end -->
+

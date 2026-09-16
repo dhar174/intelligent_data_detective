@@ -1162,8 +1162,8 @@ class DataFrameRegistry:
                     loaded = self._read_df(path)            # FIX: read by suffix
                 except FileNotFoundError:
                     return None
-                except Exception as e:
-                    print(f"Error loading DataFrame from {path}: {e}")
+                except Exception:
+                    logging.exception("Error loading DataFrame from %s", path)
                     return None
                 self.registry[df_id]["df"] = loaded
                 self._touch_cache(df_id, loaded)
@@ -3135,6 +3135,27 @@ import base64, binascii, html, shutil
 
 
 # Error Handling and Validation Framework
+def _tool_error(operation: str, reason: str, action: str) -> dict:
+    """Return the stable, user-facing error response used by data tools."""
+    return {
+        "status": "error",
+        "operation": operation,
+        "reason": reason,
+        "action": action,
+    }
+
+
+def _tool_failure(operation: str, action: str, exc: Exception | None = None) -> dict:
+    """Log diagnostic details while keeping unexpected failures user-safe."""
+    if exc is not None:
+        logging.exception("%s failed: %s", operation, exc)
+    return _tool_error(
+        operation,
+        "An unexpected data-processing failure occurred.",
+        action,
+    )
+
+
 def validate_dataframe_exists(df_id: str) -> bool:
     """Validates the existence and validity of a dataframe by its ID.
 
@@ -3149,30 +3170,11 @@ def validate_dataframe_exists(df_id: str) -> bool:
         ...     # proceed with operations
         ...     pass
     """
-    if not df_id or not isinstance(df_id, str):
+    if not isinstance(df_id, str) or not df_id.strip():
         return False
 
-    try:
-        # Check if DataFrame exists in registry
-        df = global_df_registry.get_dataframe(df_id)
-        if df is not None:
-            return not df.empty  # DataFrame exists and is not empty
-
-        # Try to load from raw path if not in registry
-        raw_path = global_df_registry.get_raw_path_from_id(df_id)
-        if raw_path and os.path.exists(raw_path):
-            try:
-                df = pd.read_csv(raw_path)
-                if df is not None and not df.empty:
-                    # Register the loaded DataFrame
-                    global_df_registry.register_dataframe(df, df_id, raw_path)
-                    return True
-            except Exception:
-                return False
-
-        return False
-    except Exception:
-        return False
+    df = global_df_registry.get_dataframe(df_id, load_if_not_exists=True)
+    return df is not None and not df.empty
 
 def handle_tool_errors(func):
     """Decorator for consistent error handling across tool functions.
@@ -3192,67 +3194,111 @@ def handle_tool_errors(func):
         ...     # tool implementation
         ...     return "success"
     """
+    try:
+        func_signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        func_signature = None
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         try:
             # Extract DataFrame ID from function arguments
             df_id = None
+            df_id_supplied = False
 
-            # Check first positional argument
-            if args and isinstance(args[0], str):
-                df_id = args[0]
+            try:
+                bound_args = (
+                    func_signature.bind_partial(*args, **kwargs)
+                    if func_signature is not None
+                    else None
+                )
+            except TypeError as exc:
+                return _tool_error(
+                    func.__name__,
+                    f"Invalid arguments: {exc}",
+                    "Check the operation parameters and try again.",
+                )
+
+            # Bind the declared df_id parameter first, even for non-string values.
+            if bound_args and 'df_id' in bound_args.arguments:
+                df_id = bound_args.arguments['df_id']
+                df_id_supplied = True
             # Check for df_id in keyword arguments
             elif 'df_id' in kwargs:
                 df_id = kwargs['df_id']
+                df_id_supplied = True
             # For functions with params as first arg, check params.df_id
             elif args and hasattr(args[0], 'df_id'):
                 df_id = args[0].df_id
+                df_id_supplied = True
 
-            # Validate DataFrame exists if df_id is found
-            if df_id and not validate_dataframe_exists(df_id):
-                error_msg = f"Error: DataFrame with ID '{df_id}' not found or is invalid."
-                logging.error(f'{func.__name__}: {error_msg}')
-                return error_msg
+            # Validate DataFrame exists for all explicitly supplied IDs.
+            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):
+                return _tool_error(
+                    func.__name__,
+                    "DataFrame ID must be a non-empty string.",
+                    "Provide the ID of a registered, non-empty DataFrame.",
+                )
+            if df_id_supplied and not validate_dataframe_exists(df_id):
+                return _tool_error(
+                    func.__name__,
+                    f"DataFrame '{df_id}' was not found or is empty.",
+                    "Provide the ID of a registered, non-empty DataFrame.",
+                )
 
             # Call the original function
             result = func(*args, **kwargs)
             return result
 
         except FileNotFoundError as e:
-            error_msg = f"Error: File not found - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "The dataset or required file could not be found.",
+                "Check the DataFrame ID and registered source path.",
+            )
 
         except KeyError as e:
-            error_msg = f"Error: Column or key '{str(e)}' not found"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "A requested column or key does not exist.",
+                "Check the available column names and try again.",
+            )
 
 
         except pd.errors.EmptyDataError:
-            error_msg = "Error: No data - the DataFrame or file is empty"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "The dataset contains no rows.",
+                "Provide a non-empty DataFrame.",
+            )
 
         except pd.errors.ParserError as e:
-            error_msg = f"Error: Failed to parse data - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "The dataset could not be parsed.",
+                "Check the source file format and reload the dataset.",
+            )
 
         except pd.errors.DtypeWarning as e:
-            error_msg = f"Error: Data type mismatch - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "The data types are incompatible with this operation.",
+                "Use a column with a compatible data type.",
+            )
 
         except ValueError as e:
-            error_msg = f"Error: Invalid value - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_error(
+                func.__name__,
+                "One or more inputs are invalid.",
+                "Check the operation parameters and try again.",
+            )
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
+            return _tool_failure(
+                func.__name__,
+                "Retry the operation; if it continues, check the dataset and logs.",
+                e,
+            )
 
     return wrapper
 
@@ -3334,108 +3380,126 @@ def check_missing_values(df_id: str) -> str:
         return f"Error checking missing values for DataFrame '{df_id}': {e}"
 
 @tool("drop_column", description= "Useful to drop a column from the current DataFrame.")
+@handle_tool_errors
 def drop_column(df_id: str, column_name: str) -> str:
     """Drops a specified column from the DataFrame."""
-    pprint(f"Dropping column {column_name} from {df_id}")
+    operation = "drop_column"
+    if not isinstance(column_name, str) or not column_name.strip():
+        return _tool_error(
+            operation,
+            "column_name must be a non-empty string.",
+            "Provide the name of an existing column.",
+        )
     df = global_df_registry.get_dataframe(df_id)
-    try:
-        if df is None:
-          try:
-            raw_path = global_df_registry.get_raw_path_from_id(df_id)
-            if raw_path is None or "not found" in raw_path:
-                return f"Error: DataFrame path for id '{df_id}' not found."
-            df = pd.read_csv(raw_path)
-            global_df_registry.register_dataframe(df, df_id, raw_path)
-          except Exception as e:
-            return f"Error loading DataFrame: {e}"
-        if column_name not in df.columns:
-            return f"Error: Column '{column_name}' not found in DataFrame '{df_id}'. Available columns: {list(df.columns)}"
-        df.drop(columns=[column_name], inplace=True)
-        # Re-register to ensure cache is updated
-        global_df_registry.register_dataframe(df, df_id, global_df_registry.get_raw_path_from_id(df_id))
-        return "Column dropped successfully. New columns: " + ", ".join(df.columns.tolist())
-    except Exception as e:
-        return f"Error dropping column: {e}"
+    if column_name not in df.columns:
+        return _tool_error(
+            operation,
+            f"Column '{column_name}' does not exist.",
+            f"Choose one of: {', '.join(map(str, df.columns))}.",
+        )
+    updated_df = df.drop(columns=[column_name])
+    new_columns = ", ".join(map(str, updated_df.columns.tolist()))
+    global_df_registry.register_dataframe(
+        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
+    )
+    return f"Column dropped successfully. New columns: {new_columns}"
 
 @tool("delete_rows")
 @cap_output(max_chars=3000, max_bytes=10_000, max_lines=200, add_footer=True, mode="preserve")
+@handle_tool_errors
 def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:
     """Deletes rows from the DataFrame based on specified conditions."""
-    try:
-        df = global_df_registry.get_dataframe(df_id)
-        if not isinstance(conditions, (str, list, dict)):
-            return f"Error: 'conditions' must be a string, list of strings, or dict. Received type: {type(conditions).__name__}"
-        if df is None:
-          try:
-            raw_path = global_df_registry.get_raw_path_from_id(df_id)
-            if raw_path is None or "not found" in raw_path:
-                return f"Error: DataFrame path for id '{df_id}' not found."
-            df = pd.read_csv(raw_path)
-            global_df_registry.register_dataframe(df, df_id, raw_path)
-          except Exception as e:
-            return f"Error loading DataFrame: {e}"
-
-        query_str = ""
-        if isinstance(conditions, str):
-            query_str = conditions
-        elif isinstance(conditions, list):
-            query_str = " and ".join(f"({c})" for c in conditions)
-        elif isinstance(conditions, dict):
-            # This logic assumes a simple AND condition between all specified conditions.
-            # It could be extended to support more complex logic (e.g., OR) if needed.
-            all_conditions = []
-            for cond_list in conditions.values():
-                all_conditions.extend(cond_list)
-            query_str = " and ".join(f"({c})" for c in all_conditions)
-        else:
-            return f"Error: Invalid conditions format. Received type: {type(conditions).__name__}"
-
-        try:
-            rows_to_drop = df.query(query_str).index
-        except Exception as e:
-            return f"Error evaluating query: {e}"
-
-        if rows_to_drop.empty:
-            return f"No rows match the provided condition(s): {conditions}"
-
-        if inplace:
-            df.drop(index=rows_to_drop, inplace=True)
-            # Re-register the modified DataFrame to update the cache
-            raw_path = global_df_registry.get_raw_path_from_id(df_id)
-            if raw_path is None or "not found" in raw_path:
-                return f"Error: DataFrame path for id '{df_id}' not found."
-            global_df_registry.register_dataframe(df, df_id, raw_path)
-            return f"{len(rows_to_drop)} rows deleted successfully."
-        else:
-            # Return the rows that would be deleted, not the original df
-            return df.loc[rows_to_drop].to_json()
-    except Exception as e:
-        return f"Error deleting rows: {e}"
-
-@tool("fill_missing_median", description= "Useful to fill missing values in a specified column with the median.")
-def fill_missing_median(df_id: str, column_name: str) -> str:
-    """Fills missing values in a specified column with the median."""
-    pprint(f"Filling missing values in column {column_name} from {df_id}")
+    operation = "delete_rows"
+    if not isinstance(conditions, (str, list, dict)):
+        return _tool_error(
+            operation,
+            "'conditions' must be a string, list of strings, or dict.",
+            "Provide a valid pandas query or a non-empty list/dict of queries.",
+        )
+    if isinstance(conditions, str):
+        query_parts = [conditions]
+    elif isinstance(conditions, list):
+        query_parts = conditions
+    else:
+        invalid_selector_keys = [
+            key
+            for key, condition_list in conditions.items()
+            if not isinstance(condition_list, (list, tuple))
+        ]
+        if invalid_selector_keys:
+            return _tool_error(
+                operation,
+                "The row selector dictionary contains non-list values.",
+                "Provide only list/tuple query clauses for each selector key.",
+            )
+        query_parts = [
+            condition
+            for condition_list in conditions.values()
+            for condition in condition_list
+        ]
+    if not query_parts or not all(isinstance(condition, str) and condition.strip() for condition in query_parts):
+        return _tool_error(
+            operation,
+            "The row selector is empty or contains a non-string condition.",
+            "Provide one or more non-empty pandas query expressions.",
+        )
+    query_str = " and ".join(f"({condition})" for condition in query_parts)
     df = global_df_registry.get_dataframe(df_id)
     try:
-      if df is None:
-        try:
-          raw_path = global_df_registry.get_raw_path_from_id(df_id)
-          if raw_path is None:
-              return f"Error: DataFrame path for id '{df_id}' not found."
-          df = pd.read_csv(raw_path)
-          global_df_registry.register_dataframe(df, df_id, raw_path)
-        except Exception as e:
-          return f"Error loading DataFrame: {e}"
-      if column_name not in df.columns:
-          return f"Error: Column '{column_name}' not found in DataFrame '{df_id}'."
-      if not pd.api.types.is_numeric_dtype(df[column_name]):
-          return f"Error: Column '{column_name}' in DataFrame '{df_id}' is not numeric and cannot compute median."
-      median_value = df[column_name].median()
-      df[column_name].fillna(median_value, inplace=True) # Modified to be inplace on the actual df from registry
-      return f"Missing values in column '{column_name}' filled with median: {median_value}."
-    except Exception as e:
-        return f"Error filling missing values: {e}"
+        rows_to_drop = df.query(query_str).index
+    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
+        return _tool_error(
+            operation,
+            f"The row selector is invalid: {type(exc).__name__}.",
+            "Check column names, operators, and values in the query.",
+        )
+    if rows_to_drop.empty:
+        return f"No rows match the provided condition(s): {conditions}"
+    if not inplace:
+        return df.loc[rows_to_drop].to_json()
+    updated_df = df.drop(index=rows_to_drop)
+    global_df_registry.register_dataframe(
+        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
+    )
+    return f"{len(rows_to_drop)} rows deleted successfully."
+
+@tool("fill_missing_median", description= "Useful to fill missing values in a specified column with the median.")
+@handle_tool_errors
+def fill_missing_median(df_id: str, column_name: str) -> str:
+    """Fills missing values in a specified column with the median."""
+    operation = "fill_missing_median"
+    if not isinstance(column_name, str) or not column_name.strip():
+        return _tool_error(
+            operation,
+            "column_name must be a non-empty string.",
+            "Provide the name of an existing numeric column.",
+        )
+    df = global_df_registry.get_dataframe(df_id)
+    if column_name not in df.columns:
+        return _tool_error(
+            operation,
+            f"Column '{column_name}' does not exist.",
+            "Check the available column names and try again.",
+        )
+    if not pd.api.types.is_numeric_dtype(df[column_name]):
+        return _tool_error(
+            operation,
+            f"Column '{column_name}' is not numeric.",
+            "Choose a numeric column before calculating a median.",
+        )
+    median_value = df[column_name].median()
+    if pd.isna(median_value):
+        return _tool_error(
+            operation,
+            f"Column '{column_name}' contains no non-null values.",
+            "Provide a column with at least one numeric value.",
+        )
+    updated_df = df.copy()
+    updated_df[column_name] = updated_df[column_name].fillna(median_value)
+    global_df_registry.register_dataframe(
+        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)
+    )
+    return f"Missing values in column '{column_name}' filled with median: {median_value}."
 
 data_cleaning_tools = [
     get_dataframe_schema,
@@ -16152,6 +16216,13 @@ def viz_evaluator_node(state: State):
             if t not in task_result_map.keys() and t not in result_task_map.values():
                 final_grade.redo_list.append(t)
         vr_results = state.get("viz_results", []) or []
+        # Pre-calculate sets for membership testing to improve performance from O(N*M) to O(N+M)
+        task_result_titles = {r.visualization_title for r in task_result_map.values()}
+        spec_result_ids = {res.visualization_id for res in spec_result_map.values()}
+        normalized_spec_result_keys = {
+            s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)
+        }
+
         for r in results:
             if r.visualization_title in final_grade.redo_list:
                 results.remove(r)
@@ -16160,13 +16231,21 @@ def viz_evaluator_node(state: State):
                         vr_results.remove(vr)
                         break
             else:
+                normalized_visualization_id = (
+                    r.visualization_id.lower().strip()
+                    if isinstance(r.visualization_id, str)
+                    else None
+                )
                 if r.visualization_id in result_task_map.keys():
                     tasks.remove(result_task_map[r.visualization_id])
-                elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:
+                elif r.visualization_title in task_result_titles:
                     tasks.remove(r.visualization_title)
                 if r.visualization_id in result_spec_map.keys():
                     specs.remove(result_spec_map[r.visualization_id])
-                elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:
+                elif (
+                    r.visualization_id in spec_result_ids
+                    or normalized_visualization_id in normalized_spec_result_keys
+                ):
                     specs.remove(result_spec_map[r.visualization_title])
         memory_text = f"The Visualization Evaluator has produced feedback on the latest run of visualizations. The final grade is {final_grade.grade} with the following feedback: {final_grade.feedback}.\n"
         for res in results:

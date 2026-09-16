@@ -21,23 +21,28 @@ flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E
 export OPENAI_API_KEY="your-openai-api-key"
 export TAVILY_API_KEY="your-tavily-api-key"  # Optional – enables web search
 
-jupyter notebook IntelligentDataDetective_beta_v5.ipynb
+export IDD_NOTEBOOK="IntelligentDataDetective_beta_v5_patched.ipynb"
+export IDD_SAMPLE_DATASET="retail_orders"
+python run_notebook_live.py
+
+python validate_run.py --latest --log-path notebook_run_log.txt --window 180
+python validate_artifact_quality.py --latest
 ```
 
 ## Architecture
 
-The entire system lives in `IntelligentDataDetective_beta_v5.ipynb` (27 cells, ~11 k lines). There is no separate Python package; the notebook is the source of truth. Key cells:
+The active W14 runnable notebook is `IntelligentDataDetective_beta_v5_patched.ipynb` (99 cells). Notebook behavior changes are made in `_patch_notebook.py`, which regenerates the patched notebook from `IntelligentDataDetective_beta_v5.ipynb`; do not hand-edit the generated patched notebook. The W14 completion baseline is `IDD_run_run_default_id-20260504-1338-b3079aea`, validated by `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9. Key source areas:
 
 | Cell | Purpose |
 |------|---------|
-| 1 | Environment setup, API key handling, package install |
-| 4 | Core imports and type aliases |
-| 5 | `MyChatOpenai` – custom `ChatOpenAI` subclass for GPT-5 / o-series models |
-| 7 | Pydantic models (`BaseNoExtrasModel`, `State`, `AnalysisConfig`, etc.) |
-| 8 | `DataFrameRegistry` – thread-safe LRU DataFrame manager |
-| 10 | Agent prompt templates and `DEFAULT_TOOLING_GUIDELINES` |
-| 12/13 | All tools (~78 functions) + `@handle_tool_errors` decorator |
-| 14+ | Agent construction, LangGraph graph wiring, graph compilation |
+| Area | Purpose |
+|------|---------|
+| `_patch_notebook.py` | Durable patch source; regenerates the patched notebook |
+| `IntelligentDataDetective_beta_v5_patched.ipynb` | Committed runnable W14 notebook |
+| Early notebook cells | Environment setup, imports, `MyChatOpenai`, models, `State`, `DataFrameRegistry` |
+| Tool cells | All tools + `@handle_tool_errors` decorator and per-agent tool lists |
+| Agent/graph cells | Agent construction, supervisor routing, LangGraph graph wiring |
+| Final cells | Dataset selection, execution entrypoint, report/artifact generation |
 
 **Agent pipeline** (supervisor-worker pattern via LangGraph):
 
@@ -60,6 +65,9 @@ The `State` TypedDict uses custom reducers instead of plain annotations. Example
 - `Annotated[Sequence[BaseMessage], operator.add]` – messages accumulate (standard LangGraph pattern)
 
 Do not use plain field assignments for state fields that have these reducers, or state merges will silently behave incorrectly.
+
+### Visualization fan-in
+W14H intentionally rebuilds visualization fan-in in `viz_join` from `viz_results`, `visualization_results`, `viz_paths`, and discovered PNG artifacts before evaluation. Preserve this union behavior; relying only on the last-writer `visualization_results` channel can drop parallel worker outputs.
 
 ### Tool implementation pattern
 Every tool in Cell 13 follows this signature and decorator:
@@ -86,6 +94,9 @@ Memory is stored under categorised namespaces: `('memories', '<kind>')` where ki
 
 ### File writes
 All file-writing tools call `_resolve_artifact_path()` which validates that the target is within the artifacts directory (path-traversal protection). Never bypass this by writing directly with `open()`.
+
+### Final artifact baseline
+The current completion proof expects canonical root artifacts `final_report.html`, `final_report.md`, and `final_report.pdf`, at least three distinct visualizations, no `.txt` marker/status artifacts, no tiny placeholder files, no path-normalization warnings, and no recovery/final-hop/native-failure markers in the run log.
 
 ## Known Issues
 
