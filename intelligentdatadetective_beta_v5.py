@@ -69,11 +69,11 @@ else:
     oai_key = os.environ.get('OPENAI_API_KEY')
 
 if use_local_llm:
-    !pip install -U langchain_huggingface sentence_transformers
+    pass # !pip install -U langchain_huggingface sentence_transformers
 
 # Install or upgrade the required packages directly from within the notebook using pip.
 # WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.
-!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite
+# !pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite
 
 
 
@@ -623,7 +623,7 @@ class MyChatOpenai(ChatOpenAI):
 # 📋 Dependency Version Verification
 """
 
-!pip show --verbose langchain_experimental
+# !pip show --verbose langchain_experimental
 
 """Quick verification of installed package versions:
 - **LangChain Experimental**: Checks the version of experimental features being used
@@ -17415,17 +17415,18 @@ def content_to_text(content, allow_reasoning: bool = False) -> str:
                 return
             elif obj_type == "reasoning":
                 summary =  getnestedattr(obj, "summary",getattr(obj, "summary", None)) or obj.get("summary")
-                summary_text = ""
+                summary_parts = []
                 if summary:
                     if isinstance(summary, list):
 
                         for s in summary:
                             stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_text += str(stext)
+                            summary_parts.append(str(stext))
                     if isinstance(summary, dict):
-                        summary_text += str(summary.get("text", ""))
+                        summary_parts.append(str(summary.get("text", "")))
                     if isinstance(summary, str):
-                        summary_text += str(summary)
+                        summary_parts.append(str(summary))
+                    summary_text = "".join(summary_parts)
                     assert isinstance(summary_text, str)
                     if summary_text.strip():
                         text_parts.append(summary_text)
@@ -17437,17 +17438,18 @@ def content_to_text(content, allow_reasoning: bool = False) -> str:
             if getnestedattr(obj, "reasoning", getattr(obj, "reasoning", None)) is not None:
                 rsng_obj = getnestedattr(obj, "reasoning", getattr(obj, "reasoning", None))
                 summary =  getnestedattr(rsng_obj, "summary",getattr(rsng_obj, "summary", None)) or obj.get("summary")
-                summary_text = ""
+                summary_parts = []
                 if summary:
                     if isinstance(summary, list):
 
                         for s in summary:
                             stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_text += str(stext)
+                            summary_parts.append(str(stext))
                     if isinstance(summary, dict):
-                        summary_text += str(summary.get("text", ""))
+                        summary_parts.append(str(summary.get("text", "")))
                     if isinstance(summary, str):
-                        summary_text += str(summary)
+                        summary_parts.append(str(summary))
+                    summary_text = "".join(summary_parts)
                     assert isinstance(summary_text, str)
                     if summary_text.strip():
                         text_parts.append(summary_text)
@@ -18200,17 +18202,18 @@ def handle_messages(
 
         elif getnestedattr(msg, "reasoning", getattr(msg, "reasoning", None)) is not None or getnestedattr(msg, "type", getattr(msg, "type", None)) == "reasoning":
             summary =  getnestedattr(msg, "summary",getattr(msg, "summary", None)) or msg.get("summary")
-            summary_text = ""
+            summary_parts = []
             if summary:
                 if isinstance(summary, list):
 
                     for s in summary:
                         stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                        summary_text += str(stext)
+                        summary_parts.append(str(stext))
                 if isinstance(summary, dict):
-                    summary_text += str(summary.get("text", ""))
+                    summary_parts.append(str(summary.get("text", "")))
                 if isinstance(summary, str):
-                    summary_text += str(summary)
+                    summary_parts.append(str(summary))
+                summary_text = "".join(summary_parts)
                 assert isinstance(summary_text, str)
                 if summary_text.strip():
                     text_parts_.append(summary_text)
@@ -18222,17 +18225,18 @@ def handle_messages(
         if getnestedattr(msg, "reasoning", getattr(msg, "reasoning", None)) is not None:
             rsng_obj = getnestedattr(msg, "reasoning", getattr(msg, "reasoning", None))
             summary =  getnestedattr(rsng_obj, "summary",getattr(rsng_obj, "summary", None)) or msg.get("summary")
-            summary_text = ""
+            summary_parts = []
             if summary:
                 if isinstance(summary, list):
 
                     for s in summary:
                         stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                        summary_text += str(stext)
+                        summary_parts.append(str(stext))
                 if isinstance(summary, dict):
-                    summary_text += str(summary.get("text", ""))
+                    summary_parts.append(str(summary.get("text", "")))
                 if isinstance(summary, str):
-                    summary_text += str(summary)
+                    summary_parts.append(str(summary))
+                summary_text = "".join(summary_parts)
                 assert isinstance(summary_text, str)
                 if summary_text.strip():
                     text_parts_.append(summary_text)
@@ -18302,17 +18306,18 @@ def process_stream_event(
                     print(resp_meta["incomplete_details"], flush=True)
             if getnestedattr(meta, "reasoning", getattr(meta, "reasoning", None)) is not None or getnestedattr(meta, "type", getattr(meta, "type", None)) == "reasoning":
                 summary =  getnestedattr(meta, "summary",getattr(meta, "summary", None)) or meta.get("summary")
-                summary_text = ""
+                summary_parts = []
                 if summary:
                     if isinstance(summary, list):
 
                         for s in summary:
                             stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_text += str(stext)
+                            summary_parts.append(str(stext))
                     if isinstance(summary, dict):
-                        summary_text += str(summary.get("text", ""))
+                        summary_parts.append(str(summary.get("text", "")))
                     if isinstance(summary, str):
-                        summary_text += str(summary)
+                        summary_parts.append(str(summary))
+                    summary_text = "".join(summary_parts)
                     assert isinstance(summary_text, str)
                     if summary_text.strip():
                         text_parts_.append(summary_text)
@@ -18324,17 +18329,18 @@ def process_stream_event(
             if getnestedattr(meta, "reasoning", getattr(meta, "reasoning", None)) is not None:
                 rsng_obj = getnestedattr(meta, "reasoning", getattr(meta, "reasoning", None))
                 summary =  getnestedattr(rsng_obj, "summary",getattr(rsng_obj, "summary", None)) or meta.get("summary")
-                summary_text = ""
+                summary_parts = []
                 if summary:
                     if isinstance(summary, list):
 
                         for s in summary:
                             stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_text += str(stext)
+                            summary_parts.append(str(stext))
                     if isinstance(summary, dict):
-                        summary_text += str(summary.get("text", ""))
+                        summary_parts.append(str(summary.get("text", "")))
                     if isinstance(summary, str):
-                        summary_text += str(summary)
+                        summary_parts.append(str(summary))
+                    summary_text = "".join(summary_parts)
                     assert isinstance(summary_text, str)
                     if summary_text.strip():
                         text_parts_.append(summary_text)
