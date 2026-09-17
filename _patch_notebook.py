@@ -8,6 +8,7 @@ Saves patched notebook as IntelligentDataDetective_beta_v5_patched.ipynb
 
 import json
 import copy
+import re
 
 INPUT_NB = "IntelligentDataDetective_beta_v5.ipynb"
 OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
@@ -269,9 +270,48 @@ RECALC_FETCH_NEW = """        kinds_to_process = kinds or list(KNOWN_MEMORY_KIND
                 items = items_by_kind.get(kind, [])
 """
 
+REASONING_SUMMARY_CONCAT_NEW_RELATIVE_LINES = [
+    "summary_parts = []",
+    "if summary:",
+    "    if isinstance(summary, list):",
+    "",
+    "        for s in summary:",
+    '            stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))',
+    "            summary_parts.append(str(stext))",
+    "    if isinstance(summary, dict):",
+    '        summary_parts.append(str(summary.get("text", "")))',
+    "    if isinstance(summary, str):",
+    "        summary_parts.append(str(summary))",
+    '    summary_text = "".join(summary_parts)',
+]
+
 
 def join_source(src):
     return "".join(src) if isinstance(src, list) else src
+
+
+def patch_reasoning_summary_concat(source):
+    """Use linear-time list joining for streamed reasoning summaries."""
+    pattern = re.compile(
+        r'(?P<indent>[ \t]*)summary_text[ \t]*=[ \t]*""\n'
+        r"(?P=indent)if summary:\n"
+        r"(?P=indent)    if isinstance\(summary, list\):\n"
+        r"(?:\n)?"
+        r"(?P=indent)        for s in summary:\n"
+        r'(?P=indent)            stext = s\.get\("text"\) if isinstance\(s, dict\) else getnestedattr\(s, "text", getattr\(s, "text", ""\)\)\n'
+        r'(?P=indent)            summary_text \+= str\(stext\)\n'
+        r'(?P=indent)    if isinstance\(summary, dict\):\n'
+        r'(?P=indent)        summary_text \+= str\(summary\.get\("text", ""\)\)\n'
+        r'(?P=indent)    if isinstance\(summary, str\):\n'
+        r"(?P=indent)        summary_text \+= str\(summary\)\n"
+    )
+
+    def replace_block(match):
+        indent = match.group("indent")
+        adjusted = [f"{indent}{line}" if line else "" for line in REASONING_SUMMARY_CONCAT_NEW_RELATIVE_LINES]
+        return "\n".join(adjusted) + "\n"
+
+    return pattern.sub(replace_block, source)
 
 
 def main():
@@ -280,6 +320,25 @@ def main():
 
     cells = nb["cells"]
     print(f"Loaded notebook with {len(cells)} cells")
+
+    # --- Optimize reasoning summary extraction in every code cell ---
+    patched_reasoning_cells = 0
+    for cell in cells:
+        source = join_source(cell["source"])
+        patched_source = patch_reasoning_summary_concat(source)
+        if patched_source != source:
+            cell["source"] = patched_source
+            if cell["cell_type"] == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            patched_reasoning_cells += 1
+    if patched_reasoning_cells:
+        print(
+            "✅ Optimized reasoning summary concatenation in "
+            f"{patched_reasoning_cells} cell(s)"
+        )
+    else:
+        print("ℹ️  Reasoning summary concatenation already optimized")
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]

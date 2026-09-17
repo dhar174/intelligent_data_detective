@@ -41,17 +41,15 @@ def test_notebook_produces_report():
     3. At least one PNG visualization was created
     4. Report is non-empty (> 100 bytes)
     """
-    patched_nb = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
-    if not patched_nb.exists():
-        result = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "_patch_notebook.py")],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, (
-            f"_patch_notebook.py failed:\n{result.stdout}\n{result.stderr}"
-        )
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "_patch_notebook.py")],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"_patch_notebook.py failed:\n{result.stdout}\n{result.stderr}"
+    )
 
     run_script = REPO_ROOT / "run_notebook_live.py"
     assert run_script.exists(), "run_notebook_live.py not found"
