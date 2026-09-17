@@ -1,375 +1,760 @@
 #!/usr/bin/env python3
 """
-Prompt Template Formatter Validation Tool
+Prompt Template Formatting Validation Tool
 
-This script validates ChatPromptTemplate instances in the IntelligentDataDetective notebook
-for correct formatting, proper variable substitution, and string construction.
+Validates ChatPromptTemplate instances defined in the Intelligent Data Detective
+notebook for:
+
+- mistaken double-braced placeholders such as ``{{user_prompt}}``
+- unmatched / malformed Python-format braces
+- placeholder / ``.partial(...)`` consistency
+- MessagesPlaceholder naming conventions
+
+Template extraction and string analysis use Python's ``ast`` module rather than
+regular expressions over raw source. This makes multiline definitions,
+triple-quoted strings, escaped quotes, f-strings, and chained calls far less
+fragile.
+
+The default validation target is the committed runnable patched notebook.
+Override it with a positional path, ``$IDD_NOTEBOOK``, or ``$NOTEBOOK_PATH``.
 """
 
-import json
-import re
+from __future__ import annotations
+
+import argparse
 import ast
-from typing import List, Dict, Any, Set, Tuple
+import json
+import os
+import re
+import sys
+from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
+from string import Formatter
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+
+class Severity(str, Enum):
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
+
+
+class IssueType(str, Enum):
+    PARSE_ERROR = "parse_error"
+    DOUBLE_BRACE_PLACEHOLDER = "double_brace_placeholder"
+    AMBIGUOUS_DOUBLE_BRACES = "ambiguous_double_braces"
+    UNMATCHED_BRACES = "unmatched_braces"
+    UNDECLARED_PLACEHOLDER = "undeclared_placeholder"
+    DYNAMIC_PARTIAL_ARGUMENTS = "dynamic_partial_arguments"
+    NON_STANDARD_MESSAGES_PLACEHOLDER = "non_standard_messages_placeholder"
+
+
+@dataclass(slots=True)
+class ValidationIssue:
+    type: IssueType
+    template: str
+    message: str
+    severity: Severity
+    cell_index: int | None = None
+    line: int | None = None
+    detail: str | None = None
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["type"] = self.type.value
+        data["severity"] = self.severity.value
+        return data
+
+
+@dataclass(slots=True)
+class ExtractedTemplate:
+    """A ChatPromptTemplate assignment plus the AST needed to analyze it."""
+
+    name: str
+    cell_index: int
+    start_line: int
+    source: str
+    value_node: ast.expr
+
+
+@dataclass(slots=True)
+class ValidationReport:
+    templates: list[ExtractedTemplate]
+    issues: list[ValidationIssue]
+
+    @property
+    def errors(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity is Severity.ERROR]
+
+    @property
+    def warnings(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity is Severity.WARNING]
+
+    @property
+    def info(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity is Severity.INFO]
+
+    def to_dict(self) -> dict:
+        return {
+            "total_templates": len(self.templates),
+            "template_names": [template.name for template in self.templates],
+            "total_issues": len(self.issues),
+            "summary": {
+                "error_count": len(self.errors),
+                "warning_count": len(self.warnings),
+                "info_count": len(self.info),
+            },
+            "errors": [issue.to_dict() for issue in self.errors],
+            "warnings": [issue.to_dict() for issue in self.warnings],
+            "info": [issue.to_dict() for issue in self.info],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PartialInfo:
+    names: frozenset[str]
+    has_dynamic_kwargs: bool = False
+
+
+# ---------------------------------------------------------------------------
+# AST / formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def _strip_ipython_magics(source: str) -> str:
+    """Return Python-parseable source while preserving original line numbers.
+
+    A cell magic such as ``%%bash`` means the rest of the cell is not Python,
+    so the entire cell is blanked. Ordinary ``%`` line magics and ``!`` shell
+    escapes are blanked line-by-line.
+    """
+
+    lines = source.splitlines()
+    first_nonempty = next(
+        (line.lstrip() for line in lines if line.strip()),
+        "",
+    )
+    if first_nonempty.startswith("%%"):
+        return "\n".join("" for _ in lines)
+
+    cleaned = [
+        "" if line.lstrip().startswith(("%", "!")) else line
+        for line in lines
+    ]
+    return "\n".join(cleaned)
+
+
+def _root_call_name(node: ast.expr) -> str | None:
+    """Return the root object name for a chained call expression."""
+
+    current: ast.AST = node
+    while True:
+        if isinstance(current, ast.Call):
+            current = current.func
+        elif isinstance(current, ast.Attribute):
+            current = current.value
+        else:
+            break
+    return current.id if isinstance(current, ast.Name) else None
+
+
+def _find_from_messages_call(node: ast.expr) -> ast.Call | None:
+    """Find ``.from_messages(...)`` inside a chained expression."""
+
+    current: ast.AST = node
+    while isinstance(current, ast.Call):
+        func = current.func
+        if isinstance(func, ast.Attribute) and func.attr == "from_messages":
+            return current
+        if isinstance(func, ast.Attribute):
+            current = func.value
+        else:
+            return None
+    return None
+
+
+def _partial_info(value_node: ast.expr) -> PartialInfo:
+    """Collect keyword names from every chained ``.partial(...)`` call.
+
+    ``.partial(x=foo(a=1)).partial(y=2)`` correctly yields ``{"x", "y"}``.
+    ``.partial(**mapping)`` is marked dynamic because its names cannot be
+    established statically.
+    """
+
+    names: set[str] = set()
+    has_dynamic_kwargs = False
+    current: ast.AST = value_node
+
+    while isinstance(current, ast.Call):
+        func = current.func
+        if isinstance(func, ast.Attribute) and func.attr == "partial":
+            for keyword in current.keywords:
+                if keyword.arg is None:
+                    has_dynamic_kwargs = True
+                else:
+                    names.add(keyword.arg)
+
+        if isinstance(func, ast.Attribute):
+            current = func.value
+        else:
+            break
+
+    return PartialInfo(frozenset(names), has_dynamic_kwargs)
+
+
+def _messages_placeholder_var_name(call: ast.Call) -> str | None:
+    """Return the statically-known MessagesPlaceholder variable name."""
+
+    if call.args:
+        first = call.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+
+    for keyword in call.keywords:
+        if (
+            keyword.arg == "variable_name"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ):
+            return keyword.value.value
+
+    return None
+
+
+class _StringLiteralCollector(ast.NodeVisitor):
+    """Collect string values as they exist at runtime.
+
+    For f-strings, ``ast`` has already applied Python's brace escaping to the
+    literal segments. For example, ``f"{{user_prompt}}"`` contributes the
+    runtime segment ``"{user_prompt}"``. That makes the collected values safe
+    to inspect as inputs to ChatPromptTemplate without confusing Python's own
+    f-string escaping with LangChain template escaping.
+    """
+
+    def __init__(self) -> None:
+        self.strings: list[ast.Constant] = []
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                self.strings.append(value)
+            elif isinstance(value, ast.FormattedValue):
+                # Its runtime value is not statically knowable, but nested
+                # expressions may contain their own string constants that are
+                # not part of the prompt literal, so do not recurse into them.
+                continue
+
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, str):
+            self.strings.append(node)
+
+
+def _collect_prompt_strings(from_messages_call: ast.Call) -> list[ast.Constant]:
+    collector = _StringLiteralCollector()
+    collector.visit(from_messages_call)
+    return collector.strings
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    text = text.replace("\n", "\\n")
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _field_root(field_name: str) -> str:
+    """Return the top-level variable name from a format field."""
+
+    root = field_name.split("!", 1)[0].split(":", 1)[0]
+    root = root.split(".", 1)[0].split("[", 1)[0]
+    return root.strip()
+
+
+def _format_fields(text: str) -> tuple[set[str], str | None]:
+    """Parse Python-format fields, respecting escaped ``{{`` / ``}}`` braces."""
+
+    fields: set[str] = set()
+    try:
+        for _, field_name, _, _ in Formatter().parse(text):
+            if field_name is None:
+                continue
+            root = _field_root(field_name)
+            if root and not root.isdigit():
+                fields.add(root)
+    except ValueError as exc:
+        return fields, str(exc)
+
+    return fields, None
+
+
+# Match only things that structurally look like an escaped field name.
+# Arbitrary escaped JSON such as {{"name": "{user_prompt}"}} does not match.
+_DOUBLE_FIELD_RE = re.compile(
+    r"\{\{\s*"
+    r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*|\[[^\[\]{}]+\])*"
+    r"(?:![rsa])?(?::[^{}]+)?)"
+    r"\s*\}\}"
+)
+
+
+def _double_brace_fields(text: str) -> list[tuple[str, str]]:
+    """Return ``(raw_field, root_name)`` for ``{{field}}``-shaped escapes."""
+
+    found: list[tuple[str, str]] = []
+    for match in _DOUBLE_FIELD_RE.finditer(text):
+        raw = match.group(1).strip()
+        root = _field_root(raw)
+        if root:
+            found.append((raw, root))
+    return found
+
+
+def _assignment_name_and_value(
+    node: ast.Assign | ast.AnnAssign,
+) -> tuple[str, ast.expr] | None:
+    if isinstance(node, ast.Assign):
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+        return node.targets[0].id, node.value
+
+    if isinstance(node.target, ast.Name) and node.value is not None:
+        return node.target.id, node.value
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Validator
+# ---------------------------------------------------------------------------
 
 
 class PromptTemplateValidator:
-    """Validates prompt template formatting and structure."""
-    
-    def __init__(self, notebook_path: str):
+    """Validate ChatPromptTemplate definitions inside a Jupyter notebook."""
+
+    # Variables commonly supplied by the runtime rather than through .partial().
+    KNOWN_RUNTIME_VARS = frozenset(
+        {
+            "messages",
+            "user_prompt",
+            "available_df_ids",
+            "tool_descriptions",
+            "output_format",
+            "dataset_description",
+            "data_sample",
+            "memories",
+            "cleaned_dataset_description",
+            "cleaning_metadata",
+            "analysis_insights",
+            "visualization_results",
+            "analysis_config",
+            "tooling_guidelines",
+            "file_name",
+            "file_type",
+            "content",
+            "visualization_task",
+            "report_task",
+        }
+    )
+
+    def __init__(self, notebook_path: str | Path) -> None:
         self.notebook_path = Path(notebook_path)
-        self.issues = []
-        
-    def load_notebook(self) -> Dict[str, Any]:
-        """Load the Jupyter notebook JSON."""
-        with open(self.notebook_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    
-    def extract_prompt_templates(self, notebook: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Extract all ChatPromptTemplate instances from the notebook."""
-        templates = []
-        
-        for i, cell in enumerate(notebook.get('cells', [])):
-            if cell.get('cell_type') == 'code':
-                source = ''.join(cell.get('source', []))
-                
-                # Find ChatPromptTemplate.from_messages calls
-                template_matches = re.finditer(
-                    r'(\w+)\s*=\s*ChatPromptTemplate\.from_messages\(',
-                    source
+
+    def load_notebook(self) -> dict:
+        return json.loads(self.notebook_path.read_text(encoding="utf-8"))
+
+    def extract_prompt_templates(
+        self,
+        notebook: dict,
+    ) -> tuple[list[ExtractedTemplate], list[ValidationIssue]]:
+        """Extract direct ChatPromptTemplate.from_messages assignments."""
+
+        templates: list[ExtractedTemplate] = []
+        parse_issues: list[ValidationIssue] = []
+
+        for cell_index, cell in enumerate(notebook.get("cells", [])):
+            if cell.get("cell_type") != "code":
+                continue
+
+            source = "".join(cell.get("source", []))
+            clean_source = _strip_ipython_magics(source)
+
+            if not clean_source.strip():
+                continue
+
+            try:
+                tree = ast.parse(clean_source)
+            except SyntaxError as exc:
+                parse_issues.append(
+                    ValidationIssue(
+                        type=IssueType.PARSE_ERROR,
+                        template=f"<cell {cell_index}>",
+                        cell_index=cell_index,
+                        line=exc.lineno,
+                        message=(
+                            f"Could not parse cell as Python ({exc.msg}); "
+                            "prompt-template extraction skipped for this cell."
+                        ),
+                        severity=Severity.WARNING,
+                    )
                 )
-                
-                for match in template_matches:
-                    template_name = match.group(1)
-                    start_pos = match.start()
-                    
-                    # Extract the full template definition
-                    template_def = self._extract_template_definition(source, start_pos)
-                    
-                    templates.append({
-                        'name': template_name,
-                        'cell_index': i,
-                        'definition': template_def,
-                        'start_line': source[:start_pos].count('\n') + 1
-                    })
-        
-        return templates
-    
-    def _extract_template_definition(self, source: str, start_pos: int) -> str:
-        """Extract the complete template definition from source code."""
-        # Find the matching closing parenthesis/bracket
-        paren_count = 0
-        bracket_count = 0
-        in_string = False
-        string_char = None
-        escaped = False
-        
-        i = start_pos
-        while i < len(source):
-            char = source[i]
-            
-            if escaped:
-                escaped = False
-                i += 1
                 continue
-                
-            if char == '\\':
-                escaped = True
-                i += 1
+
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+
+                assignment = _assignment_name_and_value(node)
+                if assignment is None:
+                    continue
+
+                name, value_node = assignment
+                if _find_from_messages_call(value_node) is None:
+                    continue
+                if _root_call_name(value_node) != "ChatPromptTemplate":
+                    continue
+
+                templates.append(
+                    ExtractedTemplate(
+                        name=name,
+                        cell_index=cell_index,
+                        start_line=node.lineno,
+                        source=ast.get_source_segment(clean_source, node) or "",
+                        value_node=value_node,
+                    )
+                )
+
+        return templates, parse_issues
+
+    def _prompt_strings(
+        self,
+        template: ExtractedTemplate,
+    ) -> tuple[ast.Call, list[ast.Constant]]:
+        from_messages_call = _find_from_messages_call(template.value_node)
+        if from_messages_call is None:
+            # Extraction guarantees this, but fail explicitly if the invariant
+            # is ever broken by a future refactor.
+            raise ValueError(
+                f"{template.name} no longer contains ChatPromptTemplate.from_messages()"
+            )
+        return from_messages_call, _collect_prompt_strings(from_messages_call)
+
+    def _check_brace_issues(
+        self,
+        template: ExtractedTemplate,
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        _, strings = self._prompt_strings(template)
+        partial = _partial_info(template.value_node)
+
+        all_single_fields: set[str] = set()
+        parsed: list[tuple[ast.Constant, set[str], str | None]] = []
+
+        for const in strings:
+            fields, parse_error = _format_fields(const.value)
+            all_single_fields.update(fields)
+            parsed.append((const, fields, parse_error))
+
+        declared_or_expected = (
+            set(partial.names) | set(self.KNOWN_RUNTIME_VARS) | all_single_fields
+        )
+
+        for const, _, parse_error in parsed:
+            text = const.value
+
+            if parse_error is not None:
+                issues.append(
+                    ValidationIssue(
+                        type=IssueType.UNMATCHED_BRACES,
+                        template=template.name,
+                        cell_index=template.cell_index,
+                        line=getattr(const, "lineno", None),
+                        message=f"Malformed template braces: {parse_error}",
+                        severity=Severity.ERROR,
+                        detail=_preview(text),
+                    )
+                )
+                # Formatter could not parse the string reliably, so do not
+                # make secondary claims about its escaped fields.
                 continue
-                
-            if not in_string:
-                if char in ['"', "'"]:
-                    in_string = True
-                    string_char = char
-                elif char == '(':
-                    paren_count += 1
-                elif char == ')':
-                    paren_count -= 1
-                    if paren_count == 0:
-                        # Check if this is followed by .partial(
-                        remaining = source[i+1:]
-                        partial_match = re.match(r'\s*\.partial\s*\(', remaining)
-                        if partial_match:
-                            # Continue to include the partial call
-                            i += len(partial_match.group(0))
-                            paren_count = 1
-                        else:
-                            return source[start_pos:i+1]
-                elif char == '[':
-                    bracket_count += 1
-                elif char == ']':
-                    bracket_count -= 1
-            else:
-                if char == string_char and not escaped:
-                    in_string = False
-                    string_char = None
-                    
-            i += 1
-        
-        return source[start_pos:]
-    
-    def validate_template(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Validate a single template for formatting issues."""
-        issues = []
-        definition = template['definition']
-        name = template['name']
-        
-        # Check for basic syntax issues
-        issues.extend(self._check_syntax_issues(template))
-        
-        # Check for unmatched braces
-        issues.extend(self._check_unmatched_braces(template))
-        
-        # Check for quote consistency
-        issues.extend(self._check_quote_consistency(template))
-        
-        # Check placeholder consistency
-        issues.extend(self._check_placeholder_consistency(template))
-        
-        # Check MessagesPlaceholder configuration
-        issues.extend(self._check_messages_placeholder(template))
-        
+
+            for raw_field, root in _double_brace_fields(text):
+                if root in declared_or_expected:
+                    issues.append(
+                        ValidationIssue(
+                            type=IssueType.DOUBLE_BRACE_PLACEHOLDER,
+                            template=template.name,
+                            cell_index=template.cell_index,
+                            line=getattr(const, "lineno", None),
+                            message=(
+                                f"Found double-braced placeholder '{{{{{raw_field}}}}}'. "
+                                "ChatPromptTemplate treats doubled braces as a literal "
+                                f"'{{{raw_field}}}' instead of substituting the field. "
+                                f"Use '{{{raw_field}}}' unless literal braces are intended."
+                            ),
+                            severity=Severity.ERROR,
+                            detail=_preview(text),
+                        )
+                    )
+                else:
+                    issues.append(
+                        ValidationIssue(
+                            type=IssueType.AMBIGUOUS_DOUBLE_BRACES,
+                            template=template.name,
+                            cell_index=template.cell_index,
+                            line=getattr(const, "lineno", None),
+                            message=(
+                                f"Found escaped field-shaped text '{{{{{raw_field}}}}}', "
+                                "but the field is not otherwise declared or known at "
+                                "runtime. This may be an intentional literal brace escape "
+                                "or a misspelled placeholder."
+                            ),
+                            severity=Severity.WARNING,
+                            detail=_preview(text),
+                        )
+                    )
+
         return issues
-    
-    def _check_syntax_issues(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for basic Python syntax issues."""
-        issues = []
-        
-        try:
-            # Try to parse as Python code (this won't execute, just parse)
-            ast.parse(template['definition'])
-        except SyntaxError as e:
-            issues.append({
-                'type': 'syntax_error',
-                'template': template['name'],
-                'line': e.lineno,
-                'message': f"Syntax error: {e.msg}",
-                'severity': 'error'
-            })
-        
+
+    def _check_undeclared_placeholders(
+        self,
+        template: ExtractedTemplate,
+    ) -> list[ValidationIssue]:
+        _, strings = self._prompt_strings(template)
+        placeholders: set[str] = set()
+
+        for const in strings:
+            fields, parse_error = _format_fields(const.value)
+            if parse_error is None:
+                placeholders.update(fields)
+
+        partial = _partial_info(template.value_node)
+        undeclared = placeholders - set(partial.names) - set(self.KNOWN_RUNTIME_VARS)
+
+        issues: list[ValidationIssue] = []
+
+        if partial.has_dynamic_kwargs:
+            issues.append(
+                ValidationIssue(
+                    type=IssueType.DYNAMIC_PARTIAL_ARGUMENTS,
+                    template=template.name,
+                    cell_index=template.cell_index,
+                    message=(
+                        "Template uses .partial(**mapping); static validation cannot "
+                        "determine every partial variable name."
+                    ),
+                    severity=Severity.INFO,
+                )
+            )
+            # Unknown **kwargs may provide otherwise-undeclared fields, so avoid
+            # false-positive undeclared warnings.
+            return issues
+
+        if undeclared:
+            issues.append(
+                ValidationIssue(
+                    type=IssueType.UNDECLARED_PLACEHOLDER,
+                    template=template.name,
+                    cell_index=template.cell_index,
+                    message=(
+                        "Placeholders with no .partial(...) default and not in the "
+                        "known runtime-variable list: "
+                        + ", ".join(sorted(undeclared))
+                    ),
+                    severity=Severity.WARNING,
+                    detail=", ".join(sorted(undeclared)),
+                )
+            )
+
         return issues
-    
-    def _check_unmatched_braces(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for unmatched braces in template strings."""
-        issues = []
-        definition = template['definition']
-        
-        # Extract string literals from the template
-        string_literals = re.findall(r'["\']([^"\']*(?:\\.[^"\']*)*)["\']', definition)
-        
-        for i, literal in enumerate(string_literals):
-            # Count braces
-            open_braces = literal.count('{')
-            close_braces = literal.count('}')
-            
-            # Account for escaped braces
-            escaped_open = literal.count('{{')
-            escaped_close = literal.count('}}')
-            
-            effective_open = open_braces - (escaped_open * 2)
-            effective_close = close_braces - (escaped_close * 2)
-            
-            if effective_open != effective_close:
-                issues.append({
-                    'type': 'unmatched_braces',
-                    'template': template['name'],
-                    'message': f"Unmatched braces in string literal {i+1}: {open_braces} open, {close_braces} close",
-                    'severity': 'error',
-                    'literal_preview': literal[:100] + ('...' if len(literal) > 100 else '')
-                })
-        
+
+    def _check_messages_placeholder(
+        self,
+        template: ExtractedTemplate,
+    ) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        from_messages_call, _ = self._prompt_strings(template)
+
+        for node in ast.walk(from_messages_call):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MessagesPlaceholder"
+            ):
+                continue
+
+            variable_name = _messages_placeholder_var_name(node)
+            if variable_name is not None and variable_name != "messages":
+                issues.append(
+                    ValidationIssue(
+                        type=IssueType.NON_STANDARD_MESSAGES_PLACEHOLDER,
+                        template=template.name,
+                        cell_index=template.cell_index,
+                        line=node.lineno,
+                        message=(
+                            "Non-standard MessagesPlaceholder variable name "
+                            f"'{variable_name}' (project convention is 'messages')."
+                        ),
+                        severity=Severity.INFO,
+                    )
+                )
+
         return issues
-    
-    def _check_quote_consistency(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check for quote consistency issues."""
-        issues = []
-        definition = template['definition']
-        
-        # Look for mixed quotes in f-strings
-        f_string_pattern = r'f["\']([^"\']*(?:\\.[^"\']*)*)["\']'
-        f_strings = re.findall(f_string_pattern, definition)
-        
-        for i, f_string in enumerate(f_strings):
-            # Check for quote conflicts within f-strings
-            if "'" in f_string and '"' in f_string:
-                # This could be problematic - check if quotes are properly escaped
-                unescaped_quotes = re.findall(r'(?<!\\)["\']', f_string)
-                if len(set(unescaped_quotes)) > 1:
-                    issues.append({
-                        'type': 'quote_conflict',
-                        'template': template['name'],
-                        'message': f"Mixed unescaped quotes in f-string {i+1}",
-                        'severity': 'warning',
-                        'f_string_preview': f_string[:100] + ('...' if len(f_string) > 100 else '')
-                    })
-        
-        return issues
-    
-    def _check_placeholder_consistency(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check that placeholders in templates have consistent naming."""
-        issues = []
-        definition = template['definition']
-        
-        # Check for double brace issues first
-        double_brace_matches = re.findall(r'\{\{([^}]+)\}\}', definition)
-        if double_brace_matches:
-            issues.append({
-                'type': 'double_brace_placeholders',
-                'template': template['name'],
-                'message': f"Found double braces (should be single): {', '.join(double_brace_matches)}",
-                'severity': 'error',
-                'variables': double_brace_matches
-            })
-        
-        # Extract placeholders from template strings
-        placeholders = set()
-        string_literals = re.findall(r'["\']([^"\']*(?:\\.[^"\']*)*)["\']', definition)
-        
-        for literal in string_literals:
-            # Find all {variable} patterns (single braces)
-            placeholder_matches = re.findall(r'(?<!\{)\{([^}]+)\}(?!\})', literal)
-            for match in placeholder_matches:
-                # Skip format specifiers like {variable:.2f}
-                variable_name = match.split(':')[0].split('.')[0]
-                if variable_name and not variable_name.isdigit():
-                    placeholders.add(variable_name)
-        
-        # Check if .partial() call exists and extract its parameters
-        partial_match = re.search(r'\.partial\s*\(([^)]+)\)', definition)
-        partial_vars = set()
-        
-        if partial_match:
-            partial_content = partial_match.group(1)
-            # Extract variable names from keyword arguments
-            param_matches = re.findall(r'(\w+)\s*=', partial_content)
-            partial_vars.update(param_matches)
-        
-        # Find undeclared placeholders (not in partial)
-        undeclared = placeholders - partial_vars
-        
-        # Common template variables that might be passed at runtime
-        runtime_vars = {
-            'messages', 'user_prompt', 'available_df_ids', 'tool_descriptions',
-            'output_format', 'dataset_description', 'data_sample', 'memories',
-            'cleaned_dataset_description', 'cleaning_metadata', 'analysis_insights',
-            'visualization_results', 'analysis_config', 'tooling_guidelines',
-            'file_name', 'file_type', 'content', 'visualization_task', 'report_task'
-        }
-        
-        # Filter out known runtime variables
-        truly_undeclared = undeclared - runtime_vars
-        
-        if truly_undeclared:
-            issues.append({
-                'type': 'undeclared_placeholders',
-                'template': template['name'],
-                'message': f"Placeholders without default values: {', '.join(sorted(truly_undeclared))}",
-                'severity': 'warning',
-                'placeholders': list(truly_undeclared)
-            })
-        
-        return issues
-    
-    def _check_messages_placeholder(self, template: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Check MessagesPlaceholder configuration."""
-        issues = []
-        definition = template['definition']
-        
-        # Look for MessagesPlaceholder usage
-        placeholder_pattern = r'MessagesPlaceholder\s*\(\s*["\']([^"\']+)["\'](?:\s*,\s*optional\s*=\s*(True|False))?\s*\)'
-        matches = re.findall(placeholder_pattern, definition)
-        
-        for match in matches:
-            var_name = match[0]
-            optional = match[1] if len(match) > 1 else None
-            
-            # Check naming convention
-            if var_name != 'messages':
-                issues.append({
-                    'type': 'non_standard_messages_placeholder',
-                    'template': template['name'],
-                    'message': f"Non-standard MessagesPlaceholder variable name: '{var_name}' (standard is 'messages')",
-                    'severity': 'info',
-                    'variable_name': var_name
-                })
-        
-        return issues
-    
-    def validate_all_templates(self) -> Dict[str, Any]:
-        """Validate all templates and return summary."""
+
+    def validate_template(
+        self,
+        template: ExtractedTemplate,
+    ) -> list[ValidationIssue]:
+        return [
+            *self._check_brace_issues(template),
+            *self._check_undeclared_placeholders(template),
+            *self._check_messages_placeholder(template),
+        ]
+
+    def validate_all_templates(self) -> ValidationReport:
         notebook = self.load_notebook()
-        templates = self.extract_prompt_templates(notebook)
-        
-        all_issues = []
-        
+        templates, parse_issues = self.extract_prompt_templates(notebook)
+
+        issues = list(parse_issues)
         for template in templates:
-            template_issues = self.validate_template(template)
-            all_issues.extend(template_issues)
-        
-        # Categorize issues by severity
-        errors = [issue for issue in all_issues if issue['severity'] == 'error']
-        warnings = [issue for issue in all_issues if issue['severity'] == 'warning']
-        info = [issue for issue in all_issues if issue['severity'] == 'info']
-        
-        return {
-            'total_templates': len(templates),
-            'template_names': [t['name'] for t in templates],
-            'total_issues': len(all_issues),
-            'errors': errors,
-            'warnings': warnings,
-            'info': info,
-            'summary': {
-                'error_count': len(errors),
-                'warning_count': len(warnings),
-                'info_count': len(info)
-            }
-        }
-    
-    def print_report(self, validation_result: Dict[str, Any]):
-        """Print a formatted validation report."""
+            issues.extend(self.validate_template(template))
+
+        return ValidationReport(templates=templates, issues=issues)
+
+    @staticmethod
+    def print_report(report: ValidationReport) -> None:
         print("=" * 80)
         print("PROMPT TEMPLATE VALIDATION REPORT")
         print("=" * 80)
-        print(f"Total templates found: {validation_result['total_templates']}")
-        print(f"Template names: {', '.join(validation_result['template_names'])}")
+        print(f"Total templates found: {len(report.templates)}")
+        if report.templates:
+            print(
+                "Template names: "
+                + ", ".join(template.name for template in report.templates)
+            )
         print()
-        
-        summary = validation_result['summary']
-        print(f"Issues found: {validation_result['total_issues']}")
-        print(f"  - Errors: {summary['error_count']}")
-        print(f"  - Warnings: {summary['warning_count']}")
-        print(f"  - Info: {summary['info_count']}")
+        print(f"Issues found: {len(report.issues)}")
+        print(f"  - Errors:   {len(report.errors)}")
+        print(f"  - Warnings: {len(report.warnings)}")
+        print(f"  - Info:     {len(report.info)}")
         print()
-        
-        # Print detailed issues
-        for severity in ['errors', 'warnings', 'info']:
-            issues = validation_result[severity]
-            if issues:
-                print(f"{severity.upper()}:")
-                print("-" * 40)
-                for issue in issues:
-                    print(f"  Template: {issue['template']}")
-                    print(f"  Type: {issue['type']}")
-                    print(f"  Message: {issue['message']}")
-                    if 'line' in issue:
-                        print(f"  Line: {issue['line']}")
-                    print()
+
+        for label, bucket in (
+            ("ERRORS", report.errors),
+            ("WARNINGS", report.warnings),
+            ("INFO", report.info),
+        ):
+            if not bucket:
+                continue
+
+            print(f"{label}:")
+            print("-" * 40)
+            for issue in bucket:
+                print(f"  Template: {issue.template}")
+                if issue.cell_index is not None:
+                    print(f"  Cell:     {issue.cell_index}")
+                if issue.line is not None:
+                    print(f"  Line:     {issue.line}")
+                print(f"  Type:     {issue.type.value}")
+                print(f"  Message:  {issue.message}")
+                if issue.detail:
+                    print(f"  Detail:   {issue.detail}")
+                print()
 
 
-def main():
-    """Main validation function."""
-    notebook_path_str = os.environ.get(
-        "NOTEBOOK_PATH",
-        str(Path(__file__).parent / "IntelligentDataDetective_beta_v5.ipynb")
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _default_notebook_path() -> Path:
+    explicit = os.environ.get("IDD_NOTEBOOK")
+    legacy = os.environ.get("NOTEBOOK_PATH")
+
+    if explicit:
+        return Path(explicit)
+    if legacy:
+        return Path(legacy)
+
+    return Path(__file__).parent / "IntelligentDataDetective_beta_v5_patched.ipynb"
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Validate ChatPromptTemplate definitions in an Intelligent Data "
+            "Detective Jupyter notebook."
+        )
     )
-    notebook_path = Path(notebook_path_str)    
-    validator = PromptTemplateValidator(notebook_path)
-    result = validator.validate_all_templates()
-    validator.print_report(result)
-    
-    return result
+    parser.add_argument(
+        "notebook",
+        nargs="?",
+        type=Path,
+        help=(
+            "Notebook path. Defaults to $IDD_NOTEBOOK, then $NOTEBOOK_PATH, "
+            "then IntelligentDataDetective_beta_v5_patched.ipynb next to this script."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Print the validation report as JSON.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress the human-readable report. Ignored when --json is used.",
+    )
+    parser.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="Return exit code 1 when warnings are present, even if there are no errors.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    notebook_path = args.notebook or _default_notebook_path()
+
+    try:
+        report = PromptTemplateValidator(notebook_path).validate_all_templates()
+    except FileNotFoundError:
+        message = f"Notebook not found: {notebook_path}"
+        if args.as_json:
+            print(json.dumps({"fatal_error": message}, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        message = f"Invalid notebook JSON in {notebook_path}: {exc}"
+        if args.as_json:
+            print(json.dumps({"fatal_error": message}, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 2
+    except OSError as exc:
+        message = f"Could not read notebook {notebook_path}: {exc}"
+        if args.as_json:
+            print(json.dumps({"fatal_error": message}, indent=2))
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    if args.as_json:
+        print(json.dumps(report.to_dict(), indent=2))
+    elif not args.quiet:
+        PromptTemplateValidator.print_report(report)
+
+    if report.errors:
+        return 1
+    if args.fail_on_warning and report.warnings:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    result = main()
+    sys.exit(main())
