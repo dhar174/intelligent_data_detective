@@ -114,3 +114,18 @@ def test_patcher_rewrites_chained_partial_prompt():
     assert _fix_runtime_prompt_braces(cells) == 1
     assert "{user_prompt}" in "".join(cells[0]["source"])
     assert "{output_schema_name}" in "".join(cells[0]["source"])
+
+
+def test_patcher_preserves_python_fstring_langchain_placeholder():
+    cells = [
+        {
+            "cell_type": "code",
+            "source": (
+                "prompt = ChatPromptTemplate.from_messages(["
+                '("system", f"Objective: {{user_prompt}}")'
+                "])"
+            ),
+        }
+    ]
+    assert _fix_runtime_prompt_braces(cells) == 0
+    assert 'f"Objective: {{user_prompt}}"' in "".join(cells[0]["source"])

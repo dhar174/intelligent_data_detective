@@ -161,20 +161,21 @@ def _fix_runtime_prompt_braces(cells):
     therefore left untouched.
     """
 
-    field_pattern = re.compile(r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}")
+    field_pattern = re.compile(
+        r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}"
+    )
     changed = 0
 
-    def contains_from_messages(node):
-        for child in ast.walk(node):
-            if (
-                isinstance(child, ast.Call)
-                and isinstance(child.func, ast.Attribute)
-                and child.func.attr == "from_messages"
-                and isinstance(child.func.value, ast.Name)
-                and child.func.value.id == "ChatPromptTemplate"
-            ):
-                return True
-        return False
+    class _PromptLiteralCollector(ast.NodeVisitor):
+        def __init__(self):
+            self.nodes = []
+
+        def visit_JoinedStr(self, node):
+            return
+
+        def visit_Constant(self, node):
+            if isinstance(node.value, str):
+                self.nodes.append(node)
 
     for cell in cells:
         if cell.get("cell_type") != "code":
@@ -184,23 +185,37 @@ def _fix_runtime_prompt_braces(cells):
             tree = ast.parse(source)
         except SyntaxError:
             continue
-        ranges = []
+        calls = []
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = node.value
-            if isinstance(value, ast.Call) and contains_from_messages(value):
-                ranges.append((node.lineno, node.end_lineno))
-        if not ranges:
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "from_messages"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "ChatPromptTemplate"
+            ):
+                calls.append(node)
+        if not calls:
             continue
-        lines = source.splitlines(keepends=True)
-        for start, end in sorted(ranges, reverse=True):
-            segment = "".join(lines[start - 1 : end])
-            fixed = field_pattern.sub(r"{\1}", segment)
-            if fixed != segment:
-                lines[start - 1 : end] = [fixed]
-                changed += 1
-        source = "".join(lines)
+        line_starts = [0]
+        for match in re.finditer(r"\n", source):
+            line_starts.append(match.end())
+        edits = []
+        for call in calls:
+            collector = _PromptLiteralCollector()
+            collector.visit(call)
+            for literal in collector.nodes:
+                segment = ast.get_source_segment(source, literal)
+                if not segment:
+                    continue
+                fixed = field_pattern.sub(r"{\1}", segment)
+                if fixed != segment:
+                    start = line_starts[literal.lineno - 1] + literal.col_offset
+                    end = line_starts[literal.end_lineno - 1] + literal.end_col_offset
+                    edits.append((start, end, fixed))
+        for start, end, fixed in sorted(edits, reverse=True):
+            source = source[:start] + fixed + source[end:]
+        changed += bool(edits)
         if source != join_source(cell["source"]):
             cell["source"] = source
             cell["outputs"] = []
