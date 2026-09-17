@@ -69,7 +69,14 @@ else:
     oai_key = os.environ.get('OPENAI_API_KEY')
 
 if use_local_llm:
-    pass # !pip install -U langchain_huggingface sentence_transformers
+    try:
+        import langchain_huggingface  # noqa: F401
+        import sentence_transformers  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "Local LLM mode requires extra dependencies. Install with: "
+            "pip install -U langchain_huggingface sentence_transformers"
+        ) from exc
 
 # Install or upgrade the required packages directly from within the notebook using pip.
 # WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.

@@ -270,32 +270,20 @@ RECALC_FETCH_NEW = """        kinds_to_process = kinds or list(KNOWN_MEMORY_KIND
                 items = items_by_kind.get(kind, [])
 """
 
-REASONING_SUMMARY_CONCAT_OLD = """summary_text = ""
-                if summary:
-                    if isinstance(summary, list):
-
-                        for s in summary:
-                            stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_text += str(stext)
-                    if isinstance(summary, dict):
-                        summary_text += str(summary.get("text", ""))
-                    if isinstance(summary, str):
-                        summary_text += str(summary)
-"""
-
-REASONING_SUMMARY_CONCAT_NEW = """summary_parts = []
-                if summary:
-                    if isinstance(summary, list):
-
-                        for s in summary:
-                            stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))
-                            summary_parts.append(str(stext))
-                    if isinstance(summary, dict):
-                        summary_parts.append(str(summary.get("text", "")))
-                    if isinstance(summary, str):
-                        summary_parts.append(str(summary))
-                    summary_text = "".join(summary_parts)
-"""
+REASONING_SUMMARY_CONCAT_NEW_RELATIVE_LINES = [
+    "summary_parts = []",
+    "if summary:",
+    "    if isinstance(summary, list):",
+    "",
+    "        for s in summary:",
+    '            stext = s.get("text") if isinstance(s, dict) else getnestedattr(s, "text", getattr(s, "text", ""))',
+    "            summary_parts.append(str(stext))",
+    "    if isinstance(summary, dict):",
+    '        summary_parts.append(str(summary.get("text", "")))',
+    "    if isinstance(summary, str):",
+    "        summary_parts.append(str(summary))",
+    '    summary_text = "".join(summary_parts)',
+]
 
 
 def join_source(src):
@@ -305,10 +293,10 @@ def join_source(src):
 def patch_reasoning_summary_concat(source):
     """Use linear-time list joining for streamed reasoning summaries."""
     pattern = re.compile(
-        r'(?P<indent>[ \t]+)summary_text = ""\n'
+        r'(?P<indent>[ \t]*)summary_text[ \t]*=[ \t]*""\n'
         r"(?P=indent)if summary:\n"
         r"(?P=indent)    if isinstance\(summary, list\):\n"
-        r"\n"
+        r"(?:\n)?"
         r"(?P=indent)        for s in summary:\n"
         r'(?P=indent)            stext = s\.get\("text"\) if isinstance\(s, dict\) else getnestedattr\(s, "text", getattr\(s, "text", ""\)\)\n'
         r'(?P=indent)            summary_text \+= str\(stext\)\n'
@@ -320,12 +308,7 @@ def patch_reasoning_summary_concat(source):
 
     def replace_block(match):
         indent = match.group("indent")
-        lines = REASONING_SUMMARY_CONCAT_NEW.splitlines()
-        adjusted = []
-        for line in lines:
-            leading = len(line) - len(line.lstrip(" "))
-            relative = max(0, leading - 16)
-            adjusted.append(f"{indent}{' ' * relative}{line.lstrip()}")
+        adjusted = [f"{indent}{line}" if line else "" for line in REASONING_SUMMARY_CONCAT_NEW_RELATIVE_LINES]
         return "\n".join(adjusted) + "\n"
 
     return pattern.sub(replace_block, source)
