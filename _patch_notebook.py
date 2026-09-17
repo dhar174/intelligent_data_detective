@@ -8,6 +8,8 @@ Saves patched notebook as IntelligentDataDetective_beta_v5_patched.ipynb
 
 import json
 import copy
+import ast
+import re
 
 INPUT_NB = "IntelligentDataDetective_beta_v5.ipynb"
 OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
@@ -122,6 +124,79 @@ CELL81_NEW = (
 )
 
 MEMORY_POLICY_MARKER = "MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()\n"
+
+_RUNTIME_PROMPT_FIELDS = frozenset(
+    {
+        "user_prompt",
+        "agents",
+        "output_schema_name",
+        "memories",
+        "plan_summary",
+        "plan_steps",
+        "past_steps",
+        "completed_tasks",
+        "latest_progress",
+        "to_do_list",
+        "leftover_to_do_list",
+        "completed_agents",
+        "remaining_agents",
+        "completed_steps",
+        "members",
+        "last_agent_id",
+        "last_message",
+        "reply_msg_to_supervisor",
+        "finished_this_task",
+        "expect_reply",
+        "viz_revise_count",
+        "messages",
+    }
+)
+
+
+def _fix_runtime_prompt_braces(cells):
+    """Fix escaped LangChain fields only inside ChatPromptTemplate assignments.
+
+    The AST limits the rewrite to actual ``ChatPromptTemplate.from_messages``
+    assignments. Python f-strings and unrelated literal-brace expressions are
+    therefore left untouched.
+    """
+
+    field_pattern = re.compile(r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}")
+    changed = 0
+    for cell in cells:
+        if cell.get("cell_type") != "code":
+            continue
+        source = join_source(cell["source"])
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        ranges = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            if (
+                isinstance(value, ast.Call)
+                and "ChatPromptTemplate.from_messages" in (
+                    ast.get_source_segment(source, value) or ""
+                )
+            ):
+                ranges.append((node.lineno, node.end_lineno))
+        if not ranges:
+            continue
+        lines = source.splitlines(keepends=True)
+        for start, end in ranges:
+            segment = "".join(lines[start - 1 : end])
+            fixed = field_pattern.sub(r"{\1}", segment)
+            if fixed != segment:
+                source = source.replace(segment, fixed, 1)
+                changed += 1
+        if source != join_source(cell["source"]):
+            cell["source"] = source
+            cell["outputs"] = []
+            cell["execution_count"] = None
+    return changed
 
 MEMORY_POLICY_HELPERS = """MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
 KNOWN_MEMORY_KINDS = (
@@ -280,6 +355,12 @@ def main():
 
     cells = nb["cells"]
     print(f"Loaded notebook with {len(cells)} cells")
+
+    prompt_brace_fixes = _fix_runtime_prompt_braces(cells)
+    print(
+        f"✅ Runtime ChatPromptTemplate brace pass: "
+        f"{prompt_brace_fixes} assignment(s) updated"
+    )
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]

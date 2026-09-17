@@ -1,72 +1,36 @@
 # Prompt Template Formatting Fix Summary
 
 ## Issue Description
-Found and fixed critical prompt template formatting issues in the IntelligentDataDetective notebook where ChatPromptTemplate instances were using double braces `{{variable}}` instead of single braces `{variable}`, preventing proper variable substitution.
+Issue #64 is fixed through the maintained notebook-generation workflow. Runtime
+LangChain fields use single braces; doubled braces remain valid only when they
+are intentionally literal or part of Python f-string behavior.
 
 ## Issues Identified and Fixed
 
-### 1. **plan_prompt** Template
-- **Variables Fixed**: `user_prompt`, `agents`, `output_schema_name`
-- **Impact**: Planning phase variables were not being substituted
+The canonical source is `_patch_notebook.py`. Its AST-guided
+`_fix_runtime_prompt_braces` pass scopes replacements to
+`ChatPromptTemplate.from_messages` assignments and only fixes known runtime
+fields (`plan_prompt`, `replan_prompt`, `todo_prompt`, and any matching runtime
+template fields). It does not rewrite unrelated strings or f-strings.
 
-### 2. **replan_prompt** Template  
-- **Variables Fixed**: `user_prompt`, `memories`, `plan_summary`, `plan_steps`, `past_steps`, `completed_tasks`, `latest_progress`, `completed_agents`, `remaining_agents`, `output_schema_name`
-- **Impact**: Replanning context was not being properly provided to agents
-
-### 3. **todo_prompt** Template
-- **Variables Fixed**: `user_prompt`, `plan_summary`, `plan_steps`, `completed_tasks`, `to_do_list`, `completed_agents`, `remaining_agents`, `output_schema_name`
-- **Impact**: Task management variables were not being substituted
-
-## Technical Details
-
-### Root Cause
+## Technical details
 Double braces `{{variable}}` in ChatPromptTemplate are interpreted as literal braces, resulting in the output containing `{variable}` instead of the actual variable value.
 
-### Fix Applied
-- Changed `{{variable}}` to `{variable}` in all affected template strings
-- Preserved legitimate double braces in f-strings where they produce literal braces
-- Created comprehensive validation tools to prevent future issues
+`python3 _patch_notebook.py` regenerates
+`IntelligentDataDetective_beta_v5_patched.ipynb` from
+`IntelligentDataDetective_beta_v5.ipynb`; the generated notebook is the only
+runtime artifact committed for execution. The old raw notebook rewrite helper
+was removed so there is no competing authoring path.
 
-### Before vs After Example
-```python
-# BEFORE (Broken)
-template = ChatPromptTemplate.from_messages([
-    ("system", "User query: {{user_prompt}}")
-]).partial()
-# Result: "User query: {user_prompt}" (literal braces!)
+## Validation results
 
-# AFTER (Fixed) 
-template = ChatPromptTemplate.from_messages([
-    ("system", "User query: {user_prompt}")  
-]).partial()
-# Result: "User query: Analyze my data" (properly substituted!)
-```
-
-## Validation Tools Created
-
-1. **prompt_template_validator.py** - Comprehensive validation script that:
-   - Extracts all ChatPromptTemplate instances
-   - Checks for syntax errors, brace matching, quote consistency
-   - Validates placeholder consistency
-   - Identifies double brace issues
-
-2. **fix_double_braces.py** - Automated fix script that:
-   - Safely replaces double braces with single braces in templates
-   - Preserves legitimate f-string double braces
-   - Provides detailed change reporting
-
-3. **test_prompt_template_fixes.py** - Targeted tests that verify:
-   - No double braces remain in templates
-   - Specific templates are properly fixed
-   - Legitimate f-string braces are preserved
-
-## Results
-
-- ✅ **17 ChatPromptTemplate instances validated** 
-- ✅ **0 syntax errors** remaining
-- ✅ **16+ variable substitution issues fixed**
-- ✅ **All existing tests pass (27/27)**
-- ✅ **No regressions introduced**
+`python3 prompt_template_validator.py IntelligentDataDetective_beta_v5_patched.ipynb --quiet`
+passed with 24 templates and no errors (three non-fatal warnings remain for a
+pre-existing unparsable non-prompt cell and two dynamic/quoted placeholders). The semantic tests cover escaped
+placeholders, runtime substitution, `.partial(...)`, multiline/triple-quoted
+templates, f-strings, and literal braces. CI run `35186160412` passed its
+no-key tests and lint checks; local pytest availability depends on the
+environment.
 
 ## Impact
 This fix ensures that all prompt templates in the multi-agent workflow now properly substitute variables, which is critical for:
