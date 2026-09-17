@@ -200,7 +200,7 @@ def _fix_runtime_prompt_braces(cells):
         line_starts = [0]
         for match in re.finditer(r"\n", source):
             line_starts.append(match.end())
-        edits = []
+        edits = {}
         for call in calls:
             collector = _PromptLiteralCollector()
             collector.visit(call)
@@ -212,8 +212,8 @@ def _fix_runtime_prompt_braces(cells):
                 if fixed != segment:
                     start = line_starts[literal.lineno - 1] + literal.col_offset
                     end = line_starts[literal.end_lineno - 1] + literal.end_col_offset
-                    edits.append((start, end, fixed))
-        for start, end, fixed in sorted(edits, reverse=True):
+                    edits[(start, end)] = fixed
+        for (start, end), fixed in sorted(edits.items(), reverse=True):
             source = source[:start] + fixed + source[end:]
         changed += bool(edits)
         if source != join_source(cell["source"]):
