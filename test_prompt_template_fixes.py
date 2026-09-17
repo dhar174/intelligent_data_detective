@@ -80,3 +80,19 @@ def test_patcher_only_rewrites_runtime_prompt_fields():
     assert "{user_prompt}" in source
     assert "{{literal}}" in source
     assert 'f"{{literal}}"' in source
+
+
+def test_patcher_rewrites_chained_partial_prompt():
+    cells = [
+        {
+            "cell_type": "code",
+            "source": (
+                'prompt = ChatPromptTemplate.from_messages([("system", '
+                '"{{user_prompt}} {{output_schema_name}}")]).partial('
+                'output_schema_name="Plan")'
+            ),
+        }
+    ]
+    assert _fix_runtime_prompt_braces(cells) == 1
+    assert "{user_prompt}" in "".join(cells[0]["source"])
+    assert "{output_schema_name}" in "".join(cells[0]["source"])

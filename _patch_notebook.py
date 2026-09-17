@@ -163,6 +163,19 @@ def _fix_runtime_prompt_braces(cells):
 
     field_pattern = re.compile(r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}")
     changed = 0
+
+    def contains_from_messages(node):
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "from_messages"
+                and isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "ChatPromptTemplate"
+            ):
+                return True
+        return False
+
     for cell in cells:
         if cell.get("cell_type") != "code":
             continue
@@ -176,12 +189,7 @@ def _fix_runtime_prompt_braces(cells):
             if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                 continue
             value = node.value
-            if (
-                isinstance(value, ast.Call)
-                and "ChatPromptTemplate.from_messages" in (
-                    ast.get_source_segment(source, value) or ""
-                )
-            ):
+            if isinstance(value, ast.Call) and contains_from_messages(value):
                 ranges.append((node.lineno, node.end_lineno))
         if not ranges:
             continue
