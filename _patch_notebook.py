@@ -194,12 +194,13 @@ def _fix_runtime_prompt_braces(cells):
         if not ranges:
             continue
         lines = source.splitlines(keepends=True)
-        for start, end in ranges:
+        for start, end in sorted(ranges, reverse=True):
             segment = "".join(lines[start - 1 : end])
             fixed = field_pattern.sub(r"{\1}", segment)
             if fixed != segment:
-                source = source.replace(segment, fixed, 1)
+                lines[start - 1 : end] = [fixed]
                 changed += 1
+        source = "".join(lines)
         if source != join_source(cell["source"]):
             cell["source"] = source
             cell["outputs"] = []

@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 from prompt_template_validator import (
     IssueType,
@@ -61,6 +63,22 @@ def test_validator_passes_regenerated_production_notebook():
     notebook = Path(__file__).parent / "IntelligentDataDetective_beta_v5_patched.ipynb"
     report = PromptTemplateValidator(notebook).validate_all_templates()
     assert report.templates
+    assert not report.errors
+
+
+def test_patcher_regenerates_and_validates_production_notebook():
+    repo = Path(__file__).parent
+    subprocess.run(
+        [sys.executable, str(repo / "_patch_notebook.py")],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    report = PromptTemplateValidator(
+        repo / "IntelligentDataDetective_beta_v5_patched.ipynb"
+    ).validate_all_templates()
+    assert len(report.templates) == 24
     assert not report.errors
 
 
