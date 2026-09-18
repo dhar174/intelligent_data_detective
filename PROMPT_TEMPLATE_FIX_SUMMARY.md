@@ -31,7 +31,7 @@ runtime artifact committed for execution. The one-shot raw notebook rewrite help
 - `python prompt_template_validator.py IntelligentDataDetective_beta_v5_patched.ipynb`
   detects 24 templates with 0 errors (2 pre-existing non-fatal warnings: cell 4 syntax and undeclared placeholder `reply_msg_to_supervisor` in `data_cleaner_prompt_template_mini`).
 - `python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v`:
-  16 passed out of 16 tests covering escaped placeholders, runtime substitution, chained `.partial(...)`, multiline/triple-quoted templates, f-strings inside `from_messages`, escaped JSON/literal braces, and UTF-8 safe patching.
+  17 passed out of 17 tests covering escaped placeholders, runtime substitution, chained `.partial(...)`, multiline/triple-quoted templates, f-strings inside `from_messages`, escaped JSON/literal braces, UTF-8 safe patching, cell counter accuracy, and multiple prompts per cell.
 - `python -m pytest test_intelligent_data_detective.py -v`: 22 passed out of 22 tests.
 - `python -m pytest test_error_handling_framework.py -v`: 15 passed, 1 known failure acceptable.
 - `python -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v`: 55 passed out of 55 tests.

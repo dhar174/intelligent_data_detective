@@ -3,7 +3,7 @@
 Test prompt template formatting issues before and after fixes.
 """
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 
 
 class TestPromptTemplateFormatting:

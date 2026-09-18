@@ -68,7 +68,7 @@ def test_validator_passes_regenerated_production_notebook():
 
 def test_patcher_regenerates_and_validates_production_notebook():
     repo = Path(__file__).parent
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, str(repo / "_patch_notebook.py")],
         cwd=repo,
         check=True,
@@ -76,6 +76,7 @@ def test_patcher_regenerates_and_validates_production_notebook():
         text=True,
         encoding="utf-8",
     )
+    assert "cell(s) updated" in result.stdout
     report = PromptTemplateValidator(
         repo / "IntelligentDataDetective_beta_v5_patched.ipynb"
     ).validate_all_templates()
@@ -122,9 +123,9 @@ def test_patcher_preserves_python_fstring_langchain_placeholder():
         {
             "cell_type": "code",
             "source": (
-                'prompt = ChatPromptTemplate.from_messages(['
+                "prompt = ChatPromptTemplate.from_messages(["
                 '("system", f"Objective: {{user_prompt}}")'
-                '])'
+                "])"
             ),
         }
     ]
@@ -138,18 +139,21 @@ def test_patcher_preserves_intentional_literal_braces_and_escaped_json():
         {
             "cell_type": "code",
             "source": (
-                'prompt = ChatPromptTemplate.from_messages([\n'
+                "prompt = ChatPromptTemplate.from_messages([\n"
                 '    ("system", \'Return JSON: {{"name": "{{user_prompt}}", "schema": "{{output_schema_name}}"}}\')\n'
-                '])\n'
-                'valid_prompt = ChatPromptTemplate.from_messages([\n'
+                "])\n"
+                "valid_prompt = ChatPromptTemplate.from_messages([\n"
                 '    ("system", \'Return JSON: {{"name": "{user_prompt}"}}\')\n'
-                '])\n'
+                "])\n"
             ),
         }
     ]
     assert _fix_runtime_prompt_braces(cells) == 1
     source = "".join(cells[0]["source"])
-    assert 'Return JSON: {{"name": "{user_prompt}", "schema": "{output_schema_name}"}}' in source
+    assert (
+        'Return JSON: {{"name": "{user_prompt}", "schema": "{output_schema_name}"}}'
+        in source
+    )
     assert 'Return JSON: {{"name": "{user_prompt}"}}' in source
 
 
@@ -159,7 +163,7 @@ def test_patcher_does_not_rewrite_partial_args_or_unrelated_strings():
             "cell_type": "code",
             "source": (
                 'outside = "{{user_prompt}}"\n'
-                'prompt = ChatPromptTemplate.from_messages([\n'
+                "prompt = ChatPromptTemplate.from_messages([\n"
                 '    ("system", "Objective: {{user_prompt}}")\n'
                 ']).partial(output_schema_name="{{output_schema_name}}")'
             ),
@@ -177,9 +181,9 @@ def test_patcher_handles_unicode_prompt_literals_without_corruption():
         {
             "cell_type": "code",
             "source": (
-                'prompt = ChatPromptTemplate.from_messages([\n'
+                "prompt = ChatPromptTemplate.from_messages([\n"
                 '    ("system", "🚀 Objective: {{user_prompt}} — Analysis")\n'
-                '])\n'
+                "])\n"
             ),
         }
     ]
@@ -187,3 +191,20 @@ def test_patcher_handles_unicode_prompt_literals_without_corruption():
     source = "".join(cells[0]["source"])
     assert '("system", "🚀 Objective: {user_prompt} — Analysis")' in source
     assert source.endswith("])\n")
+
+
+def test_patcher_handles_multiple_prompts_in_single_cell():
+    cells = [
+        {
+            "cell_type": "code",
+            "source": (
+                'p1 = ChatPromptTemplate.from_messages([("system", "{{user_prompt}}")])\n'
+                'p2 = ChatPromptTemplate.from_messages([("system", "{{output_schema_name}}")])\n'
+            ),
+        }
+    ]
+    assert _fix_runtime_prompt_braces(cells) == 1
+    source = "".join(cells[0]["source"])
+    assert "{user_prompt}" in source
+    assert "{output_schema_name}" in source
+    assert "{{" not in source

@@ -413,7 +413,7 @@ def main():
     prompt_brace_fixes = _fix_runtime_prompt_braces(cells)
     print(
         f"✅ Runtime ChatPromptTemplate brace pass: "
-        f"{prompt_brace_fixes} assignment(s) updated"
+        f"{prompt_brace_fixes} cell(s) updated"
     )
 
     # --- Patch cell idx 48 (dataset preparation) ---
