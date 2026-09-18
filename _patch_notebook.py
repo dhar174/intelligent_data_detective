@@ -10,6 +10,18 @@ import json
 import copy
 import ast
 import re
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 INPUT_NB = "IntelligentDataDetective_beta_v5.ipynb"
 OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
@@ -154,11 +166,12 @@ _RUNTIME_PROMPT_FIELDS = frozenset(
 
 
 def _fix_runtime_prompt_braces(cells):
-    """Fix escaped LangChain fields only inside ChatPromptTemplate assignments.
+    """Fix escaped LangChain fields only inside ChatPromptTemplate payloads.
 
     The AST limits the rewrite to actual ``ChatPromptTemplate.from_messages``
-    assignments. Python f-strings and unrelated literal-brace expressions are
-    therefore left untouched.
+    payloads and ordinary string literals within them. Python f-strings,
+    chained ``.partial(...)`` arguments, and unrelated literal-brace expressions
+    are preserved untouched.
     """
 
     field_pattern = re.compile(
@@ -171,6 +184,7 @@ def _fix_runtime_prompt_braces(cells):
             self.nodes = []
 
         def visit_JoinedStr(self, node):
+            # Skip Python f-strings and expressions within them
             return
 
         def visit_Constant(self, node):
@@ -197,22 +211,38 @@ def _fix_runtime_prompt_braces(cells):
                 calls.append(node)
         if not calls:
             continue
-        line_starts = [0]
-        for match in re.finditer(r"\n", source):
-            line_starts.append(match.end())
+
+        lines = source.splitlines(keepends=True)
+        line_char_starts = [0]
+        for line in lines[:-1]:
+            line_char_starts.append(line_char_starts[-1] + len(line))
+
         edits = {}
         for call in calls:
+            payload_targets = list(call.args)
+            for kw in call.keywords:
+                if kw.arg == "messages":
+                    payload_targets.append(kw.value)
             collector = _PromptLiteralCollector()
-            collector.visit(call)
+            for target in payload_targets:
+                collector.visit(target)
             for literal in collector.nodes:
                 segment = ast.get_source_segment(source, literal)
                 if not segment:
                     continue
                 fixed = field_pattern.sub(r"{\1}", segment)
                 if fixed != segment:
-                    start = line_starts[literal.lineno - 1] + literal.col_offset
-                    end = line_starts[literal.end_lineno - 1] + literal.end_col_offset
+                    # Convert UTF-8 byte offsets (lineno is 1-indexed, col_offset is 0-indexed byte offset) to character indices
+                    line_bytes = lines[literal.lineno - 1].encode("utf-8")
+                    start = line_char_starts[literal.lineno - 1] + len(
+                        line_bytes[:literal.col_offset].decode("utf-8")
+                    )
+                    end_line_bytes = lines[literal.end_lineno - 1].encode("utf-8")
+                    end = line_char_starts[literal.end_lineno - 1] + len(
+                        end_line_bytes[:literal.end_col_offset].decode("utf-8")
+                    )
                     edits[(start, end)] = fixed
+
         for (start, end), fixed in sorted(edits.items(), reverse=True):
             source = source[:start] + fixed + source[end:]
         changed += bool(edits)
