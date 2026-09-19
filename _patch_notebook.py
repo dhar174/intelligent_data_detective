@@ -8,6 +8,20 @@ Saves patched notebook as IntelligentDataDetective_beta_v5_patched.ipynb
 
 import json
 import copy
+import ast
+import re
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 INPUT_NB = "IntelligentDataDetective_beta_v5.ipynb"
 OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
@@ -122,6 +136,121 @@ CELL81_NEW = (
 )
 
 MEMORY_POLICY_MARKER = "MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()\n"
+
+_RUNTIME_PROMPT_FIELDS = frozenset(
+    {
+        "user_prompt",
+        "agents",
+        "output_schema_name",
+        "memories",
+        "plan_summary",
+        "plan_steps",
+        "past_steps",
+        "completed_tasks",
+        "latest_progress",
+        "to_do_list",
+        "leftover_to_do_list",
+        "completed_agents",
+        "remaining_agents",
+        "completed_steps",
+        "members",
+        "last_agent_id",
+        "last_message",
+        "reply_msg_to_supervisor",
+        "finished_this_task",
+        "expect_reply",
+        "viz_revise_count",
+        "messages",
+    }
+)
+
+
+def _fix_runtime_prompt_braces(cells):
+    """Fix escaped LangChain fields only inside ChatPromptTemplate payloads.
+
+    The AST limits the rewrite to actual ``ChatPromptTemplate.from_messages``
+    payloads and ordinary string literals within them. Python f-strings,
+    chained ``.partial(...)`` arguments, and unrelated literal-brace expressions
+    are preserved untouched.
+    """
+
+    field_pattern = re.compile(
+        r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}"
+    )
+    changed = 0
+
+    class _PromptLiteralCollector(ast.NodeVisitor):
+        def __init__(self):
+            self.nodes = []
+
+        def visit_JoinedStr(self, node):
+            # Skip Python f-strings and expressions within them
+            return
+
+        def visit_Constant(self, node):
+            if isinstance(node.value, str):
+                self.nodes.append(node)
+
+    for cell in cells:
+        if cell.get("cell_type") != "code":
+            continue
+        source = join_source(cell["source"])
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        calls = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "from_messages"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "ChatPromptTemplate"
+            ):
+                calls.append(node)
+        if not calls:
+            continue
+
+        lines = source.splitlines(keepends=True)
+        line_char_starts = [0]
+        for line in lines[:-1]:
+            line_char_starts.append(line_char_starts[-1] + len(line))
+
+        edits = {}
+        for call in calls:
+            payload_targets = list(call.args)
+            for kw in call.keywords:
+                if kw.arg == "messages":
+                    payload_targets.append(kw.value)
+            collector = _PromptLiteralCollector()
+            for target in payload_targets:
+                collector.visit(target)
+            for literal in collector.nodes:
+                segment = ast.get_source_segment(source, literal)
+                if not segment:
+                    continue
+                fixed = field_pattern.sub(r"{\1}", segment)
+                if fixed != segment:
+                    # Convert UTF-8 byte offsets (lineno is 1-indexed, col_offset is 0-indexed byte offset) to character indices
+                    line_bytes = lines[literal.lineno - 1].encode("utf-8")
+                    start = line_char_starts[literal.lineno - 1] + len(
+                        line_bytes[:literal.col_offset].decode("utf-8")
+                    )
+                    end_line_bytes = lines[literal.end_lineno - 1].encode("utf-8")
+                    end = line_char_starts[literal.end_lineno - 1] + len(
+                        end_line_bytes[:literal.end_col_offset].decode("utf-8")
+                    )
+                    edits[(start, end)] = fixed
+
+        for (start, end), fixed in sorted(edits.items(), reverse=True):
+            source = source[:start] + fixed + source[end:]
+        changed += bool(edits)
+        if source != join_source(cell["source"]):
+            cell["source"] = source
+            cell["outputs"] = []
+            cell["execution_count"] = None
+    return changed
 
 MEMORY_POLICY_HELPERS = """MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
 KNOWN_MEMORY_KINDS = (
@@ -280,6 +409,12 @@ def main():
 
     cells = nb["cells"]
     print(f"Loaded notebook with {len(cells)} cells")
+
+    prompt_brace_fixes = _fix_runtime_prompt_braces(cells)
+    print(
+        f"✅ Runtime ChatPromptTemplate brace pass: "
+        f"{prompt_brace_fixes} cell(s) updated"
+    )
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]

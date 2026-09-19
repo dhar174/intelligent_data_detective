@@ -29,6 +29,7 @@ Key files:
 - `test_intelligent_data_detective.py` — 22 core tests (no API keys needed)
 - `test_error_handling_framework.py` — 15/16 tests pass (1 known edge-case failure acceptable)
 - `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py` — memory tests
+- `prompt_template_validator.py`, `test_prompt_formatting.py`, `test_prompt_template_fixes.py` — prompt template validator & test suite (17 tests)
 
 Important directories:
 - `docs/` — architecture docs, ADRs, diagrams
@@ -54,10 +55,11 @@ pip install langchain langchain-core langchain-openai langchain_experimental lan
 python3 -m pytest test_intelligent_data_detective.py -v               # 22 tests
 python3 -m pytest test_error_handling_framework.py -v                 # 15/16 (1 known failure OK)
 python3 -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
+python3 -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 
 # Format and lint
-black test_intelligent_data_detective.py test_error_handling_framework.py
-flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
+black test_intelligent_data_detective.py test_error_handling_framework.py test_prompt_formatting.py test_prompt_template_fixes.py
+flake8 test_intelligent_data_detective.py test_prompt_formatting.py test_prompt_template_fixes.py --max-line-length=88 --extend-ignore=E203,E501
 
 # Full workflow (requires API keys, 6–25 minutes — never cancel)
 export OPENAI_API_KEY="your-key"
