@@ -4,9 +4,31 @@ from pathlib import Path
 import subprocess
 import sys
 
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Union
+from unittest.mock import MagicMock
+
+from PIL import Image
 import pytest
 
-from _patch_notebook import RequiredPatchError, replace_required
+from _patch_notebook import RequiredPatchError, replace_required, replace_required_regex
+from idd_core import (
+    DataVisualization,
+    FileResult,
+    ListOfFiles,
+    ReportOutline,
+    ReportResults,
+    Section,
+    VisualizationResults,
+    _get_artifacts_base,
+    _is_subpath,
+    _resolve_artifact_path,
+)
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from validate_artifact_quality import check_embeds, check_pdf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +98,41 @@ def test_required_replace_fails_fast_when_anchor_drifts():
         )
 
 
+def test_replace_required_regex_match_counts():
+    text = "alpha beta gamma beta delta"
+
+    # 0 matches: fail-fast on 0
+    with pytest.raises(
+        RequiredPatchError, match="required structural anchor count was 0"
+    ):
+        replace_required_regex(
+            text,
+            r"omega",
+            "replacement",
+            patch_id="TEST-REGEX-ZERO",
+        )
+
+    # 1 match: successful replacement
+    single = replace_required_regex(
+        text,
+        r"alpha",
+        "first",
+        patch_id="TEST-REGEX-ONE",
+    )
+    assert single == "first beta gamma beta delta"
+
+    # 2 matches: fail-fast on 2+
+    with pytest.raises(
+        RequiredPatchError, match="required structural anchor count was 2"
+    ):
+        replace_required_regex(
+            text,
+            r"beta",
+            "replacement",
+            patch_id="TEST-REGEX-TWO",
+        )
+
+
 def test_patcher_is_clean_deterministic_and_preserves_99_cells(generated_notebook):
     for result in (generated_notebook["first"], generated_notebook["second"]):
         combined_output = result.stdout + result.stderr
@@ -117,8 +174,9 @@ def test_generated_report_packager_has_required_canonical_pipeline(
         "_dedupe_long_paragraphs(draft)"
     )
     assert function_source.index("_polish_report_scaffold_leadins(draft)") < (
-        function_source.index("md_path.write_text")
+        function_source.index("md_tmp.write_text")
     )
+    assert "_report_os.replace(md_tmp, md_path)" in function_source
 
 
 def test_generated_file_writer_final_semantics_and_branch_selection(
@@ -231,3 +289,914 @@ def test_obsolete_report_state_fields_are_not_generated(generated_notebook):
         "report_generation_trace",
     ):
         assert obsolete_field not in source
+
+
+def _create_dummy_png(path: Path, color=(200, 50, 50)):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGB", (120, 80), color=color)
+    img.save(str(path), format="PNG")
+
+
+class DummyRuntime:
+    def __init__(self, base_dir: Path):
+        self.run_dir = str(base_dir)
+        self.artifacts_dir = str(base_dir)
+
+
+class DummyNextAgentMetadata:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class DummyCommand:
+    def __init__(self, goto=None, update=None):
+        self.goto = goto
+        self.update = update or {}
+
+    def get(self, key, default=None):
+        return self.update.get(key, default)
+
+    def __getitem__(self, key):
+        return self.update[key]
+
+
+def _compile_report_packager_node(notebook, base_dir: Path, mock_safe_invoke=None):
+    source = _cell_source(notebook, "report_packager_node")
+    function = _function_node(source, "report_packager_node")
+    module = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(module)
+    code = compile(module, "<report_packager_node>", "exec")
+
+    logger = logging.getLogger("test_report_packager")
+    runtime = DummyRuntime(base_dir)
+
+    if mock_safe_invoke is None:
+
+        def mock_safe_invoke(agent, payload, config=None):
+            return {
+                "structured_response": ReportResults(
+                    markdown_report_path="",
+                    html_report_path="",
+                    pdf_report_path="",
+                    reply_msg_to_supervisor="Done draft",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+                "messages": [
+                    AIMessage(
+                        content="Report Packager finished draft.",
+                        name="report_packager",
+                    )
+                ],
+            }
+
+    ns = {
+        "Optional": Optional,
+        "List": List,
+        "Dict": Dict,
+        "Any": Any,
+        "Union": Union,
+        "State": dict,
+        "sample_prompt_text": "sample prompt",
+        "ReportOutline": ReportOutline,
+        "Section": Section,
+        "DataVisualization": DataVisualization,
+        "VisualizationResults": VisualizationResults,
+        "ReportResults": ReportResults,
+        "NextAgentMetadata": DummyNextAgentMetadata,
+        "Command": DummyCommand,
+        "AIMessage": AIMessage,
+        "HumanMessage": HumanMessage,
+        "SendAgentMessage": AIMessage,
+        "ChatPromptTemplate": ChatPromptTemplate,
+        "MessagesPlaceholder": MessagesPlaceholder,
+        "report_generator_prompt_template": ChatPromptTemplate.from_messages(
+            [("system", "Task: {report_task}")]
+        ),
+        "report_generator_tools": [],
+        "DEFAULT_TOOLING_GUIDELINES": "guidelines",
+        "enhanced_retrieve_mem": lambda s: "memories",
+        "get_global_df_registry": lambda: None,
+        "_safe_report_packager_invoke": mock_safe_invoke,
+        "report_packager_agent": object(),
+        "_resolve_artifact_path": _resolve_artifact_path,
+        "_get_artifacts_base": _get_artifacts_base,
+        "_is_subpath": _is_subpath,
+        "update_memory_with_kind": lambda *args, **kwargs: None,
+        "in_memory_store": None,
+        "get_store": lambda: None,
+        "_pl_logger": logger,
+        "WORKING_DIRECTORY": base_dir,
+        "RUNTIME": runtime,
+        "PathlibPath": Path,
+        "os": os,
+        "re": re,
+    }
+    exec(code, ns)
+    return ns["report_packager_node"]
+
+
+def _compile_file_writer_node(
+    notebook, base_dir: Path, mock_finalizer=None, mock_fw_agent=None
+):
+    source = _cell_source(notebook, "file_writer_node")
+    function = _function_node(source, "file_writer_node")
+    module = ast.Module(body=[function], type_ignores=[])
+    ast.fix_missing_locations(module)
+    code = compile(module, "<file_writer_node>", "exec")
+
+    logger = logging.getLogger("test_file_writer")
+    runtime = DummyRuntime(base_dir)
+
+    if mock_fw_agent is None:
+        mock_fw_agent = MagicMock()
+        mock_fw_agent.invoke.side_effect = AssertionError(
+            "Fallback file_writer_agent was invoked!"
+        )
+
+    ns = {
+        "Optional": Optional,
+        "List": List,
+        "Dict": Dict,
+        "Any": Any,
+        "Union": Union,
+        "State": dict,
+        "sample_prompt_text": "sample prompt",
+        "get_global_df_registry": lambda: None,
+        "file_writer_tools": [],
+        "ReportResults": ReportResults,
+        "VisualizationResults": VisualizationResults,
+        "ListOfFiles": ListOfFiles,
+        "FileResult": FileResult,
+        "_normalize_meta": lambda x: x or {},
+        "enhanced_retrieve_mem": lambda s: "memories",
+        "file_writer_prompt_template": ChatPromptTemplate.from_messages(
+            [("system", "file writer system")]
+        ),
+        "DEFAULT_TOOLING_GUIDELINES": "guidelines",
+        "HumanMessage": HumanMessage,
+        "AIMessage": AIMessage,
+        "SendAgentMessage": AIMessage,
+        "PathlibPath": Path,
+        "os": os,
+        "re": re,
+        "_pl_logger": logger,
+        "RUNTIME": runtime,
+        "WORKING_DIRECTORY": base_dir,
+        "create_agent": lambda *args, **kwargs: mock_finalizer,
+        "file_writer_llm": object(),
+        "InMemorySaver": lambda: None,
+        "in_memory_store": None,
+        "ToolStrategy": lambda x: x,
+        "_make_unknown_tool_guard": lambda *args: None,
+        "file_writer_agent": mock_fw_agent,
+    }
+    exec(code, ns)
+    return ns["file_writer_node"]
+
+
+def test_report_renderer_runtime_with_actual_files(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart_rev.png"
+    fig2 = viz_dir / "chart_growth.png"
+    fig3 = viz_dir / "chart_churn.png"
+    _create_dummy_png(fig1, (10, 100, 200))
+    _create_dummy_png(fig2, (20, 150, 50))
+    _create_dummy_png(fig3, (200, 50, 10))
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path="visualizations/chart_rev.png",
+        visualization_id="chart_rev",
+        visualization_type="bar",
+        visualization_description="Revenue comparison",
+        visualization_style="seaborn",
+        visualization_title="Revenue By Region",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path="visualizations/chart_growth.png",
+        visualization_id="chart_growth",
+        visualization_type="line",
+        visualization_description="Quarterly Growth",
+        visualization_style="seaborn",
+        visualization_title="Quarterly Growth",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    sec1 = Section(
+        name="Regional Performance",
+        section_num=1,
+        description="Regional numbers",
+        goals=["evaluate revenue"],
+        data_signals=["regional_sales"],
+        expected_figures=[dv1],
+        content=(
+            "As discussed in detail, the northern regional business sector showed "
+            "unprecedented growth of 15% during the third fiscal quarter, surpassing "
+            "all projected metrics and establishing strong market leadership across "
+            "all product divisions. This comprehensive analysis evaluates revenue "
+            "trends, customer acquisition rates, and margin expansions across sectors."
+        ),
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    sec2 = Section(
+        name="Growth Trends",
+        section_num=2,
+        description="Growth trends over quarters",
+        goals=["evaluate growth"],
+        data_signals=["quarterly_growth"],
+        expected_figures=[dv2],
+        content=(
+            "Quarterly growth shows solid upward momentum across all operational sectors. "
+            "Increased investment in core product capability and enhanced distribution "
+            "networks contributed significantly to sustainable profitability and long-term "
+            "customer retention. Forward-looking indicators suggest continued resilience "
+            "in the coming quarters, supporting overall strategic objectives."
+        ),
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path="visualizations/chart_churn.png",
+        visualization_id="chart_churn",
+        visualization_type="scatter",
+        visualization_description="Churn analysis",
+        visualization_style="seaborn",
+        visualization_title="Customer Churn Analysis",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Executive Summary",
+            section_num=0,
+            description="Overview",
+            goals=["summary"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=300,
+            title="Quarterly Performance Analysis",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [sec1, sec2],
+        "written_sections": [
+            f"## Regional Performance\n\n{sec1.content}",
+            f"## Growth Trends\n\n{sec2.content}",
+        ],
+        "visualization_results": VisualizationResults(
+            visualizations=[dv3],
+            reply_msg_to_supervisor="viz ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
+    }
+
+    res = report_packager_node(state)
+    assert res.get("report_generator_complete") is True
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+
+    assert md_file.is_file() and md_file.stat().st_size > 0
+    assert html_file.is_file() and html_file.stat().st_size > 0
+    assert pdf_file.is_file() and pdf_file.stat().st_size > 0
+
+    embed_checks = check_embeds(md_file, html_file)
+    for check in embed_checks:
+        assert check.passed, f"Embed check failed: {check.name} ({check.detail})"
+
+    pdf_check = check_pdf(pdf_file)
+    assert pdf_check.passed, f"PDF check failed: {pdf_check.detail}"
+
+    html_content = html_file.read_text(encoding="utf-8")
+    md_content = md_file.read_text(encoding="utf-8")
+    assert "../visualizations/chart_rev.png" in html_content
+    assert "\\" not in re.findall(r'<img[^>]+src="([^">]+)"', html_content)[0]
+    assert "\\" not in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", md_content)[0]
+
+
+def test_report_renderer_figure_deduplication(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart_dup.png"
+    _create_dummy_png(fig1, (10, 100, 200))
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path="visualizations/chart_dup.png",
+        visualization_id="chart_dup",
+        visualization_type="bar",
+        visualization_description="Duplicate Chart",
+        visualization_style="seaborn",
+        visualization_title="Duplicate Chart Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    sec1 = Section(
+        name="Dup Section",
+        section_num=1,
+        description="Duplicate chart section",
+        goals=["test deduplication"],
+        data_signals=["signals"],
+        expected_figures=[dv1],
+        content="This is section content with enough text to describe the duplicate chart scenario.",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Summary",
+            section_num=0,
+            description="Overview",
+            goals=["summary"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=100,
+            title="Deduplication Report",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [sec1],
+        "written_sections": [f"## Dup Section\n\n{sec1.content}"],
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1],
+            reply_msg_to_supervisor="viz ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), "visualizations/chart_dup.png"],
+    }
+
+    res = report_packager_node(state)
+    assert res.get("report_generator_complete") is True
+
+    md_content = (reports_dir / "final_report.md").read_text(encoding="utf-8")
+    html_content = (reports_dir / "final_report.html").read_text(encoding="utf-8")
+
+    md_matches = re.findall(r"chart_dup\.png", md_content)
+    html_matches = re.findall(r"chart_dup\.png", html_content)
+    assert (
+        len(md_matches) == 1
+    ), f"Expected chart_dup.png once in markdown, got {len(md_matches)}"
+    assert (
+        len(html_matches) == 1
+    ), f"Expected chart_dup.png once in html, got {len(html_matches)}"
+
+
+def test_report_renderer_preserves_and_normalizes_preexisting_markdown_images(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart_existing.png"
+    _create_dummy_png(fig1, (10, 100, 200))
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path="visualizations/chart_existing.png",
+        visualization_id="chart_existing",
+        visualization_type="bar",
+        visualization_description="Existing Chart",
+        visualization_style="seaborn",
+        visualization_title="Existing Chart Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    preexisting_md = (
+        "## Analysis Section\n\n"
+        "Here is the chart:\n\n"
+        f"![Existing Chart]({fig1})\n\n"
+        + ("Substantive body text describing the visual observations in detail. " * 10)
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Summary",
+            section_num=0,
+            description="Overview",
+            goals=["summary"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=100,
+            title="Preexisting Image Report",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [],
+        "written_sections": [preexisting_md],
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1],
+            reply_msg_to_supervisor="viz ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1)],
+    }
+
+    res = report_packager_node(state)
+    assert res.get("report_generator_complete") is True
+
+    md_content = (reports_dir / "final_report.md").read_text(encoding="utf-8")
+    assert "../visualizations/chart_existing.png" in md_content
+    assert md_content.count("chart_existing.png") == 1
+
+
+def test_report_renderer_transactional_generation_and_stale_output(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    stale_md = reports_dir / "final_report.md"
+    stale_html = reports_dir / "final_report.html"
+    stale_pdf = reports_dir / "final_report.pdf"
+
+    stale_md.write_text("STALE MD CONTENT", encoding="utf-8")
+    stale_html.write_text("STALE HTML CONTENT", encoding="utf-8")
+    stale_pdf.write_text("STALE PDF CONTENT", encoding="utf-8")
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    class MockPisaErr:
+        err = 1
+
+    monkeypatch.setattr(
+        "xhtml2pdf.pisa.CreatePDF", lambda *args, **kwargs: MockPisaErr()
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Summary",
+            section_num=0,
+            description="Overview",
+            goals=["summary"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=100,
+            title="Failed Report",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [],
+        "written_sections": ["## Section 1\n\nSome text."],
+        "visualization_results": VisualizationResults(
+            visualizations=[],
+            reply_msg_to_supervisor="none",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [],
+    }
+
+    res = report_packager_node(state)
+    assert res.get("report_generator_complete") is False
+
+    assert stale_md.read_text(encoding="utf-8") == "STALE MD CONTENT"
+    assert stale_html.read_text(encoding="utf-8") == "STALE HTML CONTENT"
+    assert stale_pdf.read_text(encoding="utf-8") == "STALE PDF CONTENT"
+
+    tmp_files = list(reports_dir.glob("_tmp_*"))
+    assert len(tmp_files) == 0, f"Leftover temporary files found: {tmp_files}"
+
+
+def test_file_writer_node_final_manifest_runtime(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    md_file.write_text("# Final Report", encoding="utf-8")
+    html_file.write_text("<h1>Final Report</h1>", encoding="utf-8")
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    fig1 = viz_dir / "chart_rev.png"
+    fig2 = viz_dir / "chart_growth.png"
+    fig3 = viz_dir / "chart_churn.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    mock_fw_agent = MagicMock()
+    mock_fw_agent.invoke.side_effect = AssertionError(
+        "Ordinary write-agent fallback was invoked!"
+    )
+
+    fr_report = FileResult(
+        write_success=True,
+        file_path=str(html_file),
+        file_type="html",
+        file_name="final_report.html",
+        file_description="Final HTML report",
+        is_final_report=True,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_md = FileResult(
+        write_success=True,
+        file_path=str(md_file),
+        file_type="markdown",
+        file_name="final_report.md",
+        file_description="Final MD report",
+        is_final_report=False,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_pdf = FileResult(
+        write_success=True,
+        file_path=str(pdf_file),
+        file_type="pdf",
+        file_name="final_report.pdf",
+        file_description="Final PDF report",
+        is_final_report=False,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v1 = FileResult(
+        write_success=True,
+        file_path=str(fig1),
+        file_type="png",
+        file_name="chart_rev.png",
+        file_description="Chart Rev",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v2 = FileResult(
+        write_success=True,
+        file_path=str(fig2),
+        file_type="png",
+        file_name="chart_growth.png",
+        file_description="Chart Growth",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v3 = FileResult(
+        write_success=True,
+        file_path=str(fig3),
+        file_type="png",
+        file_name="chart_churn.png",
+        file_description="Chart Churn",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    mock_manifest_result = ListOfFiles(
+        files=[fr_report, fr_md, fr_pdf, fr_v1, fr_v2, fr_v3],
+        reply_msg_to_supervisor="Manifest ready",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": mock_manifest_result,
+        "messages": [AIMessage(content="Manifest ready", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+        mock_fw_agent=mock_fw_agent,
+    )
+
+    runtime = DummyRuntime(tmp_path)
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[
+                DataVisualization(
+                    path=str(fig1),
+                    visualization_id="v1",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+                DataVisualization(
+                    path=str(fig2),
+                    visualization_id="v2",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+                DataVisualization(
+                    path=str(fig3),
+                    visualization_id="v3",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+            ],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
+        "written_sections": ["# Final Report\n\nContent"],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": runtime}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is True
+    assert Path(res.get("final_report_path")).resolve() == html_file.resolve()
+    mock_fw_agent.invoke.assert_not_called()
+
+
+def test_file_writer_node_incomplete_manifest_missing_visualization(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    md_file.write_text("# Final Report", encoding="utf-8")
+    html_file.write_text("<h1>Final Report</h1>", encoding="utf-8")
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    fig1 = viz_dir / "chart_rev.png"
+    fig2 = viz_dir / "chart_growth.png"
+    fig3 = viz_dir / "chart_missing.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    # fig3 is intentionally NOT created on disk
+
+    mock_fw_agent = MagicMock()
+    mock_fw_agent.invoke.side_effect = AssertionError(
+        "Ordinary write-agent fallback was invoked!"
+    )
+
+    fr_report = FileResult(
+        write_success=True,
+        file_path=str(html_file),
+        file_type="html",
+        file_name="final_report.html",
+        file_description="Final HTML report",
+        is_final_report=True,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_md = FileResult(
+        write_success=True,
+        file_path=str(md_file),
+        file_type="markdown",
+        file_name="final_report.md",
+        file_description="Final MD report",
+        is_final_report=False,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_pdf = FileResult(
+        write_success=True,
+        file_path=str(pdf_file),
+        file_type="pdf",
+        file_name="final_report.pdf",
+        file_description="Final PDF report",
+        is_final_report=False,
+        category_tag="report",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v1 = FileResult(
+        write_success=True,
+        file_path=str(fig1),
+        file_type="png",
+        file_name="chart_rev.png",
+        file_description="Chart Rev",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v2 = FileResult(
+        write_success=True,
+        file_path=str(fig2),
+        file_type="png",
+        file_name="chart_growth.png",
+        file_description="Chart Growth",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    fr_v3 = FileResult(
+        write_success=True,
+        file_path=str(fig3),
+        file_type="png",
+        file_name="chart_missing.png",
+        file_description="Chart Missing",
+        is_final_report=False,
+        category_tag="visualization",
+        reply_msg_to_supervisor="done",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    mock_manifest_result = ListOfFiles(
+        files=[fr_report, fr_md, fr_pdf, fr_v1, fr_v2, fr_v3],
+        reply_msg_to_supervisor="Manifest ready",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": mock_manifest_result,
+        "messages": [AIMessage(content="Manifest ready", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+        mock_fw_agent=mock_fw_agent,
+    )
+
+    runtime = DummyRuntime(tmp_path)
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[
+                DataVisualization(
+                    path=str(fig1),
+                    visualization_id="v1",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+                DataVisualization(
+                    path=str(fig2),
+                    visualization_id="v2",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+                DataVisualization(
+                    path=str(fig3),
+                    visualization_id="v3",
+                    visualization_type="bar",
+                    visualization_description="d",
+                    visualization_style="s",
+                    visualization_title="t",
+                    reply_msg_to_supervisor="ok",
+                    finished_this_task=True,
+                    expect_reply=False,
+                ),
+            ],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
+        "written_sections": ["# Final Report\n\nContent"],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": runtime}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is False

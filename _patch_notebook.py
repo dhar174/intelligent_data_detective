@@ -419,18 +419,13 @@ def replace_required(source, old, new, *, patch_id, count=1):
 
 def replace_required_regex(source, pattern, replacement, *, patch_id):
     """Replace one required regex-delimited block or abort generation."""
-    updated, replacements = re.subn(
-        pattern,
-        replacement,
-        source,
-        count=1,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    if replacements != 1:
+    flags = re.MULTILINE | re.DOTALL
+    matches = list(re.finditer(pattern, source, flags=flags))
+    if len(matches) != 1:
         raise RequiredPatchError(
-            f"{patch_id}: required structural anchor count was {replacements}; expected 1"
+            f"{patch_id}: required structural anchor count was {len(matches)}; expected 1"
         )
-    return updated
+    return re.sub(pattern, replacement, source, count=1, flags=flags)
 
 
 def assert_patch_present(source, marker, *, patch_id):
@@ -13312,10 +13307,218 @@ def main():
         '        raise RuntimeError("W14J report_packager did not return ReportResults")\n'
         "    import html as _report_html\n"
         "    import re as _report_re\n"
-        "    _report_config = state.get(\"_config\")\n"
+        "    import os as _report_os\n"
+        "    import uuid as _report_uuid\n"
+        "    from pathlib import Path as _ReportPath\n"
+        '    _report_config = state.get("_config")\n'
+        "    _artifact_root = _get_artifacts_base(_report_config).resolve()\n"
+        "    _run_root = None\n"
+        '    if "RUNTIME" in globals() and getattr(globals()["RUNTIME"], "run_dir", None):\n'
+        '        _run_root = _ReportPath(globals()["RUNTIME"].run_dir).resolve()\n'
+        "    _working_dir = _ReportPath(WORKING_DIRECTORY).resolve()\n"
+        "    _allowed_roots = [_artifact_root, _working_dir]\n"
+        "    if _run_root is not None:\n"
+        "        _allowed_roots.append(_run_root)\n"
+        "    def _is_safe_artifact_path(cand: _ReportPath) -> bool:\n"
+        "        try:\n"
+        "            cand_res = cand.resolve()\n"
+        "            return any(_is_subpath(cand_res, root) for root in _allowed_roots)\n"
+        "        except Exception:\n"
+        "            return False\n"
+        "    canonical_source_md = None\n"
+        '    _raw_agent_md_path = getattr(rr, "markdown_report_path", None)\n'
+        "    if _raw_agent_md_path and isinstance(_raw_agent_md_path, str):\n"
+        "        _raw_lower = _raw_agent_md_path.strip().lower()\n"
+        '        if not (_raw_lower.startswith(("http://", "https://", "file:")) or "://" in _raw_lower):\n'
+        "            _probe_agent_md = _ReportPath(_raw_agent_md_path)\n"
+        "            if not _probe_agent_md.is_absolute():\n"
+        "                for _b in [_artifact_root, _run_root or _artifact_root, _working_dir]:\n"
+        "                    _p = (_b / _probe_agent_md).resolve()\n"
+        "                    if _p.is_file() and _is_safe_artifact_path(_p):\n"
+        "                        _probe_agent_md = _p\n"
+        "                        break\n"
+        "            if _probe_agent_md.is_file() and _is_safe_artifact_path(_probe_agent_md):\n"
+        "                try:\n"
+        '                    _content = _probe_agent_md.read_text(encoding="utf-8", errors="replace").strip()\n'
+        "                    if _content:\n"
+        "                        canonical_source_md = _content\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "    if not canonical_source_md:\n"
+        "        canonical_source_md = draft\n"
+        "    canonical_source_md = _dedupe_long_paragraphs(canonical_source_md)\n"
+        "    canonical_source_md = _normalize_report_headings(canonical_source_md, title)\n"
+        "    canonical_source_md = _polish_report_scaffold_leadins(canonical_source_md)\n"
         '    md_path = _resolve_artifact_path("final_report.md", config=_report_config, subdir="reports")\n'
         '    html_path = _resolve_artifact_path("final_report.html", config=_report_config, subdir="reports")\n'
         '    pdf_path = _resolve_artifact_path("final_report.pdf", config=_report_config, subdir="reports")\n'
+        "    reports_dir = html_path.parent\n"
+        "    reports_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    _candidate_img_bases = [\n"
+        "        reports_dir,\n"
+        "        reports_dir.parent,\n"
+        "        _artifact_root,\n"
+        '        _artifact_root / "visualizations",\n'
+        '        _artifact_root / "figures",\n'
+        "        _working_dir,\n"
+        '        _working_dir / "visualizations",\n'
+        '        _working_dir / "figures",\n'
+        '        _working_dir / "artifacts",\n'
+        '        _working_dir / "artifacts" / "visualizations",\n'
+        "    ]\n"
+        "    if _run_root is not None:\n"
+        "        _candidate_img_bases.extend([\n"
+        "            _run_root,\n"
+        '            _run_root / "visualizations",\n'
+        '            _run_root / "figures",\n'
+        '            _run_root / "artifacts",\n'
+        '            _run_root / "artifacts" / "visualizations",\n'
+        "        ])\n"
+        "    def _resolve_img_path(raw_path: str) -> Optional[_ReportPath]:\n"
+        "        if not raw_path or not isinstance(raw_path, str):\n"
+        "            return None\n"
+        '        raw_clean = raw_path.strip().replace("\\\\", "/")\n'
+        "        raw_lower = raw_clean.lower()\n"
+        '        if raw_lower.startswith(("data:", "http://", "https://", "file:")) or "://" in raw_lower:\n'
+        "            return None\n"
+        "        cand = _ReportPath(raw_clean)\n"
+        "        if cand.is_absolute() and cand.is_file() and _is_safe_artifact_path(cand):\n"
+        "            return cand.resolve()\n"
+        "        for base in _candidate_img_bases:\n"
+        "            probe = (base / cand).resolve()\n"
+        "            if probe.is_file() and _is_safe_artifact_path(probe):\n"
+        "                return probe\n"
+        "            probe_name = (base / cand.name).resolve()\n"
+        "            if probe_name.is_file() and _is_safe_artifact_path(probe_name):\n"
+        "                return probe_name\n"
+        "        return None\n"
+        "    def _to_rel_path(p: _ReportPath) -> str:\n"
+        '        return _report_os.path.relpath(p, reports_dir).replace("\\\\", "/")\n'
+        "    seen_figure_keys = set()\n"
+        "    seen_figure_ids_in_md = set()\n"
+        "    def _normalize_existing_md_images(md_text: str) -> str:\n"
+        "        def _img_sub(m):\n"
+        "            alt_text = m.group(1)\n"
+        "            src_text = m.group(2).strip()\n"
+        '            if src_text.lower().startswith("data:"):\n'
+        "                return m.group(0)\n"
+        "            res = _resolve_img_path(src_text)\n"
+        "            if res is not None:\n"
+        "                seen_figure_keys.add(str(res.resolve()).casefold())\n"
+        "                seen_figure_ids_in_md.add(res.stem.casefold())\n"
+        "                rel = _to_rel_path(res)\n"
+        '                return f"![{alt_text}]({rel})"\n'
+        "            return m.group(0)\n"
+        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _img_sub, md_text)\n'
+        "    canonical_source_md = _normalize_existing_md_images(canonical_source_md)\n"
+        "    collected_figures = []\n"
+        "    _seen_inventory_keys = set()\n"
+        "    def _register_figure(raw_path, fig_id, fig_title, fig_desc, sec_name=None):\n"
+        "        f_path = _resolve_img_path(raw_path) if raw_path else None\n"
+        "        if f_path is None and fig_id:\n"
+        '            f_path = _resolve_img_path(f"{fig_id}.png")\n'
+        "        if f_path is None and fig_title:\n"
+        '            f_path = _resolve_img_path(f"{fig_title}.png")\n'
+        "        if f_path is None:\n"
+        "            return\n"
+        "        f_key = str(f_path.resolve()).casefold()\n"
+        "        id_key = str(fig_id or f_path.stem).casefold()\n"
+        "        if f_key in _seen_inventory_keys:\n"
+        "            return\n"
+        "        _seen_inventory_keys.add(f_key)\n"
+        "        already_in_md = (f_key in seen_figure_keys or id_key in seen_figure_ids_in_md)\n"
+        "        alt = fig_title or fig_desc or fig_id or f_path.stem\n"
+        "        rel = _to_rel_path(f_path)\n"
+        "        collected_figures.append({\n"
+        '            "id": fig_id or f_path.stem,\n'
+        '            "title": fig_title or alt,\n'
+        '            "alt": alt,\n'
+        '            "resolved_path": f_path,\n'
+        '            "rel_path": rel,\n'
+        '            "section": sec_name,\n'
+        '            "already_embedded": already_in_md,\n'
+        "        })\n"
+        '    _state_sections = state.get("sections", []) or []\n'
+        "    for _sec in _state_sections:\n"
+        '        _s_name = getattr(_sec, "name", None) or getattr(_sec, "title", None) or (_sec.get("name") if isinstance(_sec, dict) else None) or (_sec.get("title") if isinstance(_sec, dict) else None)\n'
+        '        _s_figs = getattr(_sec, "expected_figures", None) or (_sec.get("expected_figures") if isinstance(_sec, dict) else None) or []\n'
+        "        for _f in _s_figs:\n"
+        '            _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '            _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '            _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '            _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "            _register_figure(_p, _i, _t, _d, _s_name)\n"
+        '    _vr_obj = state.get("visualization_results")\n'
+        "    _vr_items = []\n"
+        "    if isinstance(_vr_obj, VisualizationResults):\n"
+        "        _vr_items = list(_vr_obj.visualizations or [])\n"
+        "    elif isinstance(_vr_obj, dict):\n"
+        '        _vr_items = list(_vr_obj.get("visualizations", []) or [])\n'
+        "    elif isinstance(_vr_obj, list):\n"
+        "        _vr_items = list(_vr_obj)\n"
+        "    for _f in _vr_items:\n"
+        '        _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '        _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '        _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '        _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "        _register_figure(_p, _i, _t, _d)\n"
+        '    _vz_obj = state.get("viz_results")\n'
+        "    _vz_items = []\n"
+        "    if isinstance(_vz_obj, list):\n"
+        "        _vz_items = list(_vz_obj)\n"
+        "    elif isinstance(_vz_obj, dict):\n"
+        '        _vz_items = list(_vz_obj.get("visualizations", []) or [])\n'
+        "    for _f in _vz_items:\n"
+        '        _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '        _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '        _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '        _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "        _register_figure(_p, _i, _t, _d)\n"
+        '    _vp_obj = state.get("viz_paths")\n'
+        "    _vp_items = []\n"
+        "    if isinstance(_vp_obj, list):\n"
+        "        _vp_items = list(_vp_obj)\n"
+        "    elif isinstance(_vp_obj, dict):\n"
+        "        _vp_items = list(_vp_obj.values())\n"
+        "    elif isinstance(_vp_obj, (str, _ReportPath)):\n"
+        "        _vp_items = [_vp_obj]\n"
+        "    for _p in _vp_items:\n"
+        "        if _p:\n"
+        "            _p_str = str(_p)\n"
+        '            _register_figure(_p_str, _ReportPath(_p_str).stem, _ReportPath(_p_str).stem.replace("_", " ").title(), "")\n'
+        '    figures_to_inject = [f for f in collected_figures if not f["already_embedded"]]\n'
+        "    unplaced_figures = []\n"
+        "    for fig in figures_to_inject:\n"
+        '        sec = fig.get("section")\n'
+        "        placed = False\n"
+        "        if sec:\n"
+        "            sec_clean = str(sec).strip()\n"
+        '            pattern = r"(?im)^(?P<hashes>#{1,6})\\s+(?P<heading>.*?" + _report_re.escape(sec_clean) + r".*?)$"\n'
+        "            match = _report_re.search(pattern, canonical_source_md)\n"
+        "            if match:\n"
+        "                start_idx = match.end()\n"
+        '                level = len(match.group("hashes"))\n'
+        '                next_heading_pat = r"(?m)^#{1," + str(min(level, 2)) + r"}\\s+"\n'
+        "                next_match = _report_re.search(next_heading_pat, canonical_source_md[start_idx:])\n"
+        '                img_block = f"\\n\\n![{fig[\'alt\']}]({fig[\'rel_path\']})\\n"\n'
+        "                if next_match:\n"
+        "                    insert_idx = start_idx + next_match.start()\n"
+        '                    canonical_source_md = canonical_source_md[:insert_idx].rstrip() + img_block + "\\n" + canonical_source_md[insert_idx:].lstrip()\n'
+        "                else:\n"
+        "                    canonical_source_md = canonical_source_md.rstrip() + img_block\n"
+        "                placed = True\n"
+        '                seen_figure_keys.add(str(fig["resolved_path"].resolve()).casefold())\n'
+        "        if not placed:\n"
+        "            unplaced_figures.append(fig)\n"
+        "    if unplaced_figures:\n"
+        '        viz_blocks = [f"![{fig[\'alt\']}]({fig[\'rel_path\']})" for fig in unplaced_figures]\n'
+        '        viz_section_content = "\\n\\n".join(viz_blocks)\n'
+        '        if _report_re.search(r"(?im)^##\\s+Visualizations", canonical_source_md):\n'
+        '            canonical_source_md = _report_re.sub(r"(?im)(^##\\s+Visualizations\\s*$)", r"\\1\\n\\n" + viz_section_content, canonical_source_md, count=1)\n'
+        "        else:\n"
+        '            canonical_source_md = canonical_source_md.rstrip() + "\\n\\n## Visualizations\\n\\n" + viz_section_content + "\\n"\n'
+        "        for fig in unplaced_figures:\n"
+        '            seen_figure_keys.add(str(fig["resolved_path"].resolve()).casefold())\n'
         "    def _render_report_html(markdown_text: str, report_title: str) -> str:\n"
         "        body = []\n"
         "        paragraph = []\n"
@@ -13323,13 +13526,13 @@ def main():
         "            if paragraph:\n"
         '                body.append("<p>" + _report_html.escape(" ".join(paragraph)) + "</p>")\n'
         "                paragraph.clear()\n"
-        "        for raw_line in str(markdown_text or \"\").splitlines():\n"
+        '        for raw_line in str(markdown_text or "").splitlines():\n'
         "            line = raw_line.strip()\n"
         "            if not line:\n"
         "                _flush_paragraph()\n"
         "                continue\n"
         '            heading = _report_re.match(r"^(#{1,6})\\s+(.+)$", line)\n'
-        "            image = _report_re.match(r\"^!\\[([^]]*)\\]\\(([^)]+)\\)$\", line)\n"
+        '            image = _report_re.match(r"^!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)$", line)\n'
         "            if heading:\n"
         "                _flush_paragraph()\n"
         "                level = len(heading.group(1))\n"
@@ -13346,44 +13549,80 @@ def main():
         "            else:\n"
         "                paragraph.append(line)\n"
         "        _flush_paragraph()\n"
-        "        title_escaped = _report_html.escape(str(report_title or \"Analysis Report\"))\n"
+        '        title_escaped = _report_html.escape(str(report_title or "Analysis Report"))\n'
         "        return (\n"
         '            "<!doctype html><html><head><meta charset=\\"utf-8\\"><title>"\n'
-        '            + title_escaped\n'
+        "            + title_escaped\n"
         '            + "</title><style>body{font-family:Arial,sans-serif;line-height:1.5;max-width:1000px;margin:2rem auto;padding:0 1rem}img{max-width:100%}</style></head><body>"\n'
         '            + "\\n".join(body)\n'
         '            + "</body></html>"\n'
         "        )\n"
-        "    html_document = _render_report_html(draft, title)\n"
-        '    md_path.write_text(draft.rstrip() + "\\n", encoding="utf-8")\n'
-        '    html_path.write_text(html_document, encoding="utf-8")\n'
+        "    html_document = _render_report_html(canonical_source_md, title)\n"
         "    from xhtml2pdf import pisa as _report_pisa\n"
         "    def _report_link_callback(uri: str, rel: str) -> str:\n"
         '        if str(uri or "").lower().startswith("data:"):\n'
         "            return uri\n"
         '        if "://" in str(uri or "").lower() or str(uri or "").lower().startswith("file:"):\n'
         '            raise ValueError("Remote and file URIs are not allowed in report resources")\n'
-        "        candidate = (html_path.parent / PathlibPath(uri)).resolve()\n"
-        "        artifact_root = _get_artifacts_base(_report_config).resolve()\n"
-        "        if not _is_subpath(candidate, artifact_root):\n"
+        "        candidate = (reports_dir / _ReportPath(uri)).resolve()\n"
+        "        if not _is_safe_artifact_path(candidate):\n"
         '            raise ValueError(f"Report resource escapes artifact root: {candidate}")\n'
+        "        if not candidate.is_file():\n"
+        '            raise FileNotFoundError(f"Report resource missing on disk: {candidate}")\n'
         "        return str(candidate)\n"
-        '    with pdf_path.open("wb") as _pdf_stream:\n'
-        "        _pdf_status = _report_pisa.CreatePDF(\n"
-        "            src=html_document,\n"
-        "            dest=_pdf_stream,\n"
-        "            link_callback=_report_link_callback,\n"
-        "        )\n"
-        '    if getattr(_pdf_status, "err", 0):\n'
-        '        raise RuntimeError(f"W14J PDF generation failed with err={_pdf_status.err}")\n'
-        "    for _required_report_path in (md_path, html_path, pdf_path):\n"
-        "        if not _required_report_path.is_file() or _required_report_path.stat().st_size <= 0:\n"
-        '            raise RuntimeError(f"W14J required report artifact missing or empty: {_required_report_path}")\n'
-        "    rr = rr.model_copy(update={\n"
-        '        "markdown_report_path": str(md_path),\n'
-        '        "html_report_path": str(html_path),\n'
-        '        "pdf_report_path": str(pdf_path),\n'
-        "    })\n"
+        '    _tmp_token = f"_tmp_{_report_os.getpid()}_{_report_uuid.uuid4().hex[:8]}_"\n'
+        '    md_tmp = reports_dir / f"{_tmp_token}final_report.md"\n'
+        '    html_tmp = reports_dir / f"{_tmp_token}final_report.html"\n'
+        '    pdf_tmp = reports_dir / f"{_tmp_token}final_report.pdf"\n'
+        "    _report_generation_succeeded = False\n"
+        "    try:\n"
+        '        md_tmp.write_text(canonical_source_md.rstrip() + "\\n", encoding="utf-8")\n'
+        '        html_tmp.write_text(html_document, encoding="utf-8")\n'
+        '        with pdf_tmp.open("wb") as _pdf_stream:\n'
+        "            _pdf_status = _report_pisa.CreatePDF(\n"
+        "                src=html_document,\n"
+        "                dest=_pdf_stream,\n"
+        "                link_callback=_report_link_callback,\n"
+        "            )\n"
+        '        if getattr(_pdf_status, "err", 0):\n'
+        '            raise RuntimeError(f"W14J PDF generation failed with err={_pdf_status.err}")\n'
+        "        for _req_tmp in (md_tmp, html_tmp, pdf_tmp):\n"
+        "            if not _req_tmp.is_file() or _req_tmp.stat().st_size <= 0:\n"
+        '                raise RuntimeError(f"W14J required temporary report artifact missing or empty: {_req_tmp}")\n'
+        '        _md_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", canonical_source_md)\n'
+        '        _html_embeds = _report_re.findall(r\'<img\\b[^>]*?\\bsrc\\s*=\\s*["\\\']([^"\\\']+)["\\\']\', html_document, flags=_report_re.I)\n'
+        "        _missing_embeds = []\n"
+        "        for _src in set(_md_embeds + _html_embeds):\n"
+        '            if _src.startswith("data:"):\n'
+        "                continue\n"
+        "            _resolved_probe = (reports_dir / _ReportPath(_src)).resolve()\n"
+        "            if not _resolved_probe.is_file() or not _is_safe_artifact_path(_resolved_probe):\n"
+        "                _missing_embeds.append(_src)\n"
+        "        if _missing_embeds:\n"
+        '            raise RuntimeError(f"W14J canonical report embeds missing on disk: {_missing_embeds}")\n'
+        '        _total_embed_count = len([s for s in _html_embeds if not s.startswith("data:")])\n'
+        "        if collected_figures and _total_embed_count == 0:\n"
+        '            raise RuntimeError("W14J canonical report has zero embedded charts despite available figures")\n'
+        "        _report_os.replace(md_tmp, md_path)\n"
+        "        _report_os.replace(html_tmp, html_path)\n"
+        "        _report_os.replace(pdf_tmp, pdf_path)\n"
+        "        _report_generation_succeeded = True\n"
+        "    except Exception as _report_gen_exc:\n"
+        '        _pl_logger.error("W14J canonical report publication failed: %s", _report_gen_exc)\n'
+        "        for _cleanup_tmp in (md_tmp, html_tmp, pdf_tmp):\n"
+        "            try:\n"
+        "                if _cleanup_tmp.is_file():\n"
+        "                    _cleanup_tmp.unlink()\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "        _report_generation_succeeded = False\n"
+        "    if _report_generation_succeeded:\n"
+        "        rr = rr.model_copy(update={\n"
+        '            "markdown_report_path": str(md_path),\n'
+        '            "html_report_path": str(html_path),\n'
+        '            "pdf_report_path": str(pdf_path),\n'
+        "        })\n"
+        "        draft = canonical_source_md\n"
         '    memory_text = f"The Report Packager has produced the report results. The pdf can be found at {rr.pdf_report_path}, the html can be found at {rr.html_report_path}, and the markdown can be found at {rr.markdown_report_path}."\n'
     )
     report_patch_applied = False
@@ -13409,7 +13648,7 @@ def main():
             src,
             '    finished_this_task = pdf_exists and html_exists and markdown_exists\n',
             (
-                '    finished_this_task = pdf_exists and html_exists and markdown_exists\n'
+                '    finished_this_task = bool(_report_generation_succeeded and pdf_exists and html_exists and markdown_exists)\n'
                 '    report_complete = bool(finished_this_task and rr.finished_this_task and not rr.expect_reply)\n'
             ),
             patch_id="W14J-REPORT-COMPLETION",
@@ -13485,11 +13724,36 @@ def main():
             _W14J_FINAL_GUARD,
             patch_id="W14J-FW-FINAL-SEMANTICS",
         )
+        _W14J_FW_COMPLETE_OLD = (
+            "        _w13s_complete = len(report_paths) >= 3 and len(viz_paths) >= min(3, len(_w13s_viz_paths) or 3)\n"
+        )
+        _W14J_FW_COMPLETE_NEW = (
+            "        _w13s_file_exists = lambda _p: (\n"
+            "            PathlibPath(_p).is_file() and PathlibPath(_p).stat().st_size > 0\n"
+            "            if PathlibPath(_p).is_absolute()\n"
+            "            else any((PathlibPath(_b) / PathlibPath(str(_p).replace('/', os.sep))).resolve().is_file() and (PathlibPath(_b) / PathlibPath(str(_p).replace('/', os.sep))).resolve().stat().st_size > 0 for _b in _w13s_candidate_bases)\n"
+            "        )\n"
+            "        _reports_on_disk = [_p for _p in report_paths if _w13s_file_exists(_p)]\n"
+            "        _viz_on_disk = [_p for _p in viz_paths if _w13s_file_exists(_p)]\n"
+            "        _expected_viz_on_disk = [_p for _p in _w13s_viz_paths if _w13s_file_exists(_p)]\n"
+            "        _w13s_complete = bool(\n"
+            "            len(_reports_on_disk) >= 3\n"
+            "            and len(_w13s_viz_paths) >= 3\n"
+            "            and len(_expected_viz_on_disk) == len(_w13s_viz_paths)\n"
+            "            and len(_viz_on_disk) >= 3\n"
+            "        )\n"
+        )
+        src = replace_required(
+            src,
+            _W14J_FW_COMPLETE_OLD,
+            _W14J_FW_COMPLETE_NEW,
+            patch_id="W14J-FW-MANIFEST-VALIDATION",
+        )
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
         final_semantics_applied = True
-        print(f"✅ Cell idx {idx}: W14J corrected file_writer final/non-final branch")
+        print(f"✅ Cell idx {idx}: W14J corrected file_writer final/non-final branch and manifest validation")
         break
     if not final_semantics_applied:
         raise RequiredPatchError("W14J-FW-FINAL-SEMANTICS: file_writer_node target not found")
