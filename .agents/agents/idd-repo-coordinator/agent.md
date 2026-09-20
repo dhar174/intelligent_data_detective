@@ -13,7 +13,6 @@ tools:
   - send_message
   - manage_subagents
   - define_subagent
-  - call_mcp_tool
 mainAgent: true
 subagent: false
 model: pro
