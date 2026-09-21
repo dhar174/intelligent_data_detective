@@ -109,6 +109,16 @@ jobs:
               typing_extensions
           fi
           pip install pytest black flake8
+          pip install \
+            xhtml2pdf \
+            pypdf \
+            pymupdf \
+            pillow \
+            markdown
+
+      - name: Verify report and validation dependencies
+        run: |
+          python -c "import xhtml2pdf, pypdf, fitz, markdown; from PIL import Image; print('All validation and report dependencies imported successfully')"
 
       - name: Run no-key unit and integration tests
         run: python -m pytest test_validate_run.py tests/unit tests/integration -q
