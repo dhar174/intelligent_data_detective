@@ -450,6 +450,9 @@ def _compile_file_writer_node(
         "ToolStrategy": lambda x: x,
         "_make_unknown_tool_guard": lambda *args: None,
         "file_writer_agent": mock_fw_agent,
+        "_resolve_artifact_path": _resolve_artifact_path,
+        "_get_artifacts_base": _get_artifacts_base,
+        "_is_subpath": _is_subpath,
     }
     exec(code, ns)
     return ns["file_writer_node"]
@@ -615,7 +618,11 @@ def test_report_renderer_figure_deduplication(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "chart_dup.png"
+    fig2 = viz_dir / "chart_2.png"
+    fig3 = viz_dir / "chart_3.png"
     _create_dummy_png(fig1, (10, 100, 200))
+    _create_dummy_png(fig2, (20, 150, 50))
+    _create_dummy_png(fig3, (200, 50, 10))
 
     report_packager_node = _compile_report_packager_node(
         generated_notebook["notebook"], tmp_path
@@ -632,13 +639,35 @@ def test_report_renderer_figure_deduplication(
         finished_this_task=True,
         expect_reply=False,
     )
+    dv2 = DataVisualization(
+        path="visualizations/chart_2.png",
+        visualization_id="chart_2",
+        visualization_type="line",
+        visualization_description="Chart 2",
+        visualization_style="seaborn",
+        visualization_title="Chart 2 Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path="visualizations/chart_3.png",
+        visualization_id="chart_3",
+        visualization_type="scatter",
+        visualization_description="Chart 3",
+        visualization_style="seaborn",
+        visualization_title="Chart 3 Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
     sec1 = Section(
         name="Dup Section",
         section_num=1,
         description="Duplicate chart section",
         goals=["test deduplication"],
         data_signals=["signals"],
-        expected_figures=[dv1],
+        expected_figures=[dv1, dv2, dv3],
         content="This is section content with enough text to describe the duplicate chart scenario.",
         reply_msg_to_supervisor="done",
         finished_this_task=True,
@@ -669,12 +698,12 @@ def test_report_renderer_figure_deduplication(
         "sections": [sec1],
         "written_sections": [f"## Dup Section\n\n{sec1.content}"],
         "visualization_results": VisualizationResults(
-            visualizations=[dv1],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1), "visualizations/chart_dup.png"],
+        "viz_paths": [str(fig1), "visualizations/chart_dup.png", str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -703,7 +732,11 @@ def test_report_renderer_preserves_and_normalizes_preexisting_markdown_images(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "chart_existing.png"
+    fig2 = viz_dir / "chart_existing_2.png"
+    fig3 = viz_dir / "chart_existing_3.png"
     _create_dummy_png(fig1, (10, 100, 200))
+    _create_dummy_png(fig2, (20, 150, 50))
+    _create_dummy_png(fig3, (200, 50, 10))
 
     report_packager_node = _compile_report_packager_node(
         generated_notebook["notebook"], tmp_path
@@ -720,10 +753,34 @@ def test_report_renderer_preserves_and_normalizes_preexisting_markdown_images(
         finished_this_task=True,
         expect_reply=False,
     )
+    dv2 = DataVisualization(
+        path="visualizations/chart_existing_2.png",
+        visualization_id="chart_existing_2",
+        visualization_type="line",
+        visualization_description="Existing Chart 2",
+        visualization_style="seaborn",
+        visualization_title="Existing Chart 2 Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path="visualizations/chart_existing_3.png",
+        visualization_id="chart_existing_3",
+        visualization_type="scatter",
+        visualization_description="Existing Chart 3",
+        visualization_style="seaborn",
+        visualization_title="Existing Chart 3 Title",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
     preexisting_md = (
         "## Analysis Section\n\n"
         "Here is the chart:\n\n"
         f"![Existing Chart]({fig1})\n\n"
+        f"![Existing Chart 2]({fig2})\n\n"
+        f"![Existing Chart 3]({fig3})\n\n"
         + ("Substantive body text describing the visual observations in detail. " * 10)
     )
 
@@ -751,12 +808,12 @@ def test_report_renderer_preserves_and_normalizes_preexisting_markdown_images(
         "sections": [],
         "written_sections": [preexisting_md],
         "visualization_results": VisualizationResults(
-            visualizations=[dv1],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -772,7 +829,50 @@ def test_report_renderer_transactional_generation_and_stale_output(
 ):
     monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
     reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart_t1.png"
+    fig2 = viz_dir / "chart_t2.png"
+    fig3 = viz_dir / "chart_t3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="t1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="t2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="t3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
 
     stale_md = reports_dir / "final_report.md"
     stale_html = reports_dir / "final_report.html"
@@ -815,14 +915,16 @@ def test_report_renderer_transactional_generation_and_stale_output(
             expect_reply=False,
         ),
         "sections": [],
-        "written_sections": ["## Section 1\n\nSome text."],
+        "written_sections": [
+            f"## Section 1\n\n![F1]({fig1})\n\n![F2]({fig2})\n\n![F3]({fig3})\n\nSome text."
+        ],
         "visualization_results": VisualizationResults(
-            visualizations=[],
-            reply_msg_to_supervisor="none",
+            visualizations=[dv1, dv2, dv3],
+            reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -855,7 +957,13 @@ def test_file_writer_node_final_manifest_runtime(
     md_file = reports_dir / "final_report.md"
     html_file = reports_dir / "final_report.html"
     pdf_file = reports_dir / "final_report.pdf"
-    md_file.write_text("# Final Report", encoding="utf-8")
+    md_file.write_text(
+        "# Final Report\n\n"
+        f"![Rev](../visualizations/{fig1.name})\n"
+        f"![Growth](../visualizations/{fig2.name})\n"
+        f"![Churn](../visualizations/{fig3.name})\n",
+        encoding="utf-8",
+    )
     html_file.write_text(
         "<h1>Final Report</h1>\n"
         f'<img src="../visualizations/{fig1.name}">\n'
@@ -1642,7 +1750,13 @@ def test_manifest_deduplicates_three_figures_with_aliases(
     md_file = reports_dir / "final_report.md"
     html_file = reports_dir / "final_report.html"
     pdf_file = reports_dir / "final_report.pdf"
-    md_file.write_text("# Final Report", encoding="utf-8")
+    md_file.write_text(
+        f"# Final Report\n\n"
+        f"![Fig 1](../visualizations/{fig1.name})\n"
+        f"![Fig 2](../visualizations/{fig2.name})\n"
+        f"![Fig 3](../visualizations/{fig3.name})\n",
+        encoding="utf-8",
+    )
     html_file.write_text(
         f"<h1>Final Report</h1>\n"
         f'<img src="../visualizations/{fig1.name}">\n'
@@ -2404,10 +2518,48 @@ def test_markdown_parser_semantic_html_and_pdf_fidelity(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "fidelity_chart.png"
+    fig2 = viz_dir / "fidelity_chart_2.png"
+    fig3 = viz_dir / "fidelity_chart_3.png"
     _create_dummy_png(fig1, color=(40, 120, 200))
+    _create_dummy_png(fig2, color=(60, 140, 180))
+    _create_dummy_png(fig3, color=(80, 160, 160))
 
     report_packager_node = _compile_report_packager_node(
         generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="fid1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Executive Metrics Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="fid2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Executive Metrics Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="fid3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Executive Metrics Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
     )
 
     markdown_source = (
@@ -2426,6 +2578,8 @@ def test_markdown_parser_semantic_html_and_pdf_fidelity(
         "    return act - tgt\n"
         "```\n\n"
         f"![Executive Metrics Chart]({fig1})\n\n"
+        f"![Executive Metrics Chart 2]({fig2})\n\n"
+        f"![Executive Metrics Chart 3]({fig3})\n\n"
         "For additional details, see the [Reference Documentation](https://example.com/docs).\n\n"
         + (
             "Substantive narrative describing quarterly performance indicators in comprehensive detail. "
@@ -2457,24 +2611,12 @@ def test_markdown_parser_semantic_html_and_pdf_fidelity(
         "sections": [],
         "written_sections": [markdown_source],
         "visualization_results": VisualizationResults(
-            visualizations=[
-                DataVisualization(
-                    path=str(fig1),
-                    visualization_id="fid1",
-                    visualization_type="bar",
-                    visualization_description="d",
-                    visualization_style="s",
-                    visualization_title="Executive Metrics Chart",
-                    reply_msg_to_supervisor="ok",
-                    finished_this_task=True,
-                    expect_reply=False,
-                )
-            ],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -2511,8 +2653,20 @@ def test_markdown_parser_semantic_html_and_pdf_fidelity(
         doc.close()
 
 
+@pytest.mark.parametrize(
+    "unsafe_payload",
+    [
+        "javascript:alert('xss')",
+        "jav&#x61;script:alert('xss')",
+        "jav&#97;script:alert('xss')",
+        "JaVaScRiPt:alert('xss')",
+        "jav\t\nascript:alert('xss')",
+        "vbscript:msgbox('xss')",
+        "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    ],
+)
 def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
-    generated_notebook, tmp_path, monkeypatch
+    generated_notebook, tmp_path, monkeypatch, unsafe_payload
 ):
     monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
     reports_dir = tmp_path / "reports"
@@ -2521,10 +2675,48 @@ def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "chart_safe.png"
+    fig2 = viz_dir / "chart_safe_2.png"
+    fig3 = viz_dir / "chart_safe_3.png"
     _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
 
     report_packager_node = _compile_report_packager_node(
         generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="s1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Safe Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="s2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Safe Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="s3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Safe Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
     )
 
     untrusted_source = (
@@ -2532,10 +2724,11 @@ def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
         "Here is legitimate content.\n\n"
         '<script>alert("evil")</script>\n\n'
         '<img src="../visualizations/chart_safe.png" onload="maliciousPayload()" alt="Test Image">\n\n'
-        '[Click for free bitcoin](javascript:alert("hacked"))\n\n'
-        '[Click for visual basic](vbscript:msgbox("vb"))\n\n'
-        "[Click for data](data:text/html;base64,PHNjcmlwdD5ldmlsKCk8L3NjcmlwdD4=)\n\n"
+        f'<a href="{unsafe_payload}">Untrusted Link</a>\n\n'
+        '[Click for safe hash](#section-safe)\n\n'
         f"![Safe Chart]({fig1})\n\n"
+        f"![Safe Chart 2]({fig2})\n\n"
+        f"![Safe Chart 3]({fig3})\n\n"
         + (
             "Substantive body text discussing vulnerability scan and sanitization results in detail. "
             * 5
@@ -2566,24 +2759,12 @@ def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
         "sections": [],
         "written_sections": [untrusted_source],
         "visualization_results": VisualizationResults(
-            visualizations=[
-                DataVisualization(
-                    path=str(fig1),
-                    visualization_id="s1",
-                    visualization_type="bar",
-                    visualization_description="d",
-                    visualization_style="s",
-                    visualization_title="Safe Chart",
-                    reply_msg_to_supervisor="ok",
-                    finished_this_task=True,
-                    expect_reply=False,
-                )
-            ],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -2592,10 +2773,30 @@ def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
     html_text = (reports_dir / "final_report.html").read_text(encoding="utf-8")
     assert "<script" not in html_text
     assert "onload=" not in html_text
-    assert 'href="javascript:' not in html_text
-    assert 'href="vbscript:' not in html_text
-    assert 'href="data:' not in html_text
-    assert 'href="#"' in html_text
+    assert 'alert("evil")' not in html_text
+    assert unsafe_payload not in html_text
+    assert 'href="#section-safe"' in html_text
+    assert "../visualizations/chart_safe.png" in html_text
+
+    from html.parser import HTMLParser
+
+    class _LinkChecker(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.links = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                self.links.append(dict(attrs).get("href"))
+
+    _chk = _LinkChecker()
+    _chk.feed(html_text)
+    for link in _chk.links:
+        if link:
+            assert not any(
+                link.lower().startswith(p)
+                for p in ("javascript:", "vbscript:", "data:")
+            ), f"Unsafe scheme in href: {link}"
 
 
 # --- Task E: Transactional Publication & Rollback Tests ---
@@ -2612,7 +2813,45 @@ def test_publication_replacement_failure_restores_canonical_files(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "chart_t.png"
+    fig2 = viz_dir / "chart_t2.png"
+    fig3 = viz_dir / "chart_t3.png"
     _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="t1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="t2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="t3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
 
     prior_md = reports_dir / "final_report.md"
     prior_html = reports_dir / "final_report.html"
@@ -2673,26 +2912,16 @@ def test_publication_replacement_failure_restores_canonical_files(
             expect_reply=False,
         ),
         "sections": [],
-        "written_sections": [f"## Section\n\nContent\n\n![Chart]({fig1})"],
+        "written_sections": [
+            f"## Section\n\nContent\n\n![Chart]({fig1})\n\n![Chart 2]({fig2})\n\n![Chart 3]({fig3})"
+        ],
         "visualization_results": VisualizationResults(
-            visualizations=[
-                DataVisualization(
-                    path=str(fig1),
-                    visualization_id="t1",
-                    visualization_type="bar",
-                    visualization_description="d",
-                    visualization_style="s",
-                    visualization_title="Chart",
-                    reply_msg_to_supervisor="ok",
-                    finished_this_task=True,
-                    expect_reply=False,
-                )
-            ],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -2720,10 +2949,48 @@ def test_publication_replacement_failure_with_no_prior_files_cleans_up(
     viz_dir.mkdir(parents=True, exist_ok=True)
 
     fig1 = viz_dir / "chart_clean.png"
+    fig2 = viz_dir / "chart_clean2.png"
+    fig3 = viz_dir / "chart_clean3.png"
     _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
 
     report_packager_node = _compile_report_packager_node(
         generated_notebook["notebook"], tmp_path
+    )
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="c1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="c2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="c3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
     )
 
     replace_call_count = 0
@@ -2767,26 +3034,16 @@ def test_publication_replacement_failure_with_no_prior_files_cleans_up(
             expect_reply=False,
         ),
         "sections": [],
-        "written_sections": [f"## Section\n\nContent\n\n![Chart]({fig1})"],
+        "written_sections": [
+            f"## Section\n\nContent\n\n![Chart]({fig1})\n\n![Chart 2]({fig2})\n\n![Chart 3]({fig3})"
+        ],
         "visualization_results": VisualizationResults(
-            visualizations=[
-                DataVisualization(
-                    path=str(fig1),
-                    visualization_id="c1",
-                    visualization_type="bar",
-                    visualization_description="d",
-                    visualization_style="s",
-                    visualization_title="Chart",
-                    reply_msg_to_supervisor="ok",
-                    finished_this_task=True,
-                    expect_reply=False,
-                )
-            ],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     res = report_packager_node(state)
@@ -2808,6 +3065,44 @@ def test_publication_rollback_failure_raises_hard_runtime_error_and_retains_dirs
 
     fig1 = viz_dir / "chart_rf.png"
     _create_dummy_png(fig1)
+    fig2 = viz_dir / "chart_rf2.png"
+    _create_dummy_png(fig2)
+    fig3 = viz_dir / "chart_rf3.png"
+    _create_dummy_png(fig3)
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="rf1",
+        visualization_type="bar",
+        visualization_description="d1",
+        visualization_style="s1",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="rf2",
+        visualization_type="line",
+        visualization_description="d2",
+        visualization_style="s2",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="rf3",
+        visualization_type="scatter",
+        visualization_description="d3",
+        visualization_style="s3",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
 
     prior_md = reports_dir / "final_report.md"
     prior_html = reports_dir / "final_report.html"
@@ -2865,26 +3160,16 @@ def test_publication_rollback_failure_raises_hard_runtime_error_and_retains_dirs
             expect_reply=False,
         ),
         "sections": [],
-        "written_sections": [f"## Section\n\nContent\n\n![Chart]({fig1})"],
+        "written_sections": [
+            f"## Section\n\nContent\n\n![Chart 1]({fig1})\n\n![Chart 2]({fig2})\n\n![Chart 3]({fig3})"
+        ],
         "visualization_results": VisualizationResults(
-            visualizations=[
-                DataVisualization(
-                    path=str(fig1),
-                    visualization_id="rf1",
-                    visualization_type="bar",
-                    visualization_description="d",
-                    visualization_style="s",
-                    visualization_title="Chart",
-                    reply_msg_to_supervisor="ok",
-                    finished_this_task=True,
-                    expect_reply=False,
-                )
-            ],
+            visualizations=[dv1, dv2, dv3],
             reply_msg_to_supervisor="viz ready",
             finished_this_task=True,
             expect_reply=False,
         ),
-        "viz_paths": [str(fig1)],
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
     }
 
     with pytest.raises(RuntimeError, match="Rollback failed during report publication"):
@@ -2896,3 +3181,1242 @@ def test_publication_rollback_failure_raises_hard_runtime_error_and_retains_dirs
         len(staging_dirs) >= 1
     ), f"Expected retained staging dir, found {staging_dirs}"
     assert len(backup_dirs) >= 1, f"Expected retained backup dir, found {backup_dirs}"
+
+
+# --- Additional Regression Tests for PR #149 correctness findings ---
+
+
+def test_final_manifest_rejects_outside_root_absolute_path(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    outside_dir = tmp_path.parent / "outside_allowed_root"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    outside_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3_outside = outside_dir / "chart_outside.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3_outside)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    md_file.write_text(
+        f"# Final Report\n\n![C1](../visualizations/chart1.png)\n![C2](../visualizations/chart2.png)\n![Out]({fig3_outside})\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        f'<h1>Final Report</h1>\n<img src="../visualizations/chart1.png">\n<img src="../visualizations/chart2.png">\n<img src="{fig3_outside}">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="v1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="v2",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3_outside = DataVisualization(
+        path=str(fig3_outside),
+        visualization_id="v3",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart Outside",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_manifest_result = ListOfFiles(
+        files=[
+            FileResult(
+                write_success=True,
+                file_path=str(html_file),
+                file_type="html",
+                file_name="final_report.html",
+                file_description="report",
+                is_final_report=True,
+                category_tag="report",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+            FileResult(
+                write_success=True,
+                file_path=str(md_file),
+                file_type="markdown",
+                file_name="final_report.md",
+                file_description="report",
+                is_final_report=False,
+                category_tag="report",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+            FileResult(
+                write_success=True,
+                file_path=str(pdf_file),
+                file_type="pdf",
+                file_name="final_report.pdf",
+                file_description="report",
+                is_final_report=False,
+                category_tag="report",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+            FileResult(
+                write_success=True,
+                file_path=str(fig1),
+                file_type="png",
+                file_name="chart1.png",
+                file_description="chart",
+                is_final_report=False,
+                category_tag="visualization",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+            FileResult(
+                write_success=True,
+                file_path=str(fig2),
+                file_type="png",
+                file_name="chart2.png",
+                file_description="chart",
+                is_final_report=False,
+                category_tag="visualization",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+            FileResult(
+                write_success=True,
+                file_path=str(fig3_outside),
+                file_type="png",
+                file_name="chart_outside.png",
+                file_description="outside",
+                is_final_report=False,
+                category_tag="visualization",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            ),
+        ],
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": mock_manifest_result,
+        "messages": [AIMessage(content="Manifest ready", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1, dv2, dv3_outside],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3_outside)],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is False
+    file_res = res.get("file_results")
+    if hasattr(file_res, "files"):
+        reconciled_paths = [f.file_path for f in file_res.files]
+    elif isinstance(file_res, list):
+        reconciled_paths = [getattr(f, "file_path", str(f)) for f in file_res]
+    else:
+        reconciled_paths = []
+    assert str(fig3_outside) not in reconciled_paths
+
+
+def test_artifact_resolution_rejects_traversal_and_symlink_escape(tmp_path):
+    import types
+    outside_dir = tmp_path.parent / "outside_jail"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    secret_file = outside_dir / "secret.png"
+    secret_file.write_bytes(b"secret")
+
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    cfg = types.SimpleNamespace(
+        configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(artifacts_dir))}
+    )
+
+    # 1. Path traversal escape
+    traversal_path = "../../outside_jail/secret.png"
+    with pytest.raises(ValueError, match="(?i)outside|refused|artifacts"):
+        _resolve_artifact_path(traversal_path, config=cfg)
+
+    # 2. Symlink escape
+    symlink_file = artifacts_dir / "symlink_secret.png"
+    try:
+        symlink_file.symlink_to(secret_file)
+        with pytest.raises(ValueError, match="(?i)outside|refused|artifacts"):
+            _resolve_artifact_path(str(symlink_file), config=cfg)
+    except (OSError, NotImplementedError):
+        pass
+
+
+def test_missing_expected_path_is_not_replaced_by_basename_decoy(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+
+    # An unrelated file with the same basename in the run root:
+    decoy_file = tmp_path / "missing_chart.png"
+    decoy_file.write_bytes(b"decoy contents")
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C2](../visualizations/chart2.png)\n"
+        "![Missing](visualizations/missing_chart.png)\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart2.png">\n'
+        '<img src="../visualizations/missing_chart.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="v1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="v2",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv_missing = DataVisualization(
+        path="visualizations/missing_chart.png",
+        visualization_id="v_missing",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Missing Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1, dv2, dv_missing],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), "visualizations/missing_chart.png"],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is False
+    file_res = res.get("file_results")
+    if hasattr(file_res, "files"):
+        file_paths = [f.file_path for f in file_res.files]
+    elif isinstance(file_res, list):
+        file_paths = [getattr(f, "file_path", str(f)) for f in file_res]
+    else:
+        file_paths = []
+    assert str(decoy_file) not in file_paths
+
+
+def test_report_embed_uses_document_relative_context(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    # Embeds use ../visualizations relative to reports_dir
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C2](../visualizations/chart2.png)\n"
+        "![C3](../visualizations/chart3.png)\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart2.png">\n'
+        '<img src="../visualizations/chart3.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="v1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="v2",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="v3",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="Manifest ready", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1, dv2, dv3],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is True
+
+
+def test_manifest_requires_exact_canonical_report_locations(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    # Non-canonical location: draft_report.md instead of final_report.md
+    wrong_md = reports_dir / "draft_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    wrong_md.write_text(
+        f"# Draft Report\n\n![C1](../visualizations/{fig1.name})\n![C2](../visualizations/{fig2.name})\n![C3](../visualizations/{fig3.name})\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        f'<h1>Final Report</h1>\n<img src="../visualizations/{fig1.name}">\n<img src="../visualizations/{fig2.name}">\n<img src="../visualizations/{fig3.name}">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="v1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 1",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path=str(fig2),
+        visualization_id="v2",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 2",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="v3",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(wrong_md),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1, dv2, dv3],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), str(fig2), str(fig3)],
+        "written_sections": [wrong_md.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is False
+
+
+def test_valid_report_relative_images_and_aliases_still_work(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = reports_dir / "chart_rep.png"
+    fig2 = viz_dir / "chart_viz.png"
+    fig3 = viz_dir / "chart_viz3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    # fig1 is report-relative: chart_rep.png
+    # fig2 and fig3 are ../visualizations/...
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![Rep](chart_rep.png)\n"
+        "![Viz](../visualizations/chart_viz.png)\n"
+        "![Viz3](../visualizations/chart_viz3.png)\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="chart_rep.png">\n'
+        '<img src="../visualizations/chart_viz.png">\n'
+        '<img src="../visualizations/chart_viz3.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dv1 = DataVisualization(
+        path=str(fig1),
+        visualization_id="rep1",
+        visualization_type="bar",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Rep Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv2 = DataVisualization(
+        path="visualizations/chart_viz.png",
+        visualization_id="viz2",
+        visualization_type="line",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Viz Chart",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+    dv3 = DataVisualization(
+        path=str(fig3),
+        visualization_id="viz3",
+        visualization_type="scatter",
+        visualization_description="d",
+        visualization_style="s",
+        visualization_title="Viz Chart 3",
+        reply_msg_to_supervisor="ok",
+        finished_this_task=True,
+        expect_reply=False,
+    )
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="Manifest ready", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=[dv1, dv2, dv3],
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(fig1), "visualizations/chart_viz.png", str(fig3)],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is True
+
+
+def test_finalizer_rejects_four_expected_figures_with_three_html_embeds(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    fig4 = viz_dir / "chart4.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+    _create_dummy_png(fig4)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    # MD has all 4 embeds
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C2](../visualizations/chart2.png)\n"
+        "![C3](../visualizations/chart3.png)\n"
+        "![C4](../visualizations/chart4.png)\n",
+        encoding="utf-8",
+    )
+    # HTML only has 3 embeds (omits chart4.png)
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart2.png">\n'
+        '<img src="../visualizations/chart3.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3, fig4], 1)
+    ]
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3, fig4]],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    # Must reject because chart4 is missing from HTML embeds (E <= H invariant)
+    assert res.get("file_writer_complete") is False
+
+
+def test_finalizer_rejects_missing_markdown_figure_coverage(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+    # MD only has 2 embeds (omits chart3)
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C2](../visualizations/chart2.png)\n",
+        encoding="utf-8",
+    )
+    # HTML has all 3
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart2.png">\n'
+        '<img src="../visualizations/chart3.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3], 1)
+    ]
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3]],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    # Must reject because chart3 is missing from MD embeds (E <= M invariant)
+    assert res.get("file_writer_complete") is False
+
+
+def test_renderer_rejects_missing_fourth_expected_figure(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    fig4_missing = viz_dir / "chart4_missing.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+    # Do NOT create fig4_missing on disk!
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3, fig4_missing], 1)
+    ]
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Missing Figure Report",
+            section_num=0,
+            description="Overview",
+            goals=["test"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=100,
+            title="Missing Figure Report",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [],
+        "written_sections": [
+            f"## Section\n\nContent\n\n![C1]({fig1})\n\n![C2]({fig2})\n\n![C3]({fig3})\n\n![C4]({fig4_missing})"
+        ],
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="viz ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3, fig4_missing]],
+    }
+
+    with pytest.raises(RuntimeError, match="unresolved expected figures"):
+        report_packager_node(state)
+
+
+def test_renderer_injects_and_preserves_all_four_expected_figures(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    fig4 = viz_dir / "chart4.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+    _create_dummy_png(fig4)
+
+    report_packager_node = _compile_report_packager_node(
+        generated_notebook["notebook"], tmp_path
+    )
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3, fig4], 1)
+    ]
+
+    state = {
+        "messages": [HumanMessage(content="Generate report", name="supervisor")],
+        "final_turn_msgs_list": [
+            HumanMessage(content="Generate report", name="supervisor")
+        ],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+        "report_outline": ReportOutline(
+            name="Four Figures Report",
+            section_num=0,
+            description="Overview",
+            goals=["test"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=100,
+            title="Four Figures Report",
+            sections=[],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "sections": [],
+        # Written section has NO image embeds initially:
+        "written_sections": [
+            "## Section 1\n\nContent for section 1 without images embedded directly.\n\n"
+            "This comprehensive narrative evaluates all key metrics in depth."
+        ],
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="viz ready",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3, fig4]],
+    }
+
+    res = report_packager_node(state)
+    assert res.get("report_generator_complete") is True
+
+    md_text = (reports_dir / "final_report.md").read_text(encoding="utf-8")
+    html_text = (reports_dir / "final_report.html").read_text(encoding="utf-8")
+
+    # All 4 figures must be present in both MD and HTML
+    for fig in [fig1, fig2, fig3, fig4]:
+        assert fig.name in md_text
+        assert fig.name in html_text
+
+
+def test_duplicate_and_unrelated_embeds_do_not_fill_missing_expectation(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    fig_unrelated = viz_dir / "unrelated.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+    _create_dummy_png(fig_unrelated)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+
+    # Embed fig1 TWICE and fig_unrelated ONCE. fig3 is omitted completely!
+    # Count of embeds is 3, but set coverage of expected figures {fig1, fig2, fig3} fails.
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C1 Dup](../visualizations/chart1.png)\n"
+        "![Unrelated](../visualizations/unrelated.png)\n",
+        encoding="utf-8",
+    )
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/unrelated.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3], 1)
+    ]
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3]],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    assert res.get("file_writer_complete") is False
+
+
+def test_fenced_code_image_example_does_not_count_as_embed(
+    generated_notebook, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
+    reports_dir = tmp_path / "reports"
+    viz_dir = tmp_path / "visualizations"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    fig1 = viz_dir / "chart1.png"
+    fig2 = viz_dir / "chart2.png"
+    fig3 = viz_dir / "chart3.png"
+    _create_dummy_png(fig1)
+    _create_dummy_png(fig2)
+    _create_dummy_png(fig3)
+
+    md_file = reports_dir / "final_report.md"
+    html_file = reports_dir / "final_report.html"
+    pdf_file = reports_dir / "final_report.pdf"
+
+    # In MD, fig3 is ONLY inside a fenced code block:
+    md_file.write_text(
+        "# Final Report\n\n"
+        "![C1](../visualizations/chart1.png)\n"
+        "![C2](../visualizations/chart2.png)\n\n"
+        "Example syntax:\n"
+        "```markdown\n"
+        "![C3](../visualizations/chart3.png)\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    # In HTML, all 3 are in img tags:
+    html_file.write_text(
+        "<h1>Final Report</h1>\n"
+        '<img src="../visualizations/chart1.png">\n'
+        '<img src="../visualizations/chart2.png">\n'
+        '<img src="../visualizations/chart3.png">\n',
+        encoding="utf-8",
+    )
+    pdf_file.write_text("%PDF-1.4 dummy", encoding="utf-8")
+
+    dvs = [
+        DataVisualization(
+            path=str(p),
+            visualization_id=f"v{i}",
+            visualization_type="bar",
+            visualization_description="d",
+            visualization_style="s",
+            visualization_title=f"Chart {i}",
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        for i, p in enumerate([fig1, fig2, fig3], 1)
+    ]
+
+    mock_finalizer = MagicMock()
+    mock_finalizer.with_config.return_value = mock_finalizer
+    mock_finalizer.invoke.return_value = {
+        "structured_response": ListOfFiles(
+            files=[],
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "messages": [AIMessage(content="done", name="file_writer")],
+    }
+
+    file_writer_node = _compile_file_writer_node(
+        generated_notebook["notebook"],
+        tmp_path,
+        mock_finalizer=mock_finalizer,
+    )
+
+    state = {
+        "report_generator_complete": True,
+        "report_results": ReportResults(
+            markdown_report_path=str(md_file),
+            html_report_path=str(html_file),
+            pdf_report_path=str(pdf_file),
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "visualization_results": VisualizationResults(
+            visualizations=dvs,
+            reply_msg_to_supervisor="done",
+            finished_this_task=True,
+            expect_reply=False,
+        ),
+        "viz_paths": [str(p) for p in [fig1, fig2, fig3]],
+        "written_sections": [md_file.read_text(encoding="utf-8")],
+        "messages": [HumanMessage(content="run")],
+        "_config": {"configurable": {"runtime": DummyRuntime(tmp_path)}},
+    }
+
+    res = file_writer_node(state)
+    # Must reject because fenced code block image is stripped and does not count toward M!
+    assert res.get("file_writer_complete") is False

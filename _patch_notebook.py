@@ -453,16 +453,16 @@ def main():
     # --- Patch cell idx 4 (dependency setup) ---
     c4 = cells[4]
     src4 = join_source(c4["source"])
-    if "!pip install -U  langmem" in src4 and "markdown" not in src4:
+    if "!pip install -U  langmem" in src4 and "bleach" not in src4:
         c4["source"] = src4.replace(
             "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib",
-            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown joblib",
+            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown bleach joblib",
             1,
         )
         if c4["cell_type"] == "code":
             c4["outputs"] = []
             c4["execution_count"] = None
-        print("✅ Cell idx 4: added pypdf pymupdf pillow markdown to notebook dependencies")
+        print("✅ Cell idx 4: added pypdf pymupdf pillow markdown bleach to notebook dependencies")
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]
@@ -12833,7 +12833,7 @@ def main():
     _W14E_FW_NORMALIZE_GUARD = (
         "# W14E-FW-NORMALIZE: normalize manifest paths before warnings"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12941,7 +12941,7 @@ def main():
     _W14G_FW_DEFERRED_GUARD = (
         "# W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -13325,12 +13325,23 @@ def main():
         "    import shutil as _report_shutil\n"
         "    import uuid as _report_uuid\n"
         "    import markdown as _report_markdown\n"
+        "    import bleach as _report_bleach\n"
+        "    from html.parser import HTMLParser as _ReportHTMLParser\n"
         "    from pathlib import Path as _ReportPath\n"
+        "    try:\n"
+        "        from bleach.css_sanitizer import CSSSanitizer as _ReportCSSSanitizer\n"
+        "        _report_css_sanitizer = _ReportCSSSanitizer(allowed_css_properties=['text-align', 'background-color', 'border', 'padding', 'width', 'color', 'margin'])\n"
+        "    except Exception:\n"
+        "        _report_css_sanitizer = None\n"
         '    _report_config = state.get("_config")\n'
         "    _artifact_root = _get_artifacts_base(_report_config).resolve()\n"
         "    _run_root = None\n"
         '    if "RUNTIME" in globals() and getattr(globals()["RUNTIME"], "run_dir", None):\n'
         '        _run_root = _ReportPath(globals()["RUNTIME"].run_dir).resolve()\n'
+        '    elif _report_config and isinstance(_report_config, dict):\n'
+        '        _cfg_run = _report_config.get("configurable", {}).get("runtime")\n'
+        '        if getattr(_cfg_run, "run_dir", None):\n'
+        '            _run_root = _ReportPath(_cfg_run.run_dir).resolve()\n'
         "    _working_dir = _ReportPath(WORKING_DIRECTORY).resolve()\n"
         "    _allowed_roots = [_artifact_root, _working_dir]\n"
         "    if _run_root is not None:\n"
@@ -13338,102 +13349,112 @@ def main():
         "    def _is_safe_artifact_path(cand: _ReportPath) -> bool:\n"
         "        try:\n"
         "            cand_res = cand.resolve()\n"
-        "            return any(_is_subpath(cand_res, root) for root in _allowed_roots)\n"
+        "            if not cand_res.is_file() or cand_res.stat().st_size <= 0:\n"
+        "                return False\n"
+        "            for root in _allowed_roots:\n"
+        "                try:\n"
+        "                    cand_res.relative_to(root.resolve())\n"
+        "                    return True\n"
+        "                except ValueError:\n"
+        "                    continue\n"
+        "            return False\n"
         "        except Exception:\n"
         "            return False\n"
         "    canonical_source_md = draft\n"
         "    canonical_source_md = _dedupe_long_paragraphs(canonical_source_md)\n"
         "    canonical_source_md = _normalize_report_headings(canonical_source_md, title)\n"
         "    canonical_source_md = _polish_report_scaffold_leadins(canonical_source_md)\n"
-        '    md_path = _resolve_artifact_path("final_report.md", config=_report_config, subdir="reports")\n'
-        '    html_path = _resolve_artifact_path("final_report.html", config=_report_config, subdir="reports")\n'
-        '    pdf_path = _resolve_artifact_path("final_report.pdf", config=_report_config, subdir="reports")\n'
+        '    md_path = _resolve_artifact_path("final_report.md", config=_report_config, subdir="reports").resolve()\n'
+        '    html_path = _resolve_artifact_path("final_report.html", config=_report_config, subdir="reports").resolve()\n'
+        '    pdf_path = _resolve_artifact_path("final_report.pdf", config=_report_config, subdir="reports").resolve()\n'
         "    reports_dir = html_path.parent\n"
         "    reports_dir.mkdir(parents=True, exist_ok=True)\n"
         "    _candidate_img_bases = [\n"
-        "        reports_dir,\n"
+        '        reports_dir.parent / "visualizations",\n'
+        '        _artifact_root / "visualizations",\n'
         "        reports_dir.parent,\n"
         "        _artifact_root,\n"
-        '        _artifact_root / "visualizations",\n'
-        '        _artifact_root / "figures",\n'
-        "        _working_dir,\n"
         '        _working_dir / "visualizations",\n'
-        '        _working_dir / "figures",\n'
-        '        _working_dir / "artifacts",\n'
-        '        _working_dir / "artifacts" / "visualizations",\n'
+        "        _working_dir,\n"
         "    ]\n"
         "    if _run_root is not None:\n"
         "        _candidate_img_bases.extend([\n"
-        "            _run_root,\n"
         '            _run_root / "visualizations",\n'
-        '            _run_root / "figures",\n'
-        '            _run_root / "artifacts",\n'
-        '            _run_root / "artifacts" / "visualizations",\n'
+        "            _run_root,\n"
         "        ])\n"
         "    def _resolve_img_path(raw_path: str) -> Optional[_ReportPath]:\n"
-        "        if not raw_path or not isinstance(raw_path, str):\n"
+        "        if not raw_path or not isinstance(raw_path, (str, _ReportPath)):\n"
         "            return None\n"
-        '        raw_clean = raw_path.strip().replace("\\\\", "/")\n'
+        '        raw_clean = str(raw_path).strip().replace("\\\\", "/")\n'
         "        raw_lower = raw_clean.lower()\n"
         '        if raw_lower.startswith(("data:", "http://", "https://", "file:")) or "://" in raw_lower:\n'
         "            return None\n"
         "        cand = _ReportPath(raw_clean)\n"
-        "        if cand.is_absolute() and cand.is_file() and _is_safe_artifact_path(cand):\n"
-        "            return cand.resolve()\n"
+        "        if cand.is_absolute():\n"
+        "            if _is_safe_artifact_path(cand):\n"
+        "                return cand.resolve()\n"
+        "            return None\n"
+        "        matched = set()\n"
         "        for base in _candidate_img_bases:\n"
         "            probe = (base / cand).resolve()\n"
-        "            if probe.is_file() and _is_safe_artifact_path(probe):\n"
-        "                return probe\n"
-        "            probe_name = (base / cand.name).resolve()\n"
-        "            if probe_name.is_file() and _is_safe_artifact_path(probe_name):\n"
-        "                return probe_name\n"
+        "            if _is_safe_artifact_path(probe):\n"
+        "                matched.add(probe)\n"
+        "        if len(matched) == 1:\n"
+        "            return next(iter(matched))\n"
         "        return None\n"
+        "    def _resolve_doc_img(raw_src: str) -> Optional[_ReportPath]:\n"
+        "        if not raw_src or not isinstance(raw_src, (str, _ReportPath)):\n"
+        "            return None\n"
+        '        s_clean = str(raw_src).strip().replace("\\\\", "/")\n'
+        "        s_lower = s_clean.lower()\n"
+        '        if s_lower.startswith(("data:", "http://", "https://", "file:")) or "://" in s_lower:\n'
+        "            return None\n"
+        "        cand = _ReportPath(s_clean)\n"
+        "        if cand.is_absolute():\n"
+        "            if _is_safe_artifact_path(cand):\n"
+        "                return cand.resolve()\n"
+        "            return None\n"
+        "        probe = (reports_dir / cand).resolve()\n"
+        "        if _is_safe_artifact_path(probe):\n"
+        "            return probe\n"
+        "        return None\n"
+        "    def _canon_key(p: _ReportPath) -> str:\n"
+        "        try:\n"
+        "            return _report_os.path.normcase(str(p.resolve()))\n"
+        "        except Exception:\n"
+        '            return str(p).replace("\\\\", "/").strip().casefold()\n'
         "    def _to_rel_path(p: _ReportPath) -> str:\n"
         '        return _report_os.path.relpath(p, reports_dir).replace("\\\\", "/")\n'
-        "    seen_figure_keys = set()\n"
-        "    seen_figure_ids_in_md = set()\n"
-        "    def _normalize_existing_md_images(md_text: str) -> str:\n"
-        "        def _img_sub(m):\n"
-        "            alt_text = m.group(1)\n"
-        "            src_text = m.group(2).strip()\n"
-        '            if src_text.lower().startswith("data:"):\n'
-        "                return m.group(0)\n"
-        "            res = _resolve_img_path(src_text)\n"
-        "            if res is not None:\n"
-        "                seen_figure_keys.add(str(res.resolve()).casefold())\n"
-        "                seen_figure_ids_in_md.add(res.stem.casefold())\n"
-        "                rel = _to_rel_path(res)\n"
-        '                return f"![{alt_text}]({rel})"\n'
-        "            return m.group(0)\n"
-        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _img_sub, md_text)\n'
-        "    canonical_source_md = _normalize_existing_md_images(canonical_source_md)\n"
-        "    collected_figures = []\n"
-        "    _seen_inventory_keys = set()\n"
+        "    _expected_figs = {}\n"
+        "    _unresolved_expected = []\n"
         "    def _register_figure(raw_path, fig_id, fig_title, fig_desc, sec_name=None):\n"
-        "        f_path = _resolve_img_path(raw_path) if raw_path else None\n"
-        "        if f_path is None and fig_id:\n"
+        "        if not raw_path and not fig_id:\n"
+        "            return\n"
+        "        f_path = None\n"
+        "        if raw_path:\n"
+        "            f_path = _resolve_img_path(raw_path)\n"
+        "            if f_path is None:\n"
+        "                _unresolved_expected.append(str(raw_path))\n"
+        "                return\n"
+        "        elif fig_id:\n"
         '            f_path = _resolve_img_path(f"{fig_id}.png")\n'
-        "        if f_path is None and fig_title:\n"
-        '            f_path = _resolve_img_path(f"{fig_title}.png")\n'
+        "            if f_path is None:\n"
+        '                _unresolved_expected.append(f"id:{fig_id}")\n'
+        "                return\n"
         "        if f_path is None:\n"
+        "            _unresolved_expected.append(str(raw_path or fig_id))\n"
         "            return\n"
-        "        f_key = str(f_path.resolve()).casefold()\n"
-        "        id_key = str(fig_id or f_path.stem).casefold()\n"
-        "        if f_key in _seen_inventory_keys:\n"
-        "            return\n"
-        "        _seen_inventory_keys.add(f_key)\n"
-        "        already_in_md = (f_key in seen_figure_keys or id_key in seen_figure_ids_in_md)\n"
-        "        alt = fig_title or fig_desc or fig_id or f_path.stem\n"
-        "        rel = _to_rel_path(f_path)\n"
-        "        collected_figures.append({\n"
-        '            "id": fig_id or f_path.stem,\n'
-        '            "title": fig_title or alt,\n'
-        '            "alt": alt,\n'
-        '            "resolved_path": f_path,\n'
-        '            "rel_path": rel,\n'
-        '            "section": sec_name,\n'
-        '            "already_embedded": already_in_md,\n'
-        "        })\n"
+        "        ck = _canon_key(f_path)\n"
+        "        if ck not in _expected_figs:\n"
+        "            alt = fig_title or fig_desc or fig_id or f_path.stem\n"
+        "            _expected_figs[ck] = {\n"
+        '                "id": fig_id or f_path.stem,\n'
+        '                "title": fig_title or alt,\n'
+        '                "alt": alt,\n'
+        '                "resolved_path": f_path,\n'
+        '                "rel_path": _to_rel_path(f_path),\n'
+        '                "section": sec_name,\n'
+        "            }\n"
         '    _state_sections = state.get("sections", []) or []\n'
         "    for _sec in _state_sections:\n"
         '        _s_name = getattr(_sec, "name", None) or getattr(_sec, "title", None) or (_sec.get("name") if isinstance(_sec, dict) else None) or (_sec.get("title") if isinstance(_sec, dict) else None)\n'
@@ -13482,7 +13503,22 @@ def main():
         "        if _p:\n"
         "            _p_str = str(_p)\n"
         '            _register_figure(_p_str, _ReportPath(_p_str).stem, _ReportPath(_p_str).stem.replace("_", " ").title(), "")\n'
-        '    figures_to_inject = [f for f in collected_figures if not f["already_embedded"]]\n'
+        "    seen_in_md_keys = set()\n"
+        "    def _normalize_existing_md_images(md_text: str) -> str:\n"
+        "        def _img_sub(m):\n"
+        "            alt_text = m.group(1)\n"
+        "            src_text = m.group(2).strip()\n"
+        '            if src_text.lower().startswith("data:"):\n'
+        "                return m.group(0)\n"
+        "            res = _resolve_doc_img(src_text)\n"
+        "            if res is not None:\n"
+        "                seen_in_md_keys.add(_canon_key(res))\n"
+        "                rel = _to_rel_path(res)\n"
+        '                return f"![{alt_text}]({rel})"\n'
+        "            return m.group(0)\n"
+        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _img_sub, md_text)\n'
+        "    canonical_source_md = _normalize_existing_md_images(canonical_source_md)\n"
+        '    figures_to_inject = [f for ck, f in _expected_figs.items() if ck not in seen_in_md_keys]\n'
         "    unplaced_figures = []\n"
         "    for fig in figures_to_inject:\n"
         '        sec = fig.get("section")\n'
@@ -13503,7 +13539,7 @@ def main():
         "                else:\n"
         "                    canonical_source_md = canonical_source_md.rstrip() + img_block\n"
         "                placed = True\n"
-        '                seen_figure_keys.add(str(fig["resolved_path"].resolve()).casefold())\n'
+        '                seen_in_md_keys.add(_canon_key(fig["resolved_path"]))\n'
         "        if not placed:\n"
         "            unplaced_figures.append(fig)\n"
         "    if unplaced_figures:\n"
@@ -13514,14 +13550,56 @@ def main():
         "        else:\n"
         '            canonical_source_md = canonical_source_md.rstrip() + "\\n\\n## Visualizations\\n\\n" + viz_section_content + "\\n"\n'
         "        for fig in unplaced_figures:\n"
-        '            seen_figure_keys.add(str(fig["resolved_path"].resolve()).casefold())\n'
+        '            seen_in_md_keys.add(_canon_key(fig["resolved_path"]))\n'
         "    def _sanitize_report_html(raw_html: str) -> str:\n"
-        '        cleaned = _report_re.sub(r"(?is)<script\\b[^>]*>.*?</script\\s*>", "", raw_html)\n'
-        '        cleaned = _report_re.sub(r"(?is)<script\\b[^>]*>", "", cleaned)\n'
-        "        cleaned = _report_re.sub(r'(?i)\\s+on[a-z]+\\s*=\\s*(?:\"[^\"]*\"|\\x27[^\\x27]*\\x27|[^\\s>]+)', '', cleaned)\n"
-        "        cleaned = _report_re.sub(r'(?i)\\bhref\\s*=\\s*[\\x22\\x27]\\s*(?:javascript|vbscript|data):[^\\x22\\x27]*[\\x22\\x27]', 'href=\"#\"', cleaned)\n"
-        "        cleaned = _report_re.sub(r'(?i)\\bhref\\s*=\\s*(?:javascript|vbscript|data):[^\\s>]+', 'href=\"#\"', cleaned)\n"
-        "        return cleaned\n"
+        '        _pre = _report_re.sub(r"(?is)<script\\b[^>]*>.*?</script\\s*>", "", str(raw_html or ""))\n'
+        '        _pre = _report_re.sub(r"(?is)<style\\b[^>]*>.*?</style\\s*>", "", _pre)\n'
+        "        _allowed_tags = [\n"
+        '            "h1", "h2", "h3", "h4", "h5", "h6",\n'
+        '            "p", "span", "div", "blockquote", "pre", "code", "hr", "br",\n'
+        '            "ul", "ol", "li",\n'
+        '            "strong", "b", "em", "i", "u", "strike", "del",\n'
+        '            "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",\n'
+        '            "a", "img",\n'
+        "        ]\n"
+        "        def _filter_attrs(tag, name, value):\n"
+        '            if tag == "a":\n'
+        '                if name in ("title", "target", "rel"):\n'
+        "                    return True\n"
+        '                if name == "href":\n'
+        '                    _v = _report_html.unescape(str(value or "")).strip().lower()\n'
+        '                    _v = "".join(_ch for _ch in _v if ord(_ch) > 32)\n'
+        '                    if _v.startswith(("http://", "https://", "mailto:", "#")) or (":" not in _v and not _v.startswith("//")):\n'
+        "                        return True\n"
+        "                    return False\n"
+        "                return False\n"
+        '            if tag == "img":\n'
+        '                if name in ("alt", "title", "width", "height"):\n'
+        "                    return True\n"
+        '                if name == "src":\n'
+        '                    _v = _report_html.unescape(str(value or "")).strip().lower()\n'
+        '                    if _v.startswith("data:image/"):\n'
+        "                        return True\n"
+        '                    if _v.startswith(("http://", "https://", "file:")) or "://" in _v:\n'
+        "                        return False\n"
+        "                    return True\n"
+        "                return False\n"
+        '            if tag in ("th", "td", "div", "span", "p", "table"):\n'
+        '                if name in ("style", "class", "align", "colspan", "rowspan"):\n'
+        "                    return True\n"
+        '            if tag in ("code", "pre"):\n'
+        '                if name == "class":\n'
+        "                    return True\n"
+        "            return False\n"
+        "        _kwargs = {\n"
+        '            "tags": _allowed_tags,\n'
+        '            "attributes": _filter_attrs,\n'
+        '            "protocols": ["http", "https", "mailto", "data"],\n'
+        '            "strip": True,\n'
+        "        }\n"
+        "        if _report_css_sanitizer is not None:\n"
+        '            _kwargs["css_sanitizer"] = _report_css_sanitizer\n'
+        "        return _report_bleach.clean(_pre, **_kwargs)\n"
         "    def _render_report_html(markdown_text: str, report_title: str) -> str:\n"
         '        _raw_rendered = _report_markdown.markdown(str(markdown_text or ""), extensions=["tables", "fenced_code"])\n'
         "        _sanitized_body = _sanitize_report_html(_raw_rendered)\n"
@@ -13530,10 +13608,50 @@ def main():
         '            "<!doctype html><html><head><meta charset=\\"utf-8\\"><title>"\n'
         "            + title_escaped\n"
         '            + "</title><style>body{font-family:Helvetica,Arial,sans-serif;line-height:1.5;max-width:1000px;margin:2rem auto;padding:0 1rem;color:#333}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}pre{background:#f4f4f4;padding:1rem;border-radius:4px;overflow-x:auto}code{font-family:monospace;background:#f4f4f4;padding:2px 4px;border-radius:2px}img{max-width:100%;height:auto}blockquote{border-left:4px solid #ccc;margin:1rem 0;padding-left:1rem;color:#666}</style></head><body>\\n"\n'
-        '            + _sanitized_body\n'
+        "            + _sanitized_body\n"
         '            + "\\n</body></html>"\n'
         "        )\n"
         "    html_document = _render_report_html(canonical_source_md, title)\n"
+        '    _md_stripped = _report_re.sub(r"(?ms)^```.*?^```", "", canonical_source_md)\n'
+        '    _md_stripped = _report_re.sub(r"(?m)^(?: {4}|\\t)[^\\n]*", "", _md_stripped)\n'
+        '    _md_stripped = _report_re.sub(r"`[^`\\n]+`", "", _md_stripped)\n'
+        '    _md_raw_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _md_stripped)\n'
+        "    _md_verified_keys = set()\n"
+        "    for _s in _md_raw_embeds:\n"
+        '        if _s.lower().startswith("data:"):\n'
+        "            continue\n"
+        "        _p = _resolve_doc_img(_s)\n"
+        "        if _p is not None:\n"
+        "            _md_verified_keys.add(_canon_key(_p))\n"
+        "    class _ReportHTMLImgCollector(_ReportHTMLParser):\n"
+        "        def __init__(self):\n"
+        "            super().__init__()\n"
+        "            self.sources = []\n"
+        "        def handle_starttag(self, tag, attrs):\n"
+        '            if tag == "img":\n'
+        "                for _k, _v in attrs:\n"
+        '                    if _k == "src" and _v:\n'
+        "                        self.sources.append(_v)\n"
+        "    _html_parser = _ReportHTMLImgCollector()\n"
+        "    _html_parser.feed(html_document)\n"
+        "    _html_verified_keys = set()\n"
+        "    for _s in _html_parser.sources:\n"
+        '        if _s.lower().startswith("data:"):\n'
+        "            continue\n"
+        "        _p = _resolve_doc_img(_s)\n"
+        "        if _p is not None:\n"
+        "            _html_verified_keys.add(_canon_key(_p))\n"
+        "    _expected_keys = set(_expected_figs.keys())\n"
+        "    if _unresolved_expected:\n"
+        '        raise RuntimeError(f"W14J canonical report has unresolved expected figures: {_unresolved_expected}")\n'
+        "    if len(_expected_keys) < 3:\n"
+        '        raise RuntimeError(f"W14J canonical report requires at least 3 distinct figures, found {len(_expected_keys)}")\n'
+        "    if not _expected_keys.issubset(_md_verified_keys):\n"
+        "        _missing_md = _expected_keys - _md_verified_keys\n"
+        '        raise RuntimeError(f"W14J canonical markdown missing figure coverage for: {_missing_md}")\n'
+        "    if not _expected_keys.issubset(_html_verified_keys):\n"
+        "        _missing_html = _expected_keys - _html_verified_keys\n"
+        '        raise RuntimeError(f"W14J canonical html missing figure coverage for: {_missing_html}")\n'
         "    from xhtml2pdf import pisa as _report_pisa\n"
         "    _pdf_policy = None\n"
         "    try:\n"
@@ -13546,11 +13664,9 @@ def main():
         "            return uri\n"
         '        if "://" in str(uri or "").lower() or str(uri or "").lower().startswith("file:"):\n'
         '            raise ValueError("Remote and file URIs are not allowed in report resources")\n'
-        "        candidate = (reports_dir / _ReportPath(uri)).resolve()\n"
-        "        if not _is_safe_artifact_path(candidate):\n"
-        '            raise ValueError(f"Report resource escapes artifact root: {candidate}")\n'
-        "        if not candidate.is_file():\n"
-        '            raise FileNotFoundError(f"Report resource missing on disk: {candidate}")\n'
+        "        candidate = _resolve_doc_img(uri)\n"
+        "        if candidate is None:\n"
+        '            raise FileNotFoundError(f"Report resource missing on disk or escapes root: {uri}")\n'
         "        return str(candidate)\n"
         '    _tmp_token = f"_tmp_{_report_os.getpid()}_{_report_uuid.uuid4().hex[:8]}"\n'
         '    _staging_dir = reports_dir / f"._staging_{_tmp_token}"\n'
@@ -13574,20 +13690,6 @@ def main():
         "        for _req_tmp in (md_tmp, html_tmp, pdf_tmp):\n"
         "            if not _req_tmp.is_file() or _req_tmp.stat().st_size <= 0:\n"
         '                raise RuntimeError(f"W14J required temporary report artifact missing or empty: {_req_tmp}")\n'
-        '        _md_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", canonical_source_md)\n'
-        '        _html_embeds = _report_re.findall(r\'<img\\b[^>]*?\\bsrc\\s*=\\s*["\\\']([^"\\\']+)["\\\']\', html_document, flags=_report_re.I)\n'
-        "        _missing_embeds = []\n"
-        "        for _src in set(_md_embeds + _html_embeds):\n"
-        '            if _src.startswith("data:"):\n'
-        "                continue\n"
-        "            _resolved_probe = (reports_dir / _ReportPath(_src)).resolve()\n"
-        "            if not _resolved_probe.is_file() or not _is_safe_artifact_path(_resolved_probe):\n"
-        "                _missing_embeds.append(_src)\n"
-        "        if _missing_embeds:\n"
-        '            raise RuntimeError(f"W14J canonical report embeds missing on disk: {_missing_embeds}")\n'
-        '        _total_embed_count = len([s for s in _html_embeds if not s.startswith("data:")])\n'
-        "        if collected_figures and _total_embed_count == 0:\n"
-        '            raise RuntimeError("W14J canonical report has zero embedded charts despite available figures")\n'
         "        _backup_dir.mkdir(parents=True, exist_ok=True)\n"
         "        _targets = [(md_tmp, md_path), (html_tmp, html_path), (pdf_tmp, pdf_path)]\n"
         "        _backed_up = {}\n"
@@ -13754,115 +13856,218 @@ def main():
             patch_id="W14J-FW-FINAL-SEMANTICS",
         )
         _W14J_FW_COMPLETE_OLD = (
+            "        _w13s_existing_paths = set(_w13s_report_paths + _w13s_viz_paths)\n"
+            "        _w13s_report_file_results = []\n"
+            "        _w13s_viz_file_results = []\n"
+            "        for _w13s_fr in file_results.files:\n"
+            '            _w13s_fp = str(getattr(_w13s_fr, "file_path", "") or "")\n'
+            '            _w13s_tag = (getattr(_w13s_fr, "category_tag", "") or "").lower().strip()\n'
+            "            if _w13s_fp not in _w13s_existing_paths:\n"
+            "                _w13s_base = PathlibPath(_w13s_fp).name\n"
+            "                _w13s_match = next((str(_p) for _p in _w13s_existing_paths if PathlibPath(str(_p)).name == _w13s_base), None)\n"
+            "                if _w13s_match:\n"
+            "                    _w13s_fp = _w13s_match\n"
+            "                    try:\n"
+            "                        _w13s_fr.file_path = _w13s_match\n"
+            "                    except Exception:\n"
+            "                        pass\n"
+            "            if _w13s_fp not in _w13s_existing_paths or not PathlibPath(_w13s_fp).is_file():\n"
+            '                _pl_logger.warning("STATE file_writer.final_manifest path_normalized_missing returned=%s", _w13s_fp)\n'
+            "                continue\n"
+            '            if _w13s_tag == "report":\n'
+            "                _w13s_report_file_results.append(_w13s_fr)\n"
+            '            elif _w13s_tag == "visualization":\n'
+            "                _w13s_viz_file_results.append(_w13s_fr)\n"
+            '        final_report_path = next((getattr(_fr, "file_path", None) for _fr in _w13s_report_file_results if getattr(_fr, "is_final_report", False)), None)\n'
+            "        if not final_report_path:\n"
+            '            final_report_path = getattr(_w13s_rr, "html_report_path", None)\n'
+            '        report_paths = [getattr(_fr, "file_path", "") for _fr in _w13s_report_file_results if getattr(_fr, "file_path", None)] or _w13s_report_paths\n'
+            '        viz_paths = [getattr(_fr, "file_path", "") for _fr in _w13s_viz_file_results if getattr(_fr, "file_path", None)] or _w13s_viz_paths\n'
             "        _w13s_complete = len(report_paths) >= 3 and len(viz_paths) >= min(3, len(_w13s_viz_paths) or 3)\n"
         )
         _W14J_FW_COMPLETE_NEW = (
+            "        # W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid\n"
+            "        import re as _fw_re\n"
+            "        from html.parser import HTMLParser as _FWHTMLParser\n"
             "        def _w13s_canon_key(_p):\n"
             "            try:\n"
             "                return os.path.normcase(str(PathlibPath(_p).resolve()))\n"
             "            except Exception:\n"
             "                return str(_p).replace('\\\\', '/').strip().casefold()\n"
+            "        _fw_config = state.get('_config')\n"
+            "        _fw_art_root = _get_artifacts_base(_fw_config).resolve() if '_get_artifacts_base' in globals() else (PathlibPath(WORKING_DIRECTORY) / 'artifacts').resolve()\n"
+            "        _fw_run_root = None\n"
+            "        if 'RUNTIME' in globals() and getattr(globals()['RUNTIME'], 'run_dir', None):\n"
+            "            _fw_run_root = PathlibPath(globals()['RUNTIME'].run_dir).resolve()\n"
+            "        elif _fw_config and isinstance(_fw_config, dict):\n"
+            "            _cfg_run = _fw_config.get('configurable', {}).get('runtime')\n"
+            "            if getattr(_cfg_run, 'run_dir', None):\n"
+            "                _fw_run_root = PathlibPath(_cfg_run.run_dir).resolve()\n"
+            "        _fw_working_dir = PathlibPath(WORKING_DIRECTORY).resolve()\n"
+            "        _fw_allowed_roots = [_fw_art_root, _fw_working_dir]\n"
+            "        if _fw_run_root is not None:\n"
+            "            _fw_allowed_roots.append(_fw_run_root)\n"
+            "        def _fw_is_safe_artifact(cand: PathlibPath) -> bool:\n"
+            "            try:\n"
+            "                c_res = cand.resolve()\n"
+            "                if not c_res.is_file() or c_res.stat().st_size <= 0:\n"
+            "                    return False\n"
+            "                for r in _fw_allowed_roots:\n"
+            "                    try:\n"
+            "                        c_res.relative_to(r.resolve())\n"
+            "                        return True\n"
+            "                    except ValueError:\n"
+            "                        continue\n"
+            "                return False\n"
+            "            except Exception:\n"
+            "                return False\n"
+            "        if '_resolve_artifact_path' in globals():\n"
+            "            _canonical_md = _resolve_artifact_path('final_report.md', config=_fw_config, subdir='reports').resolve()\n"
+            "            _canonical_html = _resolve_artifact_path('final_report.html', config=_fw_config, subdir='reports').resolve()\n"
+            "            _canonical_pdf = _resolve_artifact_path('final_report.pdf', config=_fw_config, subdir='reports').resolve()\n"
+            "        else:\n"
+            "            _canonical_md = (_fw_art_root / 'reports' / 'final_report.md').resolve()\n"
+            "            _canonical_html = (_fw_art_root / 'reports' / 'final_report.html').resolve()\n"
+            "            _canonical_pdf = (_fw_art_root / 'reports' / 'final_report.pdf').resolve()\n"
+            "        _canonical_reports = {\n"
+            "            'markdown': _canonical_md,\n"
+            "            'html': _canonical_html,\n"
+            "            'pdf': _canonical_pdf,\n"
+            "        }\n"
+            "        _reports_valid = bool(\n"
+            "            _fw_is_safe_artifact(_canonical_md)\n"
+            "            and _fw_is_safe_artifact(_canonical_html)\n"
+            "            and _fw_is_safe_artifact(_canonical_pdf)\n"
+            "        )\n"
+            "        _reports_dir = _canonical_html.parent\n"
+            "        _fw_candidate_bases = [\n"
+            "            _reports_dir.parent / 'visualizations',\n"
+            "            _fw_art_root / 'visualizations',\n"
+            "            _reports_dir.parent,\n"
+            "            _fw_art_root,\n"
+            "            _reports_dir,\n"
+            "            _fw_working_dir / 'visualizations',\n"
+            "            _fw_working_dir,\n"
+            "        ]\n"
+            "        if _fw_run_root is not None:\n"
+            "            _fw_candidate_bases.extend([\n"
+            "                _fw_run_root / 'visualizations',\n"
+            "                _fw_run_root,\n"
+            "            ])\n"
             "        def _w13s_resolve_file(_p):\n"
             "            if not _p:\n"
             "                return None\n"
-            "            _p_str = str(_p).strip()\n"
+            "            _p_str = str(_p).strip().replace('\\\\', '/')\n"
             "            if not _p_str or _p_str.lower().startswith(('data:', 'http://', 'https://', 'file:')) or '://' in _p_str:\n"
             "                return None\n"
             "            _cand = PathlibPath(_p_str.replace('/', os.sep))\n"
-            "            if _cand.is_absolute() and _cand.is_file() and _cand.stat().st_size > 0:\n"
-            "                return _cand.resolve()\n"
-            "            _bases = list(_w13s_candidate_bases)\n"
-            "            if '_get_artifacts_base' in globals():\n"
-            "                try:\n"
-            "                    _ab = _get_artifacts_base(state.get('_config')).resolve()\n"
-            "                    _bases.extend([_ab, _ab / 'reports', _ab / 'visualizations', _ab / 'figures'])\n"
-            "                except Exception:\n"
-            "                    pass\n"
-            "            for _b in _bases:\n"
+            "            if _cand.is_absolute():\n"
+            "                if _fw_is_safe_artifact(_cand):\n"
+            "                    return _cand.resolve()\n"
+            "                return None\n"
+            "            _matched = set()\n"
+            "            for _b in _fw_candidate_bases:\n"
             "                _probe = (PathlibPath(_b) / _cand).resolve()\n"
-            "                if _probe.is_file() and _probe.stat().st_size > 0:\n"
-            "                    return _probe\n"
-            "                _probe_name = (PathlibPath(_b) / _cand.name).resolve()\n"
-            "                if _probe_name.is_file() and _probe_name.stat().st_size > 0:\n"
-            "                    return _probe_name\n"
+            "                if _fw_is_safe_artifact(_probe):\n"
+            "                    _matched.add(_probe)\n"
+            "            if len(_matched) == 1:\n"
+            "                return next(iter(_matched))\n"
             "            return None\n"
-            "        _w13s_expected_refs = []\n"
+            "        def _fw_resolve_doc_img(_s):\n"
+            "            if not _s:\n"
+            "                return None\n"
+            "            _s_str = str(_s).strip().replace('\\\\', '/')\n"
+            "            if not _s_str or _s_str.lower().startswith(('data:', 'http://', 'https://', 'file:')) or '://' in _s_str:\n"
+            "                return None\n"
+            "            _c = PathlibPath(_s_str.replace('/', os.sep))\n"
+            "            if _c.is_absolute():\n"
+            "                if _fw_is_safe_artifact(_c):\n"
+            "                    return _c.resolve()\n"
+            "                return None\n"
+            "            _probe = (_reports_dir / _c).resolve()\n"
+            "            if _fw_is_safe_artifact(_probe):\n"
+            "                return _probe\n"
+            "            return None\n"
+            "        _E = {}\n"
+            "        _U = []\n"
+            "        def _fw_collect_expected(_ref):\n"
+            "            if not _ref:\n"
+            "                return\n"
+            "            _res = _w13s_resolve_file(_ref)\n"
+            "            if _res is None:\n"
+            "                _U.append(str(_ref))\n"
+            "            else:\n"
+            "                _E[_w13s_canon_key(_res)] = _res\n"
             "        for _sec in (state.get('sections') or []):\n"
             "            _s_figs = getattr(_sec, 'expected_figures', None) or (_sec.get('expected_figures') if isinstance(_sec, dict) else None) or []\n"
             "            for _f in _s_figs:\n"
             "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
             "                if _fp:\n"
-            "                    _w13s_expected_refs.append(_fp)\n"
+            "                    _fw_collect_expected(_fp)\n"
+            "                else:\n"
+            "                    _U.append(str(_f))\n"
             "        _vr_obj = state.get('visualization_results')\n"
             "        if isinstance(_vr_obj, VisualizationResults):\n"
             "            for _f in (_vr_obj.visualizations or []):\n"
             "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
             "                if _fp:\n"
-            "                    _w13s_expected_refs.append(_fp)\n"
+            "                    _fw_collect_expected(_fp)\n"
             "        elif isinstance(_vr_obj, dict):\n"
             "            for _f in (_vr_obj.get('visualizations', []) or []):\n"
             "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
             "                if _fp:\n"
-            "                    _w13s_expected_refs.append(_fp)\n"
+            "                    _fw_collect_expected(_fp)\n"
             "        _vz_obj = state.get('viz_results')\n"
             "        if isinstance(_vz_obj, list):\n"
             "            for _f in _vz_obj:\n"
             "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
             "                if _fp:\n"
-            "                    _w13s_expected_refs.append(_fp)\n"
+            "                    _fw_collect_expected(_fp)\n"
             "        _vp_obj = state.get('viz_paths')\n"
             "        if isinstance(_vp_obj, list):\n"
             "            for _p in _vp_obj:\n"
             "                if _p:\n"
-            "                    _w13s_expected_refs.append(_p)\n"
+            "                    _fw_collect_expected(_p)\n"
             "        elif isinstance(_vp_obj, dict):\n"
             "            for _p in _vp_obj.values():\n"
             "                if _p:\n"
-            "                    _w13s_expected_refs.append(_p)\n"
+            "                    _fw_collect_expected(_p)\n"
             "        elif isinstance(_vp_obj, (str, PathlibPath)):\n"
             "            if _vp_obj:\n"
-            "                _w13s_expected_refs.append(_vp_obj)\n"
-            "        _w13s_has_missing_expected = False\n"
-            "        _w13s_verified_viz = {}\n"
-            "        if not _w13s_expected_refs:\n"
-            "            _w13s_has_missing_expected = True\n"
-            "        for _ref in _w13s_expected_refs:\n"
-            "            _res = _w13s_resolve_file(_ref)\n"
-            "            if _res is None:\n"
-            "                _w13s_has_missing_expected = True\n"
-            "            else:\n"
-            "                _w13s_verified_viz[_w13s_canon_key(_res)] = _res\n"
-            "        _w13s_canonical_reports = {}\n"
-            "        for _raw_rp in report_paths + _w13s_report_paths:\n"
-            "            _r_res = _w13s_resolve_file(_raw_rp)\n"
-            "            if _r_res is not None:\n"
-            "                _name_lower = _r_res.name.lower()\n"
-            "                if _name_lower == 'final_report.html':\n"
-            "                    _w13s_canonical_reports['html'] = _r_res\n"
-            "                elif _name_lower == 'final_report.md':\n"
-            "                    _w13s_canonical_reports['markdown'] = _r_res\n"
-            "                elif _name_lower == 'final_report.pdf':\n"
-            "                    _w13s_canonical_reports['pdf'] = _r_res\n"
-            "        _reports_valid = (len(_w13s_canonical_reports) == 3)\n"
-            "        _html_embeds_valid = False\n"
-            "        if 'html' in _w13s_canonical_reports:\n"
+            "                _fw_collect_expected(_vp_obj)\n"
+            "        _M = set()\n"
+            "        if _reports_valid:\n"
             "            try:\n"
-            "                _html_content = _w13s_canonical_reports['html'].read_text(encoding='utf-8', errors='replace')\n"
-            "                _found_srcs = re.findall(r'<img\\b[^>]*?\\bsrc\\s*=\\s*[\"\\\']([^\"\\\']+)[\"\\\']', _html_content, flags=re.I)\n"
-            "                _embedded_keys = set()\n"
-            "                for _s in _found_srcs:\n"
-            "                    if str(_s).strip().startswith('data:'):\n"
-            "                        continue\n"
-            "                    _embed_res = _w13s_resolve_file(_s)\n"
-            "                    if _embed_res is None:\n"
-            "                        _embed_res = _w13s_resolve_file((_w13s_canonical_reports['html'].parent / str(_s).replace('/', os.sep)).resolve())\n"
-            "                    if _embed_res is not None:\n"
-            "                        _embedded_keys.add(_w13s_canon_key(_embed_res))\n"
-            "                _matched_viz = set(_w13s_verified_viz.keys()) & _embedded_keys\n"
-            "                if len(_embedded_keys) >= 3 and len(_matched_viz) >= min(3, len(_w13s_verified_viz)):\n"
-            "                    _html_embeds_valid = True\n"
+            "                _md_content = _canonical_md.read_text(encoding='utf-8', errors='replace')\n"
+            "                _md_stripped = _fw_re.sub(r'(?ms)^```.*?^```', '', _md_content)\n"
+            "                _md_stripped = _fw_re.sub(r'(?m)^(?: {4}|\\t)[^\\n]*', '', _md_stripped)\n"
+            "                _md_stripped = _fw_re.sub(r'`[^`\\n]+`', '', _md_stripped)\n"
+            '                for _s in _fw_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\"][^\'\\"]*[\'\\"])?\\)", _md_stripped):\n'
+            "                    _res = _fw_resolve_doc_img(_s)\n"
+            "                    if _res is not None:\n"
+            "                        _M.add(_w13s_canon_key(_res))\n"
             "            except Exception:\n"
-            "                _html_embeds_valid = False\n"
+            "                pass\n"
+            "        _H = set()\n"
+            "        if _reports_valid:\n"
+            "            try:\n"
+            "                class _FWHTMLImgCollector(_FWHTMLParser):\n"
+            "                    def __init__(self):\n"
+            "                        super().__init__()\n"
+            "                        self.sources = []\n"
+            "                    def handle_starttag(self, tag, attrs):\n"
+            "                        if tag == 'img':\n"
+            "                            for _k, _v in attrs:\n"
+            "                                if _k == 'src' and _v:\n"
+            "                                    self.sources.append(_v)\n"
+            "                _h_parser = _FWHTMLImgCollector()\n"
+            "                _h_parser.feed(_canonical_html.read_text(encoding='utf-8', errors='replace'))\n"
+            "                for _s in _h_parser.sources:\n"
+            "                    _res = _fw_resolve_doc_img(_s)\n"
+            "                    if _res is not None:\n"
+            "                        _H.add(_w13s_canon_key(_res))\n"
+            "            except Exception:\n"
+            "                pass\n"
             "        _seen_report_fmts = set()\n"
             "        _seen_viz_keys = set()\n"
             "        _reconciled_files = []\n"
@@ -13870,36 +14075,28 @@ def main():
             "            _fp = getattr(_fr, 'file_path', '')\n"
             "            _res_fr = _w13s_resolve_file(_fp)\n"
             "            if _res_fr is None:\n"
-            "                _bname = PathlibPath(str(_fp)).name.lower()\n"
-            "                for _cand in list(_w13s_canonical_reports.values()) + list(_w13s_verified_viz.values()):\n"
-            "                    if _cand.name.lower() == _bname:\n"
-            "                        _res_fr = _cand\n"
-            "                        try:\n"
-            "                            _fr.file_path = str(_cand)\n"
-            "                        except Exception:\n"
-            "                            pass\n"
-            "                        break\n"
-            "            if _res_fr is None:\n"
             "                continue\n"
             "            _ck = _w13s_canon_key(_res_fr)\n"
             "            _is_rep = False\n"
-            "            for _fmt, _rp in _w13s_canonical_reports.items():\n"
+            "            for _fmt, _rp in _canonical_reports.items():\n"
             "                if _w13s_canon_key(_rp) == _ck:\n"
             "                    _is_rep = True\n"
             "                    if _fmt not in _seen_report_fmts:\n"
             "                        _seen_report_fmts.add(_fmt)\n"
             "                        _fr.category_tag = 'report'\n"
+            "                        _fr.file_path = str(_rp)\n"
             "                        if _fmt == 'html':\n"
             "                            _fr.is_final_report = True\n"
             "                        _reconciled_files.append(_fr)\n"
             "                    break\n"
-            "            if not _is_rep and _ck in _w13s_verified_viz:\n"
+            "            if not _is_rep and _ck in _E:\n"
             "                if _ck not in _seen_viz_keys:\n"
             "                    _seen_viz_keys.add(_ck)\n"
             "                    _fr.category_tag = 'visualization'\n"
+            "                    _fr.file_path = str(_E[_ck])\n"
             "                    _reconciled_files.append(_fr)\n"
-            "        for _fmt, _rp in _w13s_canonical_reports.items():\n"
-            "            if _fmt not in _seen_report_fmts:\n"
+            "        for _fmt, _rp in _canonical_reports.items():\n"
+            "            if _fmt not in _seen_report_fmts and _fw_is_safe_artifact(_rp):\n"
             "                _reconciled_files.append(FileResult(\n"
             "                    write_success=True,\n"
             "                    file_path=str(_rp),\n"
@@ -13913,8 +14110,8 @@ def main():
             "                    expect_reply=False,\n"
             "                ))\n"
             "                _seen_report_fmts.add(_fmt)\n"
-            "        for _ck, _vp in _w13s_verified_viz.items():\n"
-            "            if _ck not in _seen_viz_keys:\n"
+            "        for _ck, _vp in _E.items():\n"
+            "            if _ck not in _seen_viz_keys and _fw_is_safe_artifact(_vp):\n"
             "                _reconciled_files.append(FileResult(\n"
             "                    write_success=True,\n"
             "                    file_path=str(_vp),\n"
@@ -13929,17 +14126,19 @@ def main():
             "                ))\n"
             "                _seen_viz_keys.add(_ck)\n"
             "        file_results.files = _reconciled_files\n"
-            "        if 'html' in _w13s_canonical_reports:\n"
-            "            final_report_path = str(_w13s_canonical_reports['html'])\n"
-            "        report_paths = [str(_p) for _p in _w13s_canonical_reports.values()]\n"
-            "        viz_paths = [str(_p) for _p in _w13s_verified_viz.values()]\n"
+            "        _F = set(_seen_viz_keys)\n"
+            "        final_report_path = str(_canonical_html)\n"
+            "        report_paths = [str(_p) for _p in _canonical_reports.values()]\n"
+            "        viz_paths = [str(_p) for _p in _E.values()]\n"
+            "        _E_keys = set(_E.keys())\n"
             "        _w13s_complete = bool(\n"
-            "            not _w13s_has_missing_expected\n"
+            "            len(_U) == 0\n"
+            "            and len(_E_keys) >= 3\n"
             "            and _reports_valid\n"
             "            and len(_seen_report_fmts) == 3\n"
-            "            and len(_w13s_verified_viz) >= 3\n"
-            "            and len(_seen_viz_keys) >= 3\n"
-            "            and _html_embeds_valid\n"
+            "            and _E_keys.issubset(_M)\n"
+            "            and _E_keys.issubset(_H)\n"
+            "            and _E_keys.issubset(_F)\n"
             "        )\n"
         )
         src = replace_required(

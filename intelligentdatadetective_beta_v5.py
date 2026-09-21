@@ -3445,8 +3445,9 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
         )
     query_str = " and ".join(f"({condition})" for condition in query_parts)
     df = global_df_registry.get_dataframe(df_id)
+    query_df = df.rename(columns=str) if any(not isinstance(c, str) for c in df.columns) else df
     try:
-        rows_to_drop = df.query(query_str).index
+        rows_to_drop = query_df.query(query_str).index
     except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
         return _tool_error(
             operation,
