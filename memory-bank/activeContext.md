@@ -421,3 +421,23 @@ This is now the strongest completion baseline:
 2. Treat future prompt/report polish as follow-up work that must keep both validators green and keep the log marker counts at zero.
 3. Continue making notebook changes through `_patch_notebook.py`, regenerating `IntelligentDataDetective_beta_v5_patched.ipynb` before any proof run.
 <!-- session-curated:2026-05-04-w14-final-proof:end -->
+
+<!-- session-curated:2026-09-21-pr149-correctness-fixes:start -->
+## 2026-09-21 — PR #149: Remaining correctness review items completed
+
+### Review items addressed & verified
+1. **Task A (CI Provisioning):** Explicitly declared `xhtml2pdf`, `pypdf`, `pymupdf`, `pillow`, and `markdown` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4 without altering the default dependency fallback. Added verification step.
+2. **Task B (Stale Markdown Source Selection):** Discarded stale agent markdown probe (`rr.markdown_report_path`); authoritative draft assembled from `written_sections` (`canonical_source_md = draft`).
+3. **Task C (Distinct Artifact Completion):** Canonicalized paths via `os.path.normcase`; required >= 3 distinct verified figures; detected missing expected figures; verified HTML figure embeds against figures on disk; required exact canonical report formats (`final_report.md`, `final_report.html`, `final_report.pdf`); reconciled `file_results.files` to manifest.
+4. **Task D (Markdown-to-HTML/PDF Fidelity):** Converted markdown via `markdown.markdown(..., extensions=['tables', 'fenced_code'])`; sanitized raw `<script>` tags, inline event handlers, and unsafe URL schemes (`javascript:`, `vbscript:`, `data:` -> `#`); passed `ResourceAccessPolicy` to `pisa.CreatePDF`.
+5. **Task E (Transactional Canonical Publication & Rollback):** Staged in attempt-private directory `._staging_<token>`; pre-validated staged artifacts and embeds; created backups of existing canonical files in `._backup_<token>`; tracked sequential replacements; rolled back and unlinked on failure; retained recovery directories and raised hard `RuntimeError` on rollback failure; reset `rr` report paths to `""` on generation failure.
+
+### Verification baseline
+- Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved.
+- `prompt_template_validator.py`: 0 errors.
+- `tests/unit/test_patcher_integrity.py`: 27/27 passed.
+- Offline regression suite: 336 passed, 9 skipped, 1 failed (known unrelated #147 `df.query()` integer index).
+- Black & flake8 clean; whitespace diff clean.
+- Pushed to `origin/codex/fix-patcher-anchors-146` (commit `8b12bba`).
+<!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
+
