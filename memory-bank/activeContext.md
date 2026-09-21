@@ -465,6 +465,7 @@ This is now the strongest completion baseline:
 - `test_validate_run.py tests/unit tests/integration -q`: **366 passed, 9 skipped, 0 failed** (100% pass).
 - `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
 - `git diff --check`: 0 errors.
+- Hosted GitHub Actions validation (Run `35646531086`, Job `106488238896`): **passed green in 1m55s** (test-merge `9c69652` on Python 3.12.14 / `pandas-3.0.6`, 366 passed, 9 skipped).
 <!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
 
 
