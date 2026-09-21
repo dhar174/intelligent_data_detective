@@ -444,20 +444,25 @@ This is now the strongest completion baseline:
    - Replaced regex sanitizer with `bleach.clean` using explicit tag allowlist, `css_sanitizer`, and custom `_filter_attrs`.
    - Called `html.unescape` on attributes before protocol checking to neutralize entity-encoded (hex, decimal, mixed-case, control chars, tabs, newlines) and `data:` URIs on `<a>` tags while permitting safe inline images (`data:image/`) and relative paths.
    - Provisioned `bleach` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4.
-4. **Tool Error Handling Hardening & Collision Safety:**
-   - Implemented native-first query evaluation in `delete_rows()` (`intelligentdatadetective_beta_v5.py`).
-   - Native `df.query(query_str)` executes first, preserving existing string-labeled columns (e.g. `'0'`) even when colliding integer labels (e.g. `0`) exist.
-   - On `pd.errors.UndefinedVariableError`, falls back to stringified query evaluation ONLY when non-string labels exist AND stringified column labels are strictly unique (`len(set(normalized)) == len(normalized)`).
-   - If labels collide or are ambiguous, re-raises `UndefinedVariableError` to cleanly return structured `_tool_error` without mutating DataFrame.
-   - Added comprehensive regression tests in `tests/unit/test_tool_error_handling.py` (`test_delete_rows_preserves_string_column_when_integer_label_collides`) covering inplace/non-inplace, reversed column order, unrelated columns, zero matches, missing columns, and syntax errors.
-   - All tool error handling tests pass 100% (8/8).
+4. **Deterministic Query Binding Before Evaluation (`delete_rows`):**
+   - Superseded the exception-only/native-first fallback with deterministic query-only DataFrame projection (`_build_query_view(df)`).
+   - In pandas 3.0.6, `clean_column_name` stringifies all column labels into resolver dict keys, causing integer `0` to overwrite string `'0'` when `0` is visited second, bypassing native-first collision fallbacks and deleting the wrong row.
+   - The query view projection audits original string columns and non-string candidates before evaluation:
+     1. Unchanged original string columns are preserved under their original names.
+     2. Non-string scalar columns receive a string compatibility alias (`str(col)`) only if the alias is unique among candidates and not already owned by an original string column.
+     3. Shadowed and ambiguous non-string columns are excluded from the query namespace only; original DataFrame schema, types, dtypes, and order remain completely untouched.
+     4. The query view is constructed using positional column selection (`.iloc[:, kept_indices].copy(deep=False)`) so competing raw labels never collide in pandas resolver.
+   - Synchronized both production representations: module export (`intelligentdatadetective_beta_v5.py`) and independently defined notebook cell 32 (`_patch_notebook.py` -> `IntelligentDataDetective_beta_v5_patched.ipynb`).
+   - Split monolithic test in `tests/unit/test_tool_error_handling.py` into focused, parameterized regression cases covering order independence, numeric compatibility preservation, unrelated column queries, zero matches, missing columns, syntax errors, and ambiguous aliases.
+   - Added AST-compiled execution parity test in `tests/unit/test_patcher_integrity.py` (`test_generated_delete_rows_collision_and_numeric_positive`) exercising the real notebook operation without executing installation cells.
+   - All tool error handling tests pass (17/17) across pandas 2.2.1, pandas 2.2.3, and pandas 3.0.6 environments.
 
 ### Verification baseline
-- Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved.
+- Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved; byte-for-byte deterministic.
 - `prompt_template_validator.py`: 0 errors.
-- `tests/unit/test_tool_error_handling.py`: **8/8 passed**.
-- `tests/unit/test_patcher_integrity.py`: **45/45 passed**.
-- `test_validate_run.py tests/unit tests/integration -q`: **356 passed, 9 skipped, 0 failed in 12.45s** (100% pass).
+- `tests/unit/test_tool_error_handling.py`: **17/17 passed** (pandas 2.2.1, 2.2.3, and 3.0.6).
+- `tests/unit/test_patcher_integrity.py`: **46/46 passed**.
+- `test_validate_run.py tests/unit tests/integration -q`: **366 passed, 9 skipped, 0 failed** (100% pass).
 - `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
 - `git diff --check`: 0 errors.
 <!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->

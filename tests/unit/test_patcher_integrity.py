@@ -4420,3 +4420,99 @@ def test_fenced_code_image_example_does_not_count_as_embed(
     res = file_writer_node(state)
     # Must reject because fenced code block image is stripped and does not count toward M!
     assert res.get("file_writer_complete") is False
+
+
+def _compile_generated_delete_rows(notebook, registry):
+    source = _cell_source(notebook, "delete_rows")
+    tree = ast.parse(source)
+    target_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in ("_build_query_view", "delete_rows")
+    ]
+    assert len(target_nodes) == 2, f"expected 2 nodes, got {len(target_nodes)}"
+    for node in target_nodes:
+        if node.name == "delete_rows":
+            node.decorator_list = []
+
+    module = ast.Module(body=target_nodes, type_ignores=[])
+    ast.fix_missing_locations(module)
+    code = compile(module, "<generated_delete_rows>", "exec")
+
+    import pandas as pd
+
+    def _tool_error(operation, reason, action):
+        return {"status": "error", "operation": operation, "reason": reason, "action": action}
+
+    ns = {
+        "pd": pd,
+        "Union": Union,
+        "List": List,
+        "Dict": Dict,
+        "global_df_registry": registry,
+        "_tool_error": _tool_error,
+    }
+    exec(code, ns)
+    return ns["delete_rows"]
+
+
+def test_generated_delete_rows_collision_and_numeric_positive(generated_notebook):
+    import pandas as pd
+
+    class _TestRegistry:
+        def __init__(self):
+            self.frames = {}
+            self.paths = {}
+
+        def register_dataframe(self, df, df_id, raw_path=""):
+            self.frames[df_id] = df
+            self.paths[df_id] = raw_path
+            return df_id
+
+        def get_dataframe(self, df_id, load_if_not_exists=False):
+            return self.frames.get(df_id)
+
+        def get_raw_path_from_id(self, df_id):
+            return self.paths.get(df_id)
+
+    registry = _TestRegistry()
+    delete_rows_fn = _compile_generated_delete_rows(generated_notebook["notebook"], registry)
+
+    # 1. Collision case: ["0", 0]
+    original = pd.DataFrame(
+        [[100, 0], [0, 100]],
+        columns=["0", 0],
+        index=["string_column_match", "integer_column_match"],
+    )
+    registry.register_dataframe(original.copy(), "df")
+    res = delete_rows_fn("df", ["`0` >= 20"], inplace=True)
+    assert res == "1 rows deleted successfully."
+    remaining = registry.get_dataframe("df")
+    pd.testing.assert_frame_equal(remaining, original.loc[["integer_column_match"]])
+
+    # 2. Reversed collision case: [0, "0"]
+    reversed_df = pd.DataFrame(
+        [[0, 100], [100, 0]],
+        columns=[0, "0"],
+        index=["string_column_match", "integer_column_match"],
+    )
+    registry.register_dataframe(reversed_df.copy(), "df_rev")
+    res_rev = delete_rows_fn("df_rev", ["`0` >= 20"], inplace=True)
+    assert res_rev == "1 rows deleted successfully."
+    remaining_rev = registry.get_dataframe("df_rev")
+    pd.testing.assert_frame_equal(remaining_rev, reversed_df.loc[["integer_column_match"]])
+
+    # 3. Numeric positive case: [0, "name"]
+    numeric_df = pd.DataFrame(
+        [[10, "alice"], [25, "bob"]],
+        columns=[0, "name"],
+        index=["r1", "r2"],
+    )
+    registry.register_dataframe(numeric_df.copy(), "df_num")
+    res_num = delete_rows_fn("df_num", ["`0` >= 20"], inplace=True)
+    assert res_num == "1 rows deleted successfully."
+    remaining_num = registry.get_dataframe("df_num")
+    pd.testing.assert_frame_equal(remaining_num, numeric_df.loc[["r1"]])
+    assert list(remaining_num.columns) == [0, "name"]
+    assert type(remaining_num.columns[0]) is int

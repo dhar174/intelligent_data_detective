@@ -3404,6 +3404,45 @@ def drop_column(df_id: str, column_name: str) -> str:
     )
     return f"Column dropped successfully. New columns: {new_columns}"
 
+def _build_query_view(df: pd.DataFrame) -> pd.DataFrame:
+    """Construct a query-only DataFrame projection with deterministic bindings.
+
+    Rules:
+    1. Original string labels keep their unchanged names and bindings.
+    2. Non-string labels receive a string compatibility alias (str(col)) only
+       when the alias is unique among candidate aliases and not already owned
+       by an original string column.
+    3. Shadowed or ambiguous non-string columns are excluded from the query
+       namespace only; the stored DataFrame and its schema remain untouched.
+    4. Positional selection (.iloc) ensures competing raw labels never collide.
+    """
+    string_labels = {col for col in df.columns if isinstance(col, str)}
+    alias_counts: dict[str, int] = {}
+    for col in df.columns:
+        if not isinstance(col, str):
+            alias = str(col)
+            alias_counts[alias] = alias_counts.get(alias, 0) + 1
+
+    kept_indices: list[int] = []
+    kept_names: list[str] = []
+    for i, col in enumerate(df.columns):
+        if isinstance(col, str):
+            kept_indices.append(i)
+            kept_names.append(col)
+        else:
+            alias = str(col)
+            if alias not in string_labels and alias_counts.get(alias, 0) == 1:
+                kept_indices.append(i)
+                kept_names.append(alias)
+
+    if not kept_indices:
+        return pd.DataFrame(index=df.index)
+
+    query_df = df.iloc[:, kept_indices].copy(deep=False)
+    query_df.columns = kept_names
+    return query_df
+
+
 @tool("delete_rows")
 @cap_output(max_chars=3000, max_bytes=10_000, max_lines=200, add_footer=True, mode="preserve")
 @handle_tool_errors
@@ -3446,21 +3485,8 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
     query_str = " and ".join(f"({condition})" for condition in query_parts)
     df = global_df_registry.get_dataframe(df_id)
     try:
-        try:
-            rows_to_drop = df.query(query_str).index
-        except pd.errors.UndefinedVariableError:
-            normalized_labels = [str(column) for column in df.columns]
-            has_non_string_labels = any(
-                not isinstance(column, str) for column in df.columns
-            )
-            normalization_is_unique = (
-                len(set(normalized_labels)) == len(normalized_labels)
-            )
-            if not has_non_string_labels or not normalization_is_unique:
-                raise
-
-            query_df = df.rename(columns=str)
-            rows_to_drop = query_df.query(query_str).index
+        query_df = _build_query_view(df)
+        rows_to_drop = query_df.query(query_str).index
     except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
         return _tool_error(
             operation,
