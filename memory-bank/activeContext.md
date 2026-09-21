@@ -426,18 +426,39 @@ This is now the strongest completion baseline:
 ## 2026-09-21 — PR #149: Remaining correctness review items completed
 
 ### Review items addressed & verified
-1. **Task A (CI Provisioning):** Explicitly declared `xhtml2pdf`, `pypdf`, `pymupdf`, `pillow`, and `markdown` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4 without altering the default dependency fallback. Added verification step.
-2. **Task B (Stale Markdown Source Selection):** Discarded stale agent markdown probe (`rr.markdown_report_path`); authoritative draft assembled from `written_sections` (`canonical_source_md = draft`).
-3. **Task C (Distinct Artifact Completion):** Canonicalized paths via `os.path.normcase`; required >= 3 distinct verified figures; detected missing expected figures; verified HTML figure embeds against figures on disk; required exact canonical report formats (`final_report.md`, `final_report.html`, `final_report.pdf`); reconciled `file_results.files` to manifest.
-4. **Task D (Markdown-to-HTML/PDF Fidelity):** Converted markdown via `markdown.markdown(..., extensions=['tables', 'fenced_code'])`; sanitized raw `<script>` tags, inline event handlers, and unsafe URL schemes (`javascript:`, `vbscript:`, `data:` -> `#`); passed `ResourceAccessPolicy` to `pisa.CreatePDF`.
-5. **Task E (Transactional Canonical Publication & Rollback):** Staged in attempt-private directory `._staging_<token>`; pre-validated staged artifacts and embeds; created backups of existing canonical files in `._backup_<token>`; tracked sequential replacements; rolled back and unlinked on failure; retained recovery directories and raised hard `RuntimeError` on rollback failure; reset `rr` report paths to `""` on generation failure.
+1. **Fix A (Strict Artifact Resolution without Filename Guessing):**
+   - Eliminated broad filesystem/basename fallback (`base / cand.name`, `_cand.name.lower() == _bname`, `rglob("*")`).
+   - Enforced strict root containment (`relative_to`) against allowed roots (`_allowed_roots`, `_fw_allowed_roots`).
+   - Rejects outside-root paths, traversal sequences (`../`), and symlink escapes immediately.
+   - Ambiguous matches across candidate bases are rejected immediately.
+   - Document image references resolve relative to `reports_dir` (`_reports_dir / _c`).
+   - Enforced exact canonical report paths (`reports/final_report.md`, `reports/final_report.html`, `reports/final_report.pdf`).
+2. **Fix B (Complete Figure Coverage across Markdown and HTML):**
+   - Replaced threshold matching (`min(3, len(verified))`) with complete expected-set coverage:
+     $\neg U \land |E| \ge 3 \land E \subseteq M \land E \subseteq H \land E \subseteq F$.
+   - Stripped fenced code blocks and inline code from Markdown before extracting embedded image references ($M$).
+   - Parsed sanitized HTML using `HTMLParser` to extract embedded image sources ($H$).
+   - Reconciled manifest strictly against $E$ without decoy substitutions ($F$).
+   - Enforced in both renderer and finalizer independently.
+3. **Fix C (Parser-based HTML Sanitizer):**
+   - Replaced regex sanitizer with `bleach.clean` using explicit tag allowlist, `css_sanitizer`, and custom `_filter_attrs`.
+   - Called `html.unescape` on attributes before protocol checking to neutralize entity-encoded (hex, decimal, mixed-case, control chars, tabs, newlines) and `data:` URIs on `<a>` tags while permitting safe inline images (`data:image/`) and relative paths.
+   - Provisioned `bleach` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4.
+4. **Tool Error Handling Hardening:**
+   - Handled non-string DataFrame column labels in `delete_rows` query evaluations in `intelligentdatadetective_beta_v5.py`, ensuring `tests/unit/test_tool_error_handling.py` passes 100% (7/7).
 
 ### Verification baseline
 - Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved.
 - `prompt_template_validator.py`: 0 errors.
-- `tests/unit/test_patcher_integrity.py`: 27/27 passed.
-- Offline regression suite: 336 passed, 9 skipped, 1 failed (known unrelated #147 `df.query()` integer index).
-- Black & flake8 clean; whitespace diff clean.
-- Pushed to `origin/codex/fix-patcher-anchors-146` (commit `8b12bba`).
+- `tests/unit/test_patcher_integrity.py`: **45/45 passed in 11.28s** (including all 12 regression tests).
+- `test_validate_run.py tests/unit tests/integration -q`: **355 passed, 9 skipped, 0 failed in 12.41s** (100% pass).
+- `test_intelligent_data_detective.py`: **22 passed**.
+- `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
+- `test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py`: **55 passed**.
+- `test_error_handling_framework.py`: **15 passed, 1 failed** (documented pre-existing test).
+- `git diff --check`: 0 errors.
+- Committed as `f9259d6` and pushed to `origin/codex/fix-patcher-anchors-146`.
+- Updated PR #149 description via `gh pr edit 149`.
 <!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
+
 
