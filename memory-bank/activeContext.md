@@ -444,21 +444,22 @@ This is now the strongest completion baseline:
    - Replaced regex sanitizer with `bleach.clean` using explicit tag allowlist, `css_sanitizer`, and custom `_filter_attrs`.
    - Called `html.unescape` on attributes before protocol checking to neutralize entity-encoded (hex, decimal, mixed-case, control chars, tabs, newlines) and `data:` URIs on `<a>` tags while permitting safe inline images (`data:image/`) and relative paths.
    - Provisioned `bleach` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4.
-4. **Tool Error Handling Hardening:**
-   - Handled non-string DataFrame column labels in `delete_rows` query evaluations in `intelligentdatadetective_beta_v5.py`, ensuring `tests/unit/test_tool_error_handling.py` passes 100% (7/7).
+4. **Tool Error Handling Hardening & Collision Safety:**
+   - Implemented native-first query evaluation in `delete_rows()` (`intelligentdatadetective_beta_v5.py`).
+   - Native `df.query(query_str)` executes first, preserving existing string-labeled columns (e.g. `'0'`) even when colliding integer labels (e.g. `0`) exist.
+   - On `pd.errors.UndefinedVariableError`, falls back to stringified query evaluation ONLY when non-string labels exist AND stringified column labels are strictly unique (`len(set(normalized)) == len(normalized)`).
+   - If labels collide or are ambiguous, re-raises `UndefinedVariableError` to cleanly return structured `_tool_error` without mutating DataFrame.
+   - Added comprehensive regression tests in `tests/unit/test_tool_error_handling.py` (`test_delete_rows_preserves_string_column_when_integer_label_collides`) covering inplace/non-inplace, reversed column order, unrelated columns, zero matches, missing columns, and syntax errors.
+   - All tool error handling tests pass 100% (8/8).
 
 ### Verification baseline
 - Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved.
 - `prompt_template_validator.py`: 0 errors.
-- `tests/unit/test_patcher_integrity.py`: **45/45 passed in 11.28s** (including all 12 regression tests).
-- `test_validate_run.py tests/unit tests/integration -q`: **355 passed, 9 skipped, 0 failed in 12.41s** (100% pass).
-- `test_intelligent_data_detective.py`: **22 passed**.
+- `tests/unit/test_tool_error_handling.py`: **8/8 passed**.
+- `tests/unit/test_patcher_integrity.py`: **45/45 passed**.
+- `test_validate_run.py tests/unit tests/integration -q`: **356 passed, 9 skipped, 0 failed in 12.45s** (100% pass).
 - `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
-- `test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py`: **55 passed**.
-- `test_error_handling_framework.py`: **15 passed, 1 failed** (documented pre-existing test).
 - `git diff --check`: 0 errors.
-- Committed as `f9259d6` and pushed to `origin/codex/fix-patcher-anchors-146`.
-- Updated PR #149 description via `gh pr edit 149`.
 <!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
 
 

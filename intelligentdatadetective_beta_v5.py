@@ -3445,9 +3445,22 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
         )
     query_str = " and ".join(f"({condition})" for condition in query_parts)
     df = global_df_registry.get_dataframe(df_id)
-    query_df = df.rename(columns=str) if any(not isinstance(c, str) for c in df.columns) else df
     try:
-        rows_to_drop = query_df.query(query_str).index
+        try:
+            rows_to_drop = df.query(query_str).index
+        except pd.errors.UndefinedVariableError:
+            normalized_labels = [str(column) for column in df.columns]
+            has_non_string_labels = any(
+                not isinstance(column, str) for column in df.columns
+            )
+            normalization_is_unique = (
+                len(set(normalized_labels)) == len(normalized_labels)
+            )
+            if not has_non_string_labels or not normalization_is_unique:
+                raise
+
+            query_df = df.rename(columns=str)
+            rows_to_drop = query_df.query(query_str).index
     except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
         return _tool_error(
             operation,
