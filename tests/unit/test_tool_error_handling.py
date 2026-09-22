@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import pandas as pd
+import pytest
 
 
 class Registry:
@@ -11,8 +12,10 @@ class Registry:
         self.frames = {}
         self.paths = {}
         self.raise_on_get = False
+        self.register_count = 0
 
     def register_dataframe(self, df, df_id, raw_path=""):
+        self.register_count += 1
         self.frames[df_id] = df
         self.paths[df_id] = raw_path
         return df_id
@@ -218,3 +221,199 @@ def test_drop_and_delete_rows_success_paths_and_no_match():
     no_match = tools["delete_rows"]("df", ["`0` > 999"])
     assert no_match == "No rows match the provided condition(s): ['`0` > 999']"
     assert registry.get_dataframe("df")[0].tolist() == [10]
+
+
+@pytest.mark.parametrize("reverse_columns", [False, True])
+@pytest.mark.parametrize("inplace", [False, True])
+def test_delete_rows_string_binding_is_order_independent(
+    reverse_columns, inplace
+):
+    original = pd.DataFrame(
+        [[100, 0], [0, 100]],
+        columns=["0", 0],
+        index=["string_column_match", "integer_column_match"],
+    )
+    if reverse_columns:
+        original = original.iloc[:, [1, 0]].copy()
+
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    result = tools["delete_rows"]("df", ["`0` >= 20"], inplace=inplace)
+
+    if inplace:
+        assert result == "1 rows deleted successfully."
+        pd.testing.assert_frame_equal(
+            registry.get_dataframe("df"),
+            before.loc[["integer_column_match"]],
+        )
+        assert registry.register_count == init_registrations + 1
+    else:
+        assert result == before.loc[["string_column_match"]].to_json()
+        pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+        assert registry.register_count == init_registrations
+
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_numeric_compatibility_preserves_integer_label():
+    original = pd.DataFrame(
+        [[10, "alice"], [25, "bob"]],
+        columns=[0, "name"],
+        index=["r1", "r2"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    # Preview does not mutate registry or frame
+    preview = tools["delete_rows"]("df", ["`0` >= 20"], inplace=False)
+    assert preview == before.loc[["r2"]].to_json()
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+
+    # Inplace deletion removes matched row and preserves integer 0 label type
+    result = tools["delete_rows"]("df", ["`0` >= 20"], inplace=True)
+    assert result == "1 rows deleted successfully."
+    assert registry.register_count == init_registrations + 1
+    stored = registry.get_dataframe("df")
+    pd.testing.assert_frame_equal(stored, before.loc[["r1"]])
+    assert list(stored.columns) == [0, "name"]
+    assert type(stored.columns[0]) is int
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_unrelated_query_works_with_colliding_columns():
+    original = pd.DataFrame(
+        [[100, 0, 50], [0, 100, 10]],
+        columns=["0", 0, "value"],
+        index=["row_keep", "row_drop"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    result = tools["delete_rows"]("df", ["value < 20"], inplace=True)
+    assert result == "1 rows deleted successfully."
+    assert registry.register_count == init_registrations + 1
+    stored = registry.get_dataframe("df")
+    pd.testing.assert_frame_equal(stored, before.loc[["row_keep"]])
+    assert list(stored.columns) == ["0", 0, "value"]
+    assert [type(c) for c in stored.columns] == [str, int, str]
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_string_only_ordinary_and_spaced_columns():
+    original = pd.DataFrame(
+        [["active", 30], ["inactive", 15], ["pending", 50]],
+        columns=["account status", "score"],
+        index=["user1", "user2", "user3"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    preview = tools["delete_rows"](
+        "df", ["`account status` == 'inactive' and score < 20"], inplace=False
+    )
+    assert preview == before.loc[["user2"]].to_json()
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+
+    result = tools["delete_rows"](
+        "df", ["`account status` == 'inactive' and score < 20"], inplace=True
+    )
+    assert result == "1 rows deleted successfully."
+    assert registry.register_count == init_registrations + 1
+    stored = registry.get_dataframe("df")
+    pd.testing.assert_frame_equal(stored, before.loc[["user1", "user3"]])
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_no_match_collision_precedence():
+    # String "0" has values [0, 0]; integer 0 has values [100, 100].
+    # Query `0` >= 20 matches 0 rows in string "0", but matches 2 rows in integer 0.
+    # String column precedence requires no-match, not reinterpretation or deletion.
+    original = pd.DataFrame(
+        [[0, 100], [0, 100]],
+        columns=["0", 0],
+        index=["row_a", "row_b"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    result = tools["delete_rows"]("df", ["`0` >= 20"], inplace=True)
+    assert result == "No rows match the provided condition(s): ['`0` >= 20']"
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_missing_column_and_malformed_queries():
+    original = pd.DataFrame(
+        [[100, 0], [0, 100]],
+        columns=["0", 0],
+        index=["r1", "r2"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    # Missing column query returns structured error without mutating
+    missing_result = tools["delete_rows"]("df", ["nonexistent_col > 1"])
+    _assert_error(missing_result, "delete_rows")
+    assert "UndefinedVariableError" in missing_result["reason"]
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+
+    # Malformed query syntax returns structured error without mutating
+    syntax_result = tools["delete_rows"]("df", ["> > >"])
+    _assert_error(syntax_result, "delete_rows")
+    assert "SyntaxError" in syntax_result["reason"]
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+    pd.testing.assert_frame_equal(original, before)
+
+
+def test_delete_rows_ambiguous_compatibility_alias():
+    # Two integer columns with label 0 -> alias "0" is ambiguous.
+    # Neither integer column should win silently; unrelated string column remains usable.
+    original = pd.DataFrame(
+        [[10, 20, 5], [30, 40, 50]],
+        columns=[0, 0, "valid_col"],
+        index=["r1", "r2"],
+    )
+    before = original.copy(deep=True)
+    registry = Registry()
+    registry.register_dataframe(original, "df")
+    init_registrations = registry.register_count
+    tools = _load_tools(registry)
+
+    # Querying the ambiguous alias "0" returns structured error without mutating
+    ambiguous_result = tools["delete_rows"]("df", ["`0` >= 20"])
+    _assert_error(ambiguous_result, "delete_rows")
+    assert "UndefinedVariableError" in ambiguous_result["reason"]
+    assert registry.register_count == init_registrations
+    pd.testing.assert_frame_equal(registry.get_dataframe("df"), before)
+
+    # Unrelated valid string column remains queryable and mutable
+    valid_result = tools["delete_rows"]("df", ["valid_col > 20"], inplace=True)
+    assert valid_result == "1 rows deleted successfully."
+    assert registry.register_count == init_registrations + 1
+    stored = registry.get_dataframe("df")
+    pd.testing.assert_frame_equal(stored, before.loc[["r1"]])
+    pd.testing.assert_frame_equal(original, before)

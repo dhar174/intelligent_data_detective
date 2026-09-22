@@ -421,3 +421,51 @@ This is now the strongest completion baseline:
 2. Treat future prompt/report polish as follow-up work that must keep both validators green and keep the log marker counts at zero.
 3. Continue making notebook changes through `_patch_notebook.py`, regenerating `IntelligentDataDetective_beta_v5_patched.ipynb` before any proof run.
 <!-- session-curated:2026-05-04-w14-final-proof:end -->
+
+<!-- session-curated:2026-09-21-pr149-correctness-fixes:start -->
+## 2026-09-21 — PR #149: Remaining correctness review items completed
+
+### Review items addressed & verified
+1. **Fix A (Strict Artifact Resolution without Filename Guessing):**
+   - Eliminated broad filesystem/basename fallback (`base / cand.name`, `_cand.name.lower() == _bname`, `rglob("*")`).
+   - Enforced strict root containment (`relative_to`) against allowed roots (`_allowed_roots`, `_fw_allowed_roots`).
+   - Rejects outside-root paths, traversal sequences (`../`), and symlink escapes immediately.
+   - Ambiguous matches across candidate bases are rejected immediately.
+   - Document image references resolve relative to `reports_dir` (`_reports_dir / _c`).
+   - Enforced exact canonical report paths (`reports/final_report.md`, `reports/final_report.html`, `reports/final_report.pdf`).
+2. **Fix B (Complete Figure Coverage across Markdown and HTML):**
+   - Replaced threshold matching (`min(3, len(verified))`) with complete expected-set coverage:
+     $\neg U \land |E| \ge 3 \land E \subseteq M \land E \subseteq H \land E \subseteq F$.
+   - Stripped fenced code blocks and inline code from Markdown before extracting embedded image references ($M$).
+   - Parsed sanitized HTML using `HTMLParser` to extract embedded image sources ($H$).
+   - Reconciled manifest strictly against $E$ without decoy substitutions ($F$).
+   - Enforced in both renderer and finalizer independently.
+3. **Fix C (Parser-based HTML Sanitizer):**
+   - Replaced regex sanitizer with `bleach.clean` using explicit tag allowlist, `css_sanitizer`, and custom `_filter_attrs`.
+   - Called `html.unescape` on attributes before protocol checking to neutralize entity-encoded (hex, decimal, mixed-case, control chars, tabs, newlines) and `data:` URIs on `<a>` tags while permitting safe inline images (`data:image/`) and relative paths.
+   - Provisioned `bleach` in `.github/workflows/copilot-setup-steps.yml` and notebook setup cell 4.
+4. **Deterministic Query Binding Before Evaluation (`delete_rows`):**
+   - Superseded the exception-only/native-first fallback with deterministic query-only DataFrame projection (`_build_query_view(df)`).
+   - In pandas 3.0.6, `clean_column_name` stringifies all column labels into resolver dict keys, causing integer `0` to overwrite string `'0'` when `0` is visited second, bypassing native-first collision fallbacks and deleting the wrong row.
+   - The query view projection audits original string columns and non-string candidates before evaluation:
+     1. Unchanged original string columns are preserved under their original names.
+     2. Non-string scalar columns receive a string compatibility alias (`str(col)`) only if the alias is unique among candidates and not already owned by an original string column.
+     3. Shadowed and ambiguous non-string columns are excluded from the query namespace only; original DataFrame schema, types, dtypes, and order remain completely untouched.
+     4. The query view is constructed using positional column selection (`.iloc[:, kept_indices].copy(deep=False)`) so competing raw labels never collide in pandas resolver.
+   - Synchronized both production representations: module export (`intelligentdatadetective_beta_v5.py`) and independently defined notebook cell 32 (`_patch_notebook.py` -> `IntelligentDataDetective_beta_v5_patched.ipynb`).
+   - Split monolithic test in `tests/unit/test_tool_error_handling.py` into focused, parameterized regression cases covering order independence, numeric compatibility preservation, unrelated column queries, zero matches, missing columns, syntax errors, and ambiguous aliases.
+   - Added AST-compiled execution parity test in `tests/unit/test_patcher_integrity.py` (`test_generated_delete_rows_collision_and_numeric_positive`) exercising the real notebook operation without executing installation cells.
+   - All tool error handling tests pass (17/17) across pandas 2.2.1, pandas 2.2.3, and pandas 3.0.6 environments.
+
+### Verification baseline
+- Notebook regenerated via `python _patch_notebook.py`: exactly 99 cells preserved; byte-for-byte deterministic.
+- `prompt_template_validator.py`: 0 errors.
+- `tests/unit/test_tool_error_handling.py`: **17/17 passed** (pandas 2.2.1, 2.2.3, and 3.0.6).
+- `tests/unit/test_patcher_integrity.py`: **46/46 passed**.
+- `test_validate_run.py tests/unit tests/integration -q`: **366 passed, 9 skipped, 0 failed** (100% pass).
+- `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
+- `git diff --check`: 0 errors.
+- Hosted GitHub Actions validation (Run `35646531086`, Job `106488238896`): **passed green in 1m55s** (test-merge `9c69652` on Python 3.12.14 / `pandas-3.0.6`, 366 passed, 9 skipped).
+<!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
+
+
