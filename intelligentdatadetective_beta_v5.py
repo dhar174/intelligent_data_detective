@@ -13584,7 +13584,7 @@ These three flags can be used together and often are when an agent needs help fr
 """
                 reply_ctx_str = reply_ctx_str.format(this_last_agent_id=this_last_agent_id,this_last_agent_idb=this_last_agent_id, this_last_agent_reply_msg=this_last_agent_reply_msg, this_nap=this_nap, didcomplete=didcomplete, next_routed_agent=goto, nametwo=this_last_agent_id, namethree=this_last_agent_id, nextroutedagentwo=this_last_agent_id)
                 final_base_list.append(reply_ctx_str)
-                agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))
+                agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}", name=this_last_agent_id))
 
             final_base_str = "##Message Request from agent worker ".join(final_base_list)
             second_supervsr_prompt_str = """
@@ -13704,7 +13704,7 @@ Write each message and corresponding decisions directly into a SendAgentMessage 
                 for agent_msg in agent_rq_msgs:
                     if agent_msg.name == _obj.recipient:
                         # FIX: Convert ToolMessage to HumanMessage to avoid "No tool call found" error
-                        if isinstance(agent_msg, ToolMessage):
+                        if isinstance(agent_msg, (ToolMessage, AIMessage)):
                             content_str = str(agent_msg.content)
                             corresponding_agent_msg = HumanMessage(
                                 content=f"[Agent Tool Output]: {content_str}",
@@ -13719,7 +13719,7 @@ Write each message and corresponding decisions directly into a SendAgentMessage 
                             for agent_msg in agent_rq_msgs:
                                 if agent_msg.name == _obj.recipient:
                                     # FIX: Convert ToolMessage to HumanMessage to avoid "No tool call found" error
-                                    if isinstance(agent_msg, ToolMessage):
+                                    if isinstance(agent_msg, (ToolMessage, AIMessage)):
                                         content_str = str(agent_msg.content)
                                         corresponding_agent_msg = HumanMessage(
                                             content=f"[Agent Tool Output]: {content_str}",
