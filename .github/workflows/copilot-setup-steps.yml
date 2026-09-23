@@ -2,6 +2,9 @@ name: copilot-setup-steps
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -34,11 +37,14 @@ jobs:
             "IntelligentDataDetective_beta_v5.ipynb"
             "IntelligentDataDetective_beta_v5_patched.ipynb"
             "pytest.ini"
+            "prompt_template_validator.py"
             "test_intelligent_data_detective.py"
             "test_error_handling_framework.py"
             "test_memory_categorization.py"
             "test_memory_integration.py"
             "test_memory_lifecycle.py"
+            "test_prompt_formatting.py"
+            "test_prompt_template_fixes.py"
             "test_validate_run.py"
             "validate_run.py"
             "validate_artifact_quality.py"
@@ -103,6 +109,17 @@ jobs:
               typing_extensions
           fi
           pip install pytest black flake8
+          pip install \
+            xhtml2pdf \
+            pypdf \
+            pymupdf \
+            pillow \
+            markdown \
+            bleach
+
+      - name: Verify report and validation dependencies
+        run: |
+          python -c "import xhtml2pdf, pypdf, fitz, markdown, bleach; from PIL import Image; print('All validation and report dependencies imported successfully')"
 
       - name: Run no-key unit and integration tests
         run: python -m pytest test_validate_run.py tests/unit tests/integration -q
@@ -114,6 +131,13 @@ jobs:
             test_memory_categorization.py \
             test_memory_integration.py \
             test_memory_lifecycle.py \
+            -v
+
+      - name: Run prompt template regression tests
+        run: |
+          python -m pytest \
+            test_prompt_formatting.py \
+            test_prompt_template_fixes.py \
             -v
 
       - name: Run error handling regression tests
@@ -130,11 +154,19 @@ jobs:
 
       - name: Check formatting
         run: |
-          black --check test_intelligent_data_detective.py test_error_handling_framework.py
+          black --check \
+            test_intelligent_data_detective.py \
+            test_error_handling_framework.py \
+            test_prompt_formatting.py \
+            test_prompt_template_fixes.py
 
-      - name: Run flake8 on root regression test file
+      - name: Run flake8 on root regression test files
         run: |
-          flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
+          flake8 \
+            test_intelligent_data_detective.py \
+            test_prompt_formatting.py \
+            test_prompt_template_fixes.py \
+            --max-line-length=88 --extend-ignore=E203,E501
 
       - name: Lint validation scripts
         run: >
@@ -152,6 +184,7 @@ jobs:
             echo "## CI workflow notes"
             echo "- No-key validator/unit/integration coverage runs via \`python -m pytest test_validate_run.py tests/unit tests/integration -q\`."
             echo "- Root-level regression suites are invoked explicitly because they are outside \`tests/\`."
+            echo "- Prompt template formatting and regression suites run via \`python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v\`."
             echo "- \`test_error_handling_framework.py\` runs as a required step except for the one known edge-case signature test, which is isolated in its own non-blocking step."
             echo "- Trajectory tests require \`OPENAI_API_KEY\` and are not part of this default CI workflow."
           } >> "$GITHUB_STEP_SUMMARY"

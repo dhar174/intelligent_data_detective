@@ -8,6 +8,20 @@ Saves patched notebook as IntelligentDataDetective_beta_v5_patched.ipynb
 
 import json
 import copy
+import ast
+import re
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 INPUT_NB = "IntelligentDataDetective_beta_v5.ipynb"
 OUTPUT_NB = "IntelligentDataDetective_beta_v5_patched.ipynb"
@@ -121,9 +135,306 @@ CELL81_NEW = (
     "        assert report_results is not None and isinstance(report_results, ReportResults)"
 )
 
+MEMORY_POLICY_MARKER = "MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()\n"
+
+_RUNTIME_PROMPT_FIELDS = frozenset(
+    {
+        "user_prompt",
+        "agents",
+        "output_schema_name",
+        "memories",
+        "plan_summary",
+        "plan_steps",
+        "past_steps",
+        "completed_tasks",
+        "latest_progress",
+        "to_do_list",
+        "leftover_to_do_list",
+        "completed_agents",
+        "remaining_agents",
+        "completed_steps",
+        "members",
+        "last_agent_id",
+        "last_message",
+        "reply_msg_to_supervisor",
+        "finished_this_task",
+        "expect_reply",
+        "viz_revise_count",
+        "messages",
+    }
+)
+
+
+def _fix_runtime_prompt_braces(cells):
+    """Fix escaped LangChain fields only inside ChatPromptTemplate payloads.
+
+    The AST limits the rewrite to actual ``ChatPromptTemplate.from_messages``
+    payloads and ordinary string literals within them. Python f-strings,
+    chained ``.partial(...)`` arguments, and unrelated literal-brace expressions
+    are preserved untouched.
+    """
+
+    field_pattern = re.compile(
+        r"\{\{(" + "|".join(sorted(_RUNTIME_PROMPT_FIELDS)) + r")\}\}"
+    )
+    changed = 0
+
+    class _PromptLiteralCollector(ast.NodeVisitor):
+        def __init__(self):
+            self.nodes = []
+
+        def visit_JoinedStr(self, node):
+            # Skip Python f-strings and expressions within them
+            return
+
+        def visit_Constant(self, node):
+            if isinstance(node.value, str):
+                self.nodes.append(node)
+
+    for cell in cells:
+        if cell.get("cell_type") != "code":
+            continue
+        source = join_source(cell["source"])
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        calls = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "from_messages"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "ChatPromptTemplate"
+            ):
+                calls.append(node)
+        if not calls:
+            continue
+
+        lines = source.splitlines(keepends=True)
+        line_char_starts = [0]
+        for line in lines[:-1]:
+            line_char_starts.append(line_char_starts[-1] + len(line))
+
+        edits = {}
+        for call in calls:
+            payload_targets = list(call.args)
+            for kw in call.keywords:
+                if kw.arg == "messages":
+                    payload_targets.append(kw.value)
+            collector = _PromptLiteralCollector()
+            for target in payload_targets:
+                collector.visit(target)
+            for literal in collector.nodes:
+                segment = ast.get_source_segment(source, literal)
+                if not segment:
+                    continue
+                fixed = field_pattern.sub(r"{\1}", segment)
+                if fixed != segment:
+                    # Convert UTF-8 byte offsets (lineno is 1-indexed, col_offset is 0-indexed byte offset) to character indices
+                    line_bytes = lines[literal.lineno - 1].encode("utf-8")
+                    start = line_char_starts[literal.lineno - 1] + len(
+                        line_bytes[:literal.col_offset].decode("utf-8")
+                    )
+                    end_line_bytes = lines[literal.end_lineno - 1].encode("utf-8")
+                    end = line_char_starts[literal.end_lineno - 1] + len(
+                        end_line_bytes[:literal.end_col_offset].decode("utf-8")
+                    )
+                    edits[(start, end)] = fixed
+
+        for (start, end), fixed in sorted(edits.items(), reverse=True):
+            source = source[:start] + fixed + source[end:]
+        changed += bool(edits)
+        if source != join_source(cell["source"]):
+            cell["source"] = source
+            cell["outputs"] = []
+            cell["execution_count"] = None
+    return changed
+
+MEMORY_POLICY_HELPERS = """MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
+KNOWN_MEMORY_KINDS = (
+    "conversation", "analysis", "cleaning",
+    "visualization", "insights", "errors"
+)
+
+# Multiply the configured retention cap by this factor for maintenance
+# operations (prune, report, importance recalculation) so that even an
+# over-capacity namespace can be fully observed.
+MAINTENANCE_SEARCH_FACTOR = 4
+
+def _configured_memory_search_limit(kinds: Optional[List[str]] = None, *, maintenance: bool = False) -> int:
+    selected_kinds = kinds or list(KNOWN_MEMORY_KINDS)
+    base = max(
+        1,
+        sum(
+            max(
+                1,
+                MEMORY_POLICIES.get(kind, MemoryPolicy()).max_items,
+                MEMORY_CONFIG["kinds"].get(kind, {}).get("limit", MEMORY_CONFIG["fallback_limit"])
+            )
+            for kind in selected_kinds
+        ),
+    )
+    return base * MAINTENANCE_SEARCH_FACTOR if maintenance else base
+
+def _group_memories_by_kind(items: List[Any]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+
+    for item in items:
+        item_value = item.value if hasattr(item, "value") else item
+        if not isinstance(item_value, dict):
+            continue
+
+        kind = item_value.get("kind")
+        if not kind and hasattr(item, "namespace") and len(item.namespace) >= 2:
+            kind = item.namespace[1]
+
+        if not kind:
+            continue
+
+        if "id" not in item_value and hasattr(item, "key"):
+            item_value = item_value.copy()
+            item_value["id"] = item.key
+
+        grouped.setdefault(kind, []).append(item_value)
+
+    return grouped
+
+def _get_all_memories_grouped_by_kind(
+    store: Union[BaseStore,InMemoryStore], limit: Optional[int] = None
+) -> Dict[str, List[Dict[str, Any]]]:
+    search_limit = limit or _configured_memory_search_limit(maintenance=True)
+    all_items = store.search(("memories",), query="", limit=search_limit)
+    grouped = _group_memories_by_kind(all_items)
+    if grouped:
+        return grouped
+
+    fallback_grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for kind in KNOWN_MEMORY_KINDS:
+        namespace = ("memories", kind)
+        items = store.search(
+            namespace,
+            query="",
+            limit=_configured_memory_search_limit([kind], maintenance=True),
+        )
+        per_kind_grouped = _group_memories_by_kind(items)
+        if per_kind_grouped.get(kind):
+            fallback_grouped[kind] = per_kind_grouped[kind]
+
+    if fallback_grouped:
+        logging.warning(
+            "Falling back to per-kind memory searches because parent-namespace search returned no results."
+        )
+
+    return fallback_grouped
+"""
+
+PRUNE_FETCH_OLD = """            for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
+                namespace = ("memories", kind)
+                policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+
+                try:
+                    # Get all items in namespace
+                    items = self.store.search(namespace, query="", limit=10000)  # Large limit to get all
+"""
+
+PRUNE_FETCH_NEW = """            items_by_kind = _get_all_memories_grouped_by_kind(self.store)
+            if not items_by_kind:
+                return report
+
+            for kind in KNOWN_MEMORY_KINDS:
+                policy = MEMORY_POLICIES.get(kind, MemoryPolicy())
+                items = items_by_kind.get(kind, [])
+                if not items:
+                    continue
+
+                try:
+"""
+
+REPORT_FETCH_OLD = """        # Check each kind against its policy
+        for kind in ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]:
+            try:
+                namespace = ("memories", kind)
+                items = store.search(namespace, query="", limit=10000)
+"""
+
+REPORT_FETCH_NEW = """        items_by_kind = _get_all_memories_grouped_by_kind(store)
+
+        # Check each kind against its policy
+        for kind in KNOWN_MEMORY_KINDS:
+            try:
+                items = items_by_kind.get(kind, [])
+"""
+
+RECALC_FETCH_OLD = """        kinds_to_process = kinds or ["conversation", "analysis", "cleaning", "visualization", "insights", "errors"]
+
+        total_updated = 0
+        for kind in kinds_to_process:
+            try:
+                namespace = ("memories", kind)
+                items = store.search(namespace, query="", limit=10000)
+"""
+
+RECALC_FETCH_NEW = """        kinds_to_process = kinds or list(KNOWN_MEMORY_KINDS)
+
+        if kinds:
+            items_by_kind = {}
+            for kind in kinds_to_process:
+                namespace = ("memories", kind)
+                items_by_kind[kind] = _group_memories_by_kind(
+                    store.search(
+                        namespace,
+                        query="",
+                        limit=_configured_memory_search_limit([kind], maintenance=True),
+                    )
+                ).get(kind, [])
+        else:
+            items_by_kind = _get_all_memories_grouped_by_kind(store)
+
+        total_updated = 0
+        for kind in kinds_to_process:
+            try:
+                items = items_by_kind.get(kind, [])
+"""
+
 
 def join_source(src):
     return "".join(src) if isinstance(src, list) else src
+
+
+class RequiredPatchError(RuntimeError):
+    """Raised when a production-critical notebook transformation cannot apply."""
+
+
+def replace_required(source, old, new, *, patch_id, count=1):
+    """Replace an exact required anchor or abort notebook generation."""
+    occurrences = source.count(old)
+    if occurrences != count:
+        raise RequiredPatchError(
+            f"{patch_id}: required anchor count was {occurrences}; expected {count}"
+        )
+    return source.replace(old, new, count)
+
+
+def replace_required_regex(source, pattern, replacement, *, patch_id):
+    """Replace one required regex-delimited block or abort generation."""
+    flags = re.MULTILINE | re.DOTALL
+    matches = list(re.finditer(pattern, source, flags=flags))
+    if len(matches) != 1:
+        raise RequiredPatchError(
+            f"{patch_id}: required structural anchor count was {len(matches)}; expected 1"
+        )
+    return re.sub(pattern, replacement, source, count=1, flags=flags)
+
+
+def assert_patch_present(source, marker, *, patch_id):
+    """Verify that a required generated-code marker exists exactly once."""
+    occurrences = source.count(marker)
+    if occurrences != 1:
+        raise RequiredPatchError(
+            f"{patch_id}: generated marker count was {occurrences}; expected 1"
+        )
 
 
 def main():
@@ -132,6 +443,26 @@ def main():
 
     cells = nb["cells"]
     print(f"Loaded notebook with {len(cells)} cells")
+
+    prompt_brace_fixes = _fix_runtime_prompt_braces(cells)
+    print(
+        f"✅ Runtime ChatPromptTemplate brace pass: "
+        f"{prompt_brace_fixes} cell(s) updated"
+    )
+
+    # --- Patch cell idx 4 (dependency setup) ---
+    c4 = cells[4]
+    src4 = join_source(c4["source"])
+    if "!pip install -U  langmem" in src4 and "bleach" not in src4:
+        c4["source"] = src4.replace(
+            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib",
+            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown bleach joblib",
+            1,
+        )
+        if c4["cell_type"] == "code":
+            c4["outputs"] = []
+            c4["execution_count"] = None
+        print("✅ Cell idx 4: added pypdf pymupdf pillow markdown bleach to notebook dependencies")
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]
@@ -214,6 +545,29 @@ def main():
         print("✅ Cell idx 81: fixed final_report → report_results")
     else:
         print("⚠️  Cell idx 81: 'final_report' key not found - skipping")
+
+    # --- Patch memory lifecycle helpers in the notebook cell ---
+    for i, cell in enumerate(cells):
+        src = join_source(cell["source"])
+        if "class MemoryPolicyEngine:" not in src or "def memory_policy_report(" not in src:
+            continue
+
+        new_src = src
+        if "KNOWN_MEMORY_KINDS = (" not in new_src:
+            new_src = new_src.replace(MEMORY_POLICY_MARKER, MEMORY_POLICY_HELPERS)
+        new_src = new_src.replace(PRUNE_FETCH_OLD, PRUNE_FETCH_NEW)
+        new_src = new_src.replace(REPORT_FETCH_OLD, REPORT_FETCH_NEW)
+        new_src = new_src.replace(RECALC_FETCH_OLD, RECALC_FETCH_NEW)
+
+        if new_src != src:
+            cell["source"] = new_src
+            if cell["cell_type"] == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            print(f"✅ Patched memory lifecycle cell at index {i}")
+        else:
+            print(f"ℹ️  Memory lifecycle cell at index {i} already patched")
+        break
 
     # --- Patch cell idx 7: fix _is_colab() false-positive on Windows ---
     # On this machine C:\content exists (old Colab artifact), causing _is_colab() to return True.
@@ -2283,7 +2637,7 @@ def main():
             sv_stop_patched = True
         else:
             print(
-                f"⚠️  Cell idx {idx}: P1-B stop removal — pattern ',stop=[\"\\\\r\\\\r\\\\n\"]' not found"
+                f"ℹ️  Cell idx {idx}: P1-B stop sequence already absent; no patch needed"
             )
             sv_stop_patched = True  # not a blocker; pattern may not be present
         break
@@ -4793,11 +5147,12 @@ def main():
 
     # --- Fix AP-1: increase report_orchestrator recursion_limit to 80 ---
     # cap=40 is not enough for the report_orchestrator subgraph (ro_node + dispatch + section_workers + join)
-    FIXAP1_GUARD = "# cap=160 report_orchestrator (AZ)"
+    FIXAP1_GUARD = "# cap=160 report_orchestrator"
     fixap1_old = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
     fixap1_new = "    cfg = {'configurable': _outer_ro.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_orchestrator (AZ)"
-    fixap1_patched = False
-    for idx, cell in enumerate(cells):
+    fixap1_patched = True
+    print("ℹ️  Fix AP-1 retired: Fix W3 emits report_orchestrator recursion_limit=160")
+    for idx, cell in enumerate(()):
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -4824,7 +5179,7 @@ def main():
         print("⚠️  Fix AP-1: report_orchestrator RL pattern not found")
 
     # --- Fix AP-2: increase report_packager recursion_limit to 80 ---
-    FIXAP2_GUARD = "# cap=160 report_packager (AZ)"
+    FIXAP2_GUARD = "# cap=160 report_packager"
     fixap2_old = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 40}  # cap=40 isolated (Fix AK-1)"
     fixap2_new = "    cfg = {'configurable': _outer_rp.get('configurable', {}), 'recursion_limit': 160}  # cap=160 report_packager (AZ)"
     fixap2_patched = False
@@ -5694,7 +6049,7 @@ def main():
             fixX3rg_patched = True
         else:
             print(
-                f"W  Fix X3-rg: unique report_orchestrator anchor not found in cell {idx}, trying fallback"
+                f"ℹ️  Fix X3-rg: primary form absent in cell {idx}; using verified function-scope fallback"
             )
             # Fallback: find report_orchestrator function scope and patch within it
             import re as _rex3rg
@@ -8937,6 +9292,11 @@ def main():
     # report agents. These patches remove the deterministic report-content
     # success path, add no-bypass state markers, and require report agent
     # invocation before final completion.
+    print(
+        "ℹ️  Retired superseded report patches: "
+        "W11-S1/RO/SW/RP/RTW, W11B-S1/RO/SW/RP, W13-RO/W13B-RO, "
+        "W13T-NODES, W13X, W14B, W14F; W14J enforces the active invariants"
+    )
 
     # ---- W11-S1: add report agent-authenticity fields to State ----
     _W11_STATE_GUARD = "# W11-S1: report agent-authenticity fields"
@@ -8951,7 +9311,7 @@ def main():
         "    report_content_source: Optional[str]\n"
         "    report_generation_trace: Annotated[List[str], operator.add]\n"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: these fields have no live consumer.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9035,7 +9395,7 @@ def main():
         "    except Exception:\n"
         "        pass\n"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: Fix W3 + W13C-G own this path.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9078,7 +9438,7 @@ def main():
         "    except Exception:\n"
         "        pass\n"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: W13H/J/L/V2 own section workers.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9235,7 +9595,7 @@ def main():
         "    except Exception:\n"
         "        pass\n"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: W14J owns the required renderer.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9297,7 +9657,7 @@ def main():
     )
     _W11_RTW_LOG_OLD = '        _pl_logger.info("STATE route_to_writer report_done=%s report_ready=%s sections=%d/%d chars=%d viz=%d/%d already_wrote=%s", report_done, report_ready, len(written_sections), report_outline_secs_count, written_chars, len(viz_ids), required_viz_count, already_wrote)\n'
     _W11_RTW_LOG_NEW = '        _pl_logger.info("STATE route_to_writer report_done=%s report_ready=%s agent_ready=%s section_agent_count=%d/%d content_source=%s sections=%d/%d chars=%d viz=%d/%d already_wrote=%s", report_done, report_ready, agent_ready, section_agent_count, required_section_count, state.get("report_content_source"), len(written_sections), report_outline_secs_count, written_chars, len(viz_ids), required_viz_count, already_wrote)\n'
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: depended on unwritten state fields.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9322,7 +9682,7 @@ def main():
 
     # ---- W11B: robust cleanup for anchors changed by older patch waves ----
     _W11B_STATE_GUARD = "# W11B-S1: report agent-authenticity fields"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired with W11-S1.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9355,7 +9715,7 @@ def main():
         break
 
     _W11B_RO_GUARD = "# W11B-RO: return marks report_orchestrator agent output"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: no live marker consumer.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9383,7 +9743,7 @@ def main():
         break
 
     _W11B_SW_GUARD = "# W11B-SW: deterministic section prose bypass removed"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired with W11-SW.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9482,7 +9842,7 @@ def main():
     _W11B_RP_GUARD = (
         "# W11B-RP: deterministic renderer success requires packager agent marker"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired with W11-RP.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9628,7 +9988,7 @@ def main():
 
     # --- W13-RO: report_orchestrator structured final-hop on nested agent loop ---
     _W13_RO_GUARD = "# W13-RO: report_orchestrator final-hop structured outline"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W13C-G.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -9693,7 +10053,7 @@ def main():
 
     # --- W13B-RO: avoid invalid OpenAI response_format schema for ReportOutline inheritance ---
     _W13B_RO_GUARD = "# W13B-RO: parse LLM JSON final-hop instead of response_format"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W13C-G.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -11033,10 +11393,9 @@ def main():
         )
         if old_viz_invoke in src:
             src = src.replace(old_viz_invoke, new_viz_invoke, 1)
-        else:
-            print(
-                f"⚠️  W13R: viz_evaluator invoke-state anchor not found in cell {idx}"
-            )
+        # The Cell 32 tool layer has no viz_evaluator_node.  The live invoke
+        # state is patched in Cell 57 below; the former Cell 32 attempt was
+        # misdirected optional telemetry and is intentionally retired.
 
         cell["source"] = src
         cell["outputs"] = []
@@ -11074,8 +11433,8 @@ def main():
         )
         if old_count in src:
             src = src.replace(old_count, new_count, 1)
-        else:
-            print(f"⚠️  W13R: viz_evaluator count-log anchor not found in cell {idx}")
+        # Count-log wording is diagnostic only and has drifted across W14H;
+        # do not make production generation depend on its exact text.
 
         old_invoke_state = (
             '                "viz_tasks": tasks,\n'
@@ -11463,7 +11822,7 @@ def main():
         break
 
     _W13T_NODE_GUARD = "# W13T-NODES: explicit early structured-output proof"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired optional telemetry; safe-invoke guards remain.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12029,7 +12388,7 @@ def main():
     _W13X_REPORT_NAMES_GUARD = (
         "# W13X-FINAL-REPORT-NAMES: canonical final_report artifact names"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: canonical names are required by W14J.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12271,7 +12630,7 @@ def main():
 
     # --- W14B-REPORT-HEADINGS: normalize repeated title/section headings before rendering ---
     _W14B_HEADING_GUARD = "# W14B-REPORT-HEADINGS: normalize duplicate report headings"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: W14J anchors to the real draft.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12474,7 +12833,7 @@ def main():
     _W14E_FW_NORMALIZE_GUARD = (
         "# W14E-FW-NORMALIZE: normalize manifest paths before warnings"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12541,7 +12900,7 @@ def main():
 
     # --- W14F-READABILITY-POLISH: remove scaffold lead-ins from agent-authored report draft ---
     _W14F_READABILITY_GUARD = "# W14F-READABILITY-POLISH: remove scaffold lead-ins"
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: W14J anchors to the real draft.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12582,7 +12941,7 @@ def main():
     _W14G_FW_DEFERRED_GUARD = (
         "# W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid"
     )
-    for idx, cell in enumerate(cells):
+    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -12747,74 +13106,1164 @@ def main():
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
 
+    # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
+    _W14I_VIZ_MEMBERSHIP_GUARD = "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
     # --- W14I-TOOL-ERROR-HARDENING: close scoped error-handling review gaps in data tools ---
     _W14I_TOOL_ERROR_GUARD = "# W14I-TOOL-ERROR-HARDENING"
     for idx, cell in enumerate(cells):
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
-        if (
-            "# Error Handling and Validation Framework" not in src
-            or "def drop_column(df_id: str, column_name: str) -> str:" not in src
-            or "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:" not in src
-        ):
+        if "def viz_evaluator_node(state: State):" not in src or _W14I_VIZ_MEMBERSHIP_GUARD in src:
             continue
-        if _W14I_TOOL_ERROR_GUARD in src:
-            print(f"ℹ️  Cell idx {idx}: W14I-TOOL-ERROR-HARDENING already applied")
+        if (
+            'normalized_spec_result_keys = {' in src
+            and 'normalized_visualization_id = (' in src
+        ):
+            print(f"ℹ️  Cell idx {idx}: W14I-VIZ-MEMBERSHIP already present in source notebook")
             break
-
-        src = src.replace(
-            "            df_id = None\n\n            # Check first positional argument\n",
-            "            df_id = None\n            df_id_supplied = False\n\n            # Check first positional argument\n",
-            1,
+        old = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
         )
-        src = src.replace(
-            "def handle_tool_errors(func):\n    \"\"\"Decorator for consistent error handling across tool functions.\n\n    This decorator provides standardized error handling, DataFrame validation,\n    and user-friendly error messages for all tool functions.\n\n    Args:\n        func: The tool function to wrap\n\n    Returns:\n        The wrapped function with error handling\n\n    Examples:\n        >>> @handle_tool_errors\n        ... def my_tool(df_id: str) -> str:\n        ...     # tool implementation\n        ...     return \"success\"\n    \"\"\"\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n",
-            "def handle_tool_errors(func):\n    \"\"\"Decorator for consistent error handling across tool functions.\n\n    This decorator provides standardized error handling, DataFrame validation,\n    and user-friendly error messages for all tool functions.\n\n    Args:\n        func: The tool function to wrap\n\n    Returns:\n        The wrapped function with error handling\n\n    Examples:\n        >>> @handle_tool_errors\n        ... def my_tool(df_id: str) -> str:\n        ...     # tool implementation\n        ...     return \"success\"\n    \"\"\"\n    try:\n        func_signature = inspect.signature(func)\n    except (TypeError, ValueError):\n        func_signature = None\n\n    @functools.wraps(func)\n    def wrapper(*args, **kwargs):\n",
-            1,
+        new = (
+            '            vr_results = state.get("viz_results", []) or []\n'
+            f'            {_W14I_VIZ_MEMBERSHIP_GUARD}\n'
+            '            task_result_titles = {r.visualization_title for r in task_result_map.values()}\n'
+            '            spec_result_ids = {res.visualization_id for res in spec_result_map.values()}\n'
+            '            normalized_spec_result_keys = {\n'
+            '                s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)\n'
+            '            }\n'
+            '            for r in results:\n'
+            '                if r.visualization_title in final_grade.redo_list:\n'
+            '                    results.remove(r)\n'
+            '                    for vr in vr_results:\n'
+            '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
+            '                            vr_results.remove(vr)\n'
+            '                            break\n'
+            '                else:\n'
+            '                    normalized_visualization_id = (\n'
+            '                        r.visualization_id.lower().strip()\n'
+            '                        if isinstance(r.visualization_id, str)\n'
+            '                        else None\n'
+            '                    )\n'
+            '                    if r.visualization_id in result_task_map.keys():\n'
+            '                        tasks.remove(result_task_map[r.visualization_id])\n'
+            '                    elif r.visualization_title in task_result_titles:\n'
+            '                        tasks.remove(r.visualization_title)\n'
+            '                    if r.visualization_id in result_spec_map.keys():\n'
+            '                        specs.remove(result_spec_map[r.visualization_id])\n'
+            '                    elif (\n'
+            '                        r.visualization_id in spec_result_ids\n'
+            '                        or normalized_visualization_id in normalized_spec_result_keys\n'
+            '                    ):\n'
+            '                        specs.remove(result_spec_map[r.visualization_title])\n'
         )
-        src = src.replace(
-            "def validate_dataframe_exists(df_id: str) -> bool:\n    \"\"\"Validates the existence and validity of a dataframe by its ID.\n\n    Args:\n        df_id: The ID of the DataFrame to validate\n\n    Returns:\n        bool: True if DataFrame exists and is valid, False otherwise\n\n    Examples:\n        >>> if validate_dataframe_exists('my_df_id'):\n        ...     # proceed with operations\n        ...     pass\n    \"\"\"\n    if not df_id or not isinstance(df_id, str):\n        return False\n\n    try:\n        # Check if DataFrame exists in registry\n        df = global_df_registry.get_dataframe(df_id)\n        if df is not None:\n            return not df.empty  # DataFrame exists and is not empty\n\n        # Try to load from raw path if not in registry\n        raw_path = global_df_registry.get_raw_path_from_id(df_id)\n        if raw_path and os.path.exists(raw_path):\n            try:\n                df = pd.read_csv(raw_path)\n                if df is not None and not df.empty:\n                    # Register the loaded DataFrame\n                    global_df_registry.register_dataframe(df, df_id, raw_path)\n                    return True\n            except Exception:\n                return False\n\n        return False\n    except Exception:\n        return False\n",
-            "def validate_dataframe_exists(df_id: str) -> bool:\n    \"\"\"Validates the existence and validity of a dataframe by its ID.\n\n    Args:\n        df_id: The ID of the DataFrame to validate\n\n    Returns:\n        bool: True if DataFrame exists and is valid, False otherwise\n\n    Examples:\n        >>> if validate_dataframe_exists('my_df_id'):\n        ...     # proceed with operations\n        ...     pass\n    \"\"\"\n    if not isinstance(df_id, str) or not df_id.strip():\n        return False\n\n    df = global_df_registry.get_dataframe(df_id, load_if_not_exists=True)\n    return df is not None and not df.empty\n",
-            1,
-        )
-        src = src.replace(
-            "            if args and isinstance(args[0], str):\n                df_id = args[0]\n                df_id_supplied = True\n            # Check for df_id in keyword arguments\n            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n                df_id_supplied = True\n            # For functions with params as first arg, check params.df_id\n            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n                df_id_supplied = True\n\n            # Validate DataFrame exists for all explicitly supplied IDs.\n            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):\n                return _tool_error(\n                    func.__name__,\n                    \"DataFrame ID must be a non-empty string.\",\n                    \"Provide the ID of a registered, non-empty DataFrame.\",\n                )\n            if df_id_supplied and not validate_dataframe_exists(df_id):\n",
-            "            try:\n                bound_args = (\n                    func_signature.bind_partial(*args, **kwargs)\n                    if func_signature is not None\n                    else None\n                )\n            except TypeError as exc:\n                return _tool_error(\n                    func.__name__,\n                    f\"Invalid arguments: {exc}\",\n                    \"Check the operation parameters and try again.\",\n                )\n\n            # Bind the declared df_id parameter first, even for non-string values.\n            if bound_args and 'df_id' in bound_args.arguments:\n                df_id = bound_args.arguments['df_id']\n                df_id_supplied = True\n            # Check for df_id in keyword arguments\n            elif 'df_id' in kwargs:\n                df_id = kwargs['df_id']\n                df_id_supplied = True\n            # For functions with params as first arg, check params.df_id\n            elif args and hasattr(args[0], 'df_id'):\n                df_id = args[0].df_id\n                df_id_supplied = True\n\n            # Validate DataFrame exists for all explicitly supplied IDs.\n            if df_id_supplied and (not isinstance(df_id, str) or not df_id.strip()):\n                return _tool_error(\n                    func.__name__,\n                    \"DataFrame ID must be a non-empty string.\",\n                    \"Provide the ID of a registered, non-empty DataFrame.\",\n                )\n            if df_id_supplied and not validate_dataframe_exists(df_id):\n",
-            1,
-        )
-        src = src.replace(
-            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception as e:\n                    print(f\"Error loading DataFrame from {path}: {e}\")\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
-            "                try:\n                    loaded = self._read_df(path)            # FIX: read by suffix\n                except FileNotFoundError:\n                    return None\n                except Exception:\n                    logging.exception(\"Error loading DataFrame from %s\", path)\n                    return None\n                self.registry[df_id][\"df\"] = loaded\n",
-            1,
-        )
-        src = src.replace(
-            "    updated_df = df.drop(columns=[column_name])\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return \"Column dropped successfully. New columns: \" + \", \".join(\n        updated_df.columns.tolist()\n    )\n",
-            "    updated_df = df.drop(columns=[column_name])\n    new_columns = \", \".join(map(str, updated_df.columns.tolist()))\n    global_df_registry.register_dataframe(\n        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n    )\n    return f\"Column dropped successfully. New columns: {new_columns}\"\n",
-            1,
-        )
-        src = src.replace(
-            "    else:\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            if isinstance(condition_list, (list, tuple))\n            for condition in condition_list\n        ]\n",
-            "    else:\n        invalid_selector_keys = [\n            key\n            for key, condition_list in conditions.items()\n            if not isinstance(condition_list, (list, tuple))\n        ]\n        if invalid_selector_keys:\n            return _tool_error(\n                operation,\n                \"The row selector dictionary contains non-list values.\",\n                \"Provide only list/tuple query clauses for each selector key.\",\n            )\n        query_parts = [\n            condition\n            for condition_list in conditions.values()\n            for condition in condition_list\n        ]\n",
-            1,
-        )
-        src = src.replace(
-            "    except (KeyError, SyntaxError, ValueError, TypeError) as exc:\n",
-            "    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:\n",
-            1,
-        )
-        if _W14I_TOOL_ERROR_GUARD not in src:
-            src = src.replace(
-                "# Error Handling and Validation Framework\n",
-                "# Error Handling and Validation Framework\n# W14I-TOOL-ERROR-HARDENING\n",
-                1,
-            )
-
+        if old not in src:
+            print(f"⚠️  W14I-VIZ-MEMBERSHIP anchor not found in cell {idx}")
+            break
+        src = src.replace(old, new, 1)
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
-        print(f"✅ Cell idx {idx}: W14I-TOOL-ERROR-HARDENING fixes scoped tool validation and copy-before-register safety")
+        print(f"✅ Cell idx {idx}: W14I-VIZ-MEMBERSHIP keeps normalized spec-key matching")
         break
+
+    # --- W14K-DELETE-ROWS: deterministic query-only view binding ---
+    _W14K_DELETE_ROWS_GUARD = "# W14K-DELETE-ROWS: deterministic query view binding"
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if (
+            "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:" not in src
+            or _W14K_DELETE_ROWS_GUARD in src
+        ):
+            continue
+
+        target_start = src.find('@tool("delete_rows")')
+        target_end = src.find('@tool("fill_missing_median"')
+        if target_start == -1 or target_end == -1:
+            print(f"⚠️  W14K-DELETE-ROWS anchor not found in cell {idx}")
+            break
+
+        old_delete_rows_block = src[target_start:target_end]
+        new_delete_rows_block = (
+            f"{_W14K_DELETE_ROWS_GUARD}\n"
+            "def _build_query_view(df: pd.DataFrame) -> pd.DataFrame:\n"
+            '    """Construct a query-only DataFrame projection with deterministic bindings."""\n'
+            "    string_labels = {col for col in df.columns if isinstance(col, str)}\n"
+            "    alias_counts = {}\n"
+            "    for col in df.columns:\n"
+            "        if not isinstance(col, str):\n"
+            "            alias = str(col)\n"
+            "            alias_counts[alias] = alias_counts.get(alias, 0) + 1\n"
+            "\n"
+            "    kept_indices = []\n"
+            "    kept_names = []\n"
+            "    for i, col in enumerate(df.columns):\n"
+            "        if isinstance(col, str):\n"
+            "            kept_indices.append(i)\n"
+            "            kept_names.append(col)\n"
+            "        else:\n"
+            "            alias = str(col)\n"
+            "            if alias not in string_labels and alias_counts.get(alias, 0) == 1:\n"
+            "                kept_indices.append(i)\n"
+            "                kept_names.append(alias)\n"
+            "\n"
+            "    if not kept_indices:\n"
+            "        return pd.DataFrame(index=df.index)\n"
+            "\n"
+            "    query_df = df.iloc[:, kept_indices].copy(deep=False)\n"
+            "    query_df.columns = kept_names\n"
+            "    return query_df\n"
+            "\n"
+            '@tool("delete_rows")\n'
+            '@cap_output(max_chars=3000, max_bytes=10_000, max_lines=200, add_footer=True, mode="preserve")\n'
+            "@handle_tool_errors\n"
+            "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:\n"
+            '    """Deletes rows from the DataFrame based on specified conditions."""\n'
+            '    operation = "delete_rows"\n'
+            "    if not isinstance(conditions, (str, list, dict)):\n"
+            "        return _tool_error(\n"
+            "            operation,\n"
+            '            "\'conditions\' must be a string, list of strings, or dict.",\n'
+            '            "Provide a valid pandas query or a non-empty list/dict of queries.",\n'
+            "        )\n"
+            "    if isinstance(conditions, str):\n"
+            "        query_parts = [conditions]\n"
+            "    elif isinstance(conditions, list):\n"
+            "        query_parts = conditions\n"
+            "    else:\n"
+            "        invalid_selector_keys = [\n"
+            "            key\n"
+            "            for key, condition_list in conditions.items()\n"
+            "            if not isinstance(condition_list, (list, tuple))\n"
+            "        ]\n"
+            "        if invalid_selector_keys:\n"
+            "            return _tool_error(\n"
+            "                operation,\n"
+            '                "The row selector dictionary contains non-list values.",\n'
+            '                "Provide only list/tuple query clauses for each selector key.",\n'
+            "            )\n"
+            "        query_parts = [\n"
+            "            condition\n"
+            "            for condition_list in conditions.values()\n"
+            "            for condition in condition_list\n"
+            "        ]\n"
+            "    if not query_parts or not all(isinstance(condition, str) and condition.strip() for condition in query_parts):\n"
+            "        return _tool_error(\n"
+            "            operation,\n"
+            '            "The row selector is empty or contains a non-string condition.",\n'
+            '            "Provide one or more non-empty pandas query expressions.",\n'
+            "        )\n"
+            '    query_str = " and ".join(f"({condition})" for condition in query_parts)\n'
+            "    df = global_df_registry.get_dataframe(df_id)\n"
+            "    try:\n"
+            "        query_df = _build_query_view(df)\n"
+            "        rows_to_drop = query_df.query(query_str).index\n"
+            "    except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:\n"
+            "        return _tool_error(\n"
+            "            operation,\n"
+            '            f"The row selector is invalid: {type(exc).__name__}.",\n'
+            '            "Check column names, operators, and values in the query.",\n'
+            "        )\n"
+            "    if rows_to_drop.empty:\n"
+            '        return f"No rows match the provided condition(s): {conditions}"\n'
+            "    if not inplace:\n"
+            "        return df.loc[rows_to_drop].to_json()\n"
+            "    updated_df = df.drop(index=rows_to_drop)\n"
+            "    global_df_registry.register_dataframe(\n"
+            "        updated_df, df_id, global_df_registry.get_raw_path_from_id(df_id)\n"
+            "    )\n"
+            '    return f"{len(rows_to_drop)} rows deleted successfully."\n\n'
+        )
+        src = src.replace(old_delete_rows_block, new_delete_rows_block, 1)
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        print(f"✅ Cell idx {idx}: W14K-DELETE-ROWS deterministic query-only view binding")
+        break
+
+    # W14J: consolidate the active #146/#148 production invariants after the
+    # historical wave patches.  These are required compiler-style transforms:
+    # source drift aborts generation instead of emitting a degraded notebook.
+    _W14J_REPORT_GUARD = (
+        "# W14J-REPORT-PIPELINE: deterministic canonical report renderer"
+    )
+    _W14J_DRAFT_ANCHOR = (
+        '    draft = f"# {title}\\n\\n" + "\\n\\n".join(written_sections)\n'
+        '    df_id_str = ", \\n".join(state.get("available_df_ids", []))\n'
+    )
+    _W14J_DRAFT_BLOCK = (
+        '    draft = f"# {title}\\n\\n" + "\\n\\n".join(written_sections)\n'
+        f"    # {_W14J_REPORT_GUARD}\n"
+        "    def _dedupe_long_paragraphs(text: str) -> str:\n"
+        '        paragraphs = re.split(r"\\n{2,}", str(text or ""))\n'
+        "        seen = set()\n"
+        "        kept = []\n"
+        "        for paragraph in paragraphs:\n"
+        '            key = re.sub(r"\\s+", " ", paragraph).strip().casefold()\n'
+        "            if len(key) >= 240 and key in seen:\n"
+        "                continue\n"
+        "            if len(key) >= 240:\n"
+        "                seen.add(key)\n"
+        "            kept.append(paragraph.strip())\n"
+        '        return "\\n\\n".join(part for part in kept if part)\n'
+        "    def _normalize_report_headings(text: str, report_title: str) -> str:\n"
+        "        normalized_lines = []\n"
+        "        previous_heading_key = None\n"
+        '        title_key = re.sub(r"\\s+", " ", str(report_title or "")).strip().casefold()\n'
+        "        title_seen = False\n"
+        "        for raw_line in str(text or \"\").splitlines():\n"
+        '            match = re.match(r"^(#{1,6})\\s+(.+?)\\s*$", raw_line)\n'
+        "            if not match:\n"
+        "                normalized_lines.append(raw_line)\n"
+        "                if raw_line.strip():\n"
+        "                    previous_heading_key = None\n"
+        "                continue\n"
+        "            hashes, heading_text = match.groups()\n"
+        "            heading_text = heading_text.strip()\n"
+        '            heading_key = re.sub(r"\\s+", " ", heading_text).strip().casefold()\n'
+        "            level = len(hashes)\n"
+        "            if heading_key == title_key:\n"
+        "                if title_seen:\n"
+        "                    continue\n"
+        "                title_seen = True\n"
+        "                level = 1\n"
+        "            elif level == 1:\n"
+        "                level = 2\n"
+        "            if heading_key and heading_key == previous_heading_key:\n"
+        "                continue\n"
+        '            normalized_lines.append("#" * level + " " + heading_text)\n'
+        "            previous_heading_key = heading_key\n"
+        '        return "\\n".join(normalized_lines)\n'
+        "    def _polish_report_scaffold_leadins(text: str) -> str:\n"
+        '        text = re.sub(r"(?im)^\\s*Purpose:\\s*provide\\s+", "Purpose and scope: ", text)\n'
+        '        text = re.sub(r"(?im)^\\s*Purpose:\\s*", "Purpose and scope: ", text)\n'
+        '        text = re.sub(r"(?im)^\\s*This section should\\s+", "", text)\n'
+        '        text = re.sub(r"(?im)^\\s*This section addresses:\\s*", "", text)\n'
+        "        return text\n"
+        "    draft = _dedupe_long_paragraphs(draft)\n"
+        "    draft = _normalize_report_headings(draft, title)\n"
+        "    draft = _polish_report_scaffold_leadins(draft)\n"
+        '    df_id_str = ", \\n".join(state.get("available_df_ids", []))\n'
+    )
+    _W14J_RENDER_ANCHOR = (
+        "    if isinstance(rr, dict):\n"
+        "        rr = ReportResults(**rr)\n"
+        '    memory_text = f"The Report Packager has produced the report results. The pdf can be found at {rr.pdf_report_path}, the html can be found at {rr.html_report_path}, and the markdown can be found at {rr.markdown_report_path}."\n'
+    )
+    _W14J_RENDER_BLOCK = (
+        "    if isinstance(rr, dict):\n"
+        "        rr = ReportResults(**rr)\n"
+        "    if not isinstance(rr, ReportResults):\n"
+        '        raise RuntimeError("W14J report_packager did not return ReportResults")\n'
+        "    import html as _report_html\n"
+        "    import re as _report_re\n"
+        "    import os as _report_os\n"
+        "    import shutil as _report_shutil\n"
+        "    import uuid as _report_uuid\n"
+        "    import markdown as _report_markdown\n"
+        "    import bleach as _report_bleach\n"
+        "    from html.parser import HTMLParser as _ReportHTMLParser\n"
+        "    from pathlib import Path as _ReportPath\n"
+        "    try:\n"
+        "        from bleach.css_sanitizer import CSSSanitizer as _ReportCSSSanitizer\n"
+        "        _report_css_sanitizer = _ReportCSSSanitizer(allowed_css_properties=['text-align', 'background-color', 'border', 'padding', 'width', 'color', 'margin'])\n"
+        "    except Exception:\n"
+        "        _report_css_sanitizer = None\n"
+        '    _report_config = state.get("_config")\n'
+        "    _artifact_root = _get_artifacts_base(_report_config).resolve()\n"
+        "    _run_root = None\n"
+        '    if "RUNTIME" in globals() and getattr(globals()["RUNTIME"], "run_dir", None):\n'
+        '        _run_root = _ReportPath(globals()["RUNTIME"].run_dir).resolve()\n'
+        '    elif _report_config and isinstance(_report_config, dict):\n'
+        '        _cfg_run = _report_config.get("configurable", {}).get("runtime")\n'
+        '        if getattr(_cfg_run, "run_dir", None):\n'
+        '            _run_root = _ReportPath(_cfg_run.run_dir).resolve()\n'
+        "    _working_dir = _ReportPath(WORKING_DIRECTORY).resolve()\n"
+        "    _allowed_roots = [_artifact_root, _working_dir]\n"
+        "    if _run_root is not None:\n"
+        "        _allowed_roots.append(_run_root)\n"
+        "    def _is_safe_artifact_path(cand: _ReportPath) -> bool:\n"
+        "        try:\n"
+        "            cand_res = cand.resolve()\n"
+        "            if not cand_res.is_file() or cand_res.stat().st_size <= 0:\n"
+        "                return False\n"
+        "            for root in _allowed_roots:\n"
+        "                try:\n"
+        "                    cand_res.relative_to(root.resolve())\n"
+        "                    return True\n"
+        "                except ValueError:\n"
+        "                    continue\n"
+        "            return False\n"
+        "        except Exception:\n"
+        "            return False\n"
+        "    canonical_source_md = draft\n"
+        "    canonical_source_md = _dedupe_long_paragraphs(canonical_source_md)\n"
+        "    canonical_source_md = _normalize_report_headings(canonical_source_md, title)\n"
+        "    canonical_source_md = _polish_report_scaffold_leadins(canonical_source_md)\n"
+        '    md_path = _resolve_artifact_path("final_report.md", config=_report_config, subdir="reports").resolve()\n'
+        '    html_path = _resolve_artifact_path("final_report.html", config=_report_config, subdir="reports").resolve()\n'
+        '    pdf_path = _resolve_artifact_path("final_report.pdf", config=_report_config, subdir="reports").resolve()\n'
+        "    reports_dir = html_path.parent\n"
+        "    reports_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    _candidate_img_bases = [\n"
+        '        reports_dir.parent / "visualizations",\n'
+        '        _artifact_root / "visualizations",\n'
+        "        reports_dir.parent,\n"
+        "        _artifact_root,\n"
+        '        _working_dir / "visualizations",\n'
+        "        _working_dir,\n"
+        "    ]\n"
+        "    if _run_root is not None:\n"
+        "        _candidate_img_bases.extend([\n"
+        '            _run_root / "visualizations",\n'
+        "            _run_root,\n"
+        "        ])\n"
+        "    def _resolve_img_path(raw_path: str) -> Optional[_ReportPath]:\n"
+        "        if not raw_path or not isinstance(raw_path, (str, _ReportPath)):\n"
+        "            return None\n"
+        '        raw_clean = str(raw_path).strip().replace("\\\\", "/")\n'
+        "        raw_lower = raw_clean.lower()\n"
+        '        if raw_lower.startswith(("data:", "http://", "https://", "file:")) or "://" in raw_lower:\n'
+        "            return None\n"
+        "        cand = _ReportPath(raw_clean)\n"
+        "        if cand.is_absolute():\n"
+        "            if _is_safe_artifact_path(cand):\n"
+        "                return cand.resolve()\n"
+        "            return None\n"
+        "        matched = set()\n"
+        "        for base in _candidate_img_bases:\n"
+        "            probe = (base / cand).resolve()\n"
+        "            if _is_safe_artifact_path(probe):\n"
+        "                matched.add(probe)\n"
+        "        if len(matched) == 1:\n"
+        "            return next(iter(matched))\n"
+        "        return None\n"
+        "    def _resolve_doc_img(raw_src: str) -> Optional[_ReportPath]:\n"
+        "        if not raw_src or not isinstance(raw_src, (str, _ReportPath)):\n"
+        "            return None\n"
+        '        s_clean = str(raw_src).strip().replace("\\\\", "/")\n'
+        "        s_lower = s_clean.lower()\n"
+        '        if s_lower.startswith(("data:", "http://", "https://", "file:")) or "://" in s_lower:\n'
+        "            return None\n"
+        "        cand = _ReportPath(s_clean)\n"
+        "        if cand.is_absolute():\n"
+        "            if _is_safe_artifact_path(cand):\n"
+        "                return cand.resolve()\n"
+        "            return None\n"
+        "        probe = (reports_dir / cand).resolve()\n"
+        "        if _is_safe_artifact_path(probe):\n"
+        "            return probe\n"
+        "        return None\n"
+        "    def _canon_key(p: _ReportPath) -> str:\n"
+        "        try:\n"
+        "            return _report_os.path.normcase(str(p.resolve()))\n"
+        "        except Exception:\n"
+        '            return str(p).replace("\\\\", "/").strip().casefold()\n'
+        "    def _to_rel_path(p: _ReportPath) -> str:\n"
+        '        return _report_os.path.relpath(p, reports_dir).replace("\\\\", "/")\n'
+        "    _expected_figs = {}\n"
+        "    _unresolved_expected = []\n"
+        "    def _register_figure(raw_path, fig_id, fig_title, fig_desc, sec_name=None):\n"
+        "        if not raw_path and not fig_id:\n"
+        "            return\n"
+        "        f_path = None\n"
+        "        if raw_path:\n"
+        "            f_path = _resolve_img_path(raw_path)\n"
+        "            if f_path is None:\n"
+        "                _unresolved_expected.append(str(raw_path))\n"
+        "                return\n"
+        "        elif fig_id:\n"
+        '            f_path = _resolve_img_path(f"{fig_id}.png")\n'
+        "            if f_path is None:\n"
+        '                _unresolved_expected.append(f"id:{fig_id}")\n'
+        "                return\n"
+        "        if f_path is None:\n"
+        "            _unresolved_expected.append(str(raw_path or fig_id))\n"
+        "            return\n"
+        "        ck = _canon_key(f_path)\n"
+        "        if ck not in _expected_figs:\n"
+        "            alt = fig_title or fig_desc or fig_id or f_path.stem\n"
+        "            _expected_figs[ck] = {\n"
+        '                "id": fig_id or f_path.stem,\n'
+        '                "title": fig_title or alt,\n'
+        '                "alt": alt,\n'
+        '                "resolved_path": f_path,\n'
+        '                "rel_path": _to_rel_path(f_path),\n'
+        '                "section": sec_name,\n'
+        "            }\n"
+        '    _state_sections = state.get("sections", []) or []\n'
+        "    for _sec in _state_sections:\n"
+        '        _s_name = getattr(_sec, "name", None) or getattr(_sec, "title", None) or (_sec.get("name") if isinstance(_sec, dict) else None) or (_sec.get("title") if isinstance(_sec, dict) else None)\n'
+        '        _s_figs = getattr(_sec, "expected_figures", None) or (_sec.get("expected_figures") if isinstance(_sec, dict) else None) or []\n'
+        "        for _f in _s_figs:\n"
+        '            _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '            _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '            _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '            _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "            _register_figure(_p, _i, _t, _d, _s_name)\n"
+        '    _vr_obj = state.get("visualization_results")\n'
+        "    _vr_items = []\n"
+        "    if isinstance(_vr_obj, VisualizationResults):\n"
+        "        _vr_items = list(_vr_obj.visualizations or [])\n"
+        "    elif isinstance(_vr_obj, dict):\n"
+        '        _vr_items = list(_vr_obj.get("visualizations", []) or [])\n'
+        "    elif isinstance(_vr_obj, list):\n"
+        "        _vr_items = list(_vr_obj)\n"
+        "    for _f in _vr_items:\n"
+        '        _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '        _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '        _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '        _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "        _register_figure(_p, _i, _t, _d)\n"
+        '    _vz_obj = state.get("viz_results")\n'
+        "    _vz_items = []\n"
+        "    if isinstance(_vz_obj, list):\n"
+        "        _vz_items = list(_vz_obj)\n"
+        "    elif isinstance(_vz_obj, dict):\n"
+        '        _vz_items = list(_vz_obj.get("visualizations", []) or [])\n'
+        "    for _f in _vz_items:\n"
+        '        _p = getattr(_f, "path", None) or (_f.get("path") if isinstance(_f, dict) else None)\n'
+        '        _i = getattr(_f, "visualization_id", None) or getattr(_f, "viz_id", None) or (_f.get("visualization_id") or _f.get("viz_id") if isinstance(_f, dict) else None)\n'
+        '        _t = getattr(_f, "visualization_title", None) or getattr(_f, "title", None) or (_f.get("visualization_title") or _f.get("title") if isinstance(_f, dict) else None)\n'
+        '        _d = getattr(_f, "visualization_description", None) or getattr(_f, "description", None) or (_f.get("visualization_description") or _f.get("description") if isinstance(_f, dict) else None)\n'
+        "        _register_figure(_p, _i, _t, _d)\n"
+        '    _vp_obj = state.get("viz_paths")\n'
+        "    _vp_items = []\n"
+        "    if isinstance(_vp_obj, list):\n"
+        "        _vp_items = list(_vp_obj)\n"
+        "    elif isinstance(_vp_obj, dict):\n"
+        "        _vp_items = list(_vp_obj.values())\n"
+        "    elif isinstance(_vp_obj, (str, _ReportPath)):\n"
+        "        _vp_items = [_vp_obj]\n"
+        "    for _p in _vp_items:\n"
+        "        if _p:\n"
+        "            _p_str = str(_p)\n"
+        '            _register_figure(_p_str, _ReportPath(_p_str).stem, _ReportPath(_p_str).stem.replace("_", " ").title(), "")\n'
+        "    seen_in_md_keys = set()\n"
+        "    def _normalize_existing_md_images(md_text: str) -> str:\n"
+        "        def _img_sub(m):\n"
+        "            alt_text = m.group(1)\n"
+        "            src_text = m.group(2).strip()\n"
+        '            if src_text.lower().startswith("data:"):\n'
+        "                return m.group(0)\n"
+        "            res = _resolve_doc_img(src_text)\n"
+        "            if res is not None:\n"
+        "                seen_in_md_keys.add(_canon_key(res))\n"
+        "                rel = _to_rel_path(res)\n"
+        '                return f"![{alt_text}]({rel})"\n'
+        "            return m.group(0)\n"
+        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _img_sub, md_text)\n'
+        "    canonical_source_md = _normalize_existing_md_images(canonical_source_md)\n"
+        '    figures_to_inject = [f for ck, f in _expected_figs.items() if ck not in seen_in_md_keys]\n'
+        "    unplaced_figures = []\n"
+        "    for fig in figures_to_inject:\n"
+        '        sec = fig.get("section")\n'
+        "        placed = False\n"
+        "        if sec:\n"
+        "            sec_clean = str(sec).strip()\n"
+        '            pattern = r"(?im)^(?P<hashes>#{1,6})\\s+(?P<heading>.*?" + _report_re.escape(sec_clean) + r".*?)$"\n'
+        "            match = _report_re.search(pattern, canonical_source_md)\n"
+        "            if match:\n"
+        "                start_idx = match.end()\n"
+        '                level = len(match.group("hashes"))\n'
+        '                next_heading_pat = r"(?m)^#{1," + str(min(level, 2)) + r"}\\s+"\n'
+        "                next_match = _report_re.search(next_heading_pat, canonical_source_md[start_idx:])\n"
+        '                img_block = f"\\n\\n![{fig[\'alt\']}]({fig[\'rel_path\']})\\n"\n'
+        "                if next_match:\n"
+        "                    insert_idx = start_idx + next_match.start()\n"
+        '                    canonical_source_md = canonical_source_md[:insert_idx].rstrip() + img_block + "\\n" + canonical_source_md[insert_idx:].lstrip()\n'
+        "                else:\n"
+        "                    canonical_source_md = canonical_source_md.rstrip() + img_block\n"
+        "                placed = True\n"
+        '                seen_in_md_keys.add(_canon_key(fig["resolved_path"]))\n'
+        "        if not placed:\n"
+        "            unplaced_figures.append(fig)\n"
+        "    if unplaced_figures:\n"
+        '        viz_blocks = [f"![{fig[\'alt\']}]({fig[\'rel_path\']})" for fig in unplaced_figures]\n'
+        '        viz_section_content = "\\n\\n".join(viz_blocks)\n'
+        '        if _report_re.search(r"(?im)^##\\s+Visualizations", canonical_source_md):\n'
+        '            canonical_source_md = _report_re.sub(r"(?im)(^##\\s+Visualizations\\s*$)", r"\\1\\n\\n" + viz_section_content, canonical_source_md, count=1)\n'
+        "        else:\n"
+        '            canonical_source_md = canonical_source_md.rstrip() + "\\n\\n## Visualizations\\n\\n" + viz_section_content + "\\n"\n'
+        "        for fig in unplaced_figures:\n"
+        '            seen_in_md_keys.add(_canon_key(fig["resolved_path"]))\n'
+        "    def _sanitize_report_html(raw_html: str) -> str:\n"
+        '        _pre = _report_re.sub(r"(?is)<script\\b[^>]*>.*?</script\\s*>", "", str(raw_html or ""))\n'
+        '        _pre = _report_re.sub(r"(?is)<style\\b[^>]*>.*?</style\\s*>", "", _pre)\n'
+        "        _allowed_tags = [\n"
+        '            "h1", "h2", "h3", "h4", "h5", "h6",\n'
+        '            "p", "span", "div", "blockquote", "pre", "code", "hr", "br",\n'
+        '            "ul", "ol", "li",\n'
+        '            "strong", "b", "em", "i", "u", "strike", "del",\n'
+        '            "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",\n'
+        '            "a", "img",\n'
+        "        ]\n"
+        "        def _filter_attrs(tag, name, value):\n"
+        '            if tag == "a":\n'
+        '                if name in ("title", "target", "rel"):\n'
+        "                    return True\n"
+        '                if name == "href":\n'
+        '                    _v = _report_html.unescape(str(value or "")).strip().lower()\n'
+        '                    _v = "".join(_ch for _ch in _v if ord(_ch) > 32)\n'
+        '                    if _v.startswith(("http://", "https://", "mailto:", "#")) or (":" not in _v and not _v.startswith("//")):\n'
+        "                        return True\n"
+        "                    return False\n"
+        "                return False\n"
+        '            if tag == "img":\n'
+        '                if name in ("alt", "title", "width", "height"):\n'
+        "                    return True\n"
+        '                if name == "src":\n'
+        '                    _v = _report_html.unescape(str(value or "")).strip().lower()\n'
+        '                    if _v.startswith("data:image/"):\n'
+        "                        return True\n"
+        '                    if _v.startswith(("http://", "https://", "file:")) or "://" in _v:\n'
+        "                        return False\n"
+        "                    return True\n"
+        "                return False\n"
+        '            if tag in ("th", "td", "div", "span", "p", "table"):\n'
+        '                if name in ("style", "class", "align", "colspan", "rowspan"):\n'
+        "                    return True\n"
+        '            if tag in ("code", "pre"):\n'
+        '                if name == "class":\n'
+        "                    return True\n"
+        "            return False\n"
+        "        _kwargs = {\n"
+        '            "tags": _allowed_tags,\n'
+        '            "attributes": _filter_attrs,\n'
+        '            "protocols": ["http", "https", "mailto", "data"],\n'
+        '            "strip": True,\n'
+        "        }\n"
+        "        if _report_css_sanitizer is not None:\n"
+        '            _kwargs["css_sanitizer"] = _report_css_sanitizer\n'
+        "        return _report_bleach.clean(_pre, **_kwargs)\n"
+        "    def _render_report_html(markdown_text: str, report_title: str) -> str:\n"
+        '        _raw_rendered = _report_markdown.markdown(str(markdown_text or ""), extensions=["tables", "fenced_code"])\n'
+        "        _sanitized_body = _sanitize_report_html(_raw_rendered)\n"
+        '        title_escaped = _report_html.escape(str(report_title or "Analysis Report"))\n'
+        "        return (\n"
+        '            "<!doctype html><html><head><meta charset=\\"utf-8\\"><title>"\n'
+        "            + title_escaped\n"
+        '            + "</title><style>body{font-family:Helvetica,Arial,sans-serif;line-height:1.5;max-width:1000px;margin:2rem auto;padding:0 1rem;color:#333}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background-color:#f2f2f2}pre{background:#f4f4f4;padding:1rem;border-radius:4px;overflow-x:auto}code{font-family:monospace;background:#f4f4f4;padding:2px 4px;border-radius:2px}img{max-width:100%;height:auto}blockquote{border-left:4px solid #ccc;margin:1rem 0;padding-left:1rem;color:#666}</style></head><body>\\n"\n'
+        "            + _sanitized_body\n"
+        '            + "\\n</body></html>"\n'
+        "        )\n"
+        "    html_document = _render_report_html(canonical_source_md, title)\n"
+        '    _md_stripped = _report_re.sub(r"(?ms)^```.*?^```", "", canonical_source_md)\n'
+        '    _md_stripped = _report_re.sub(r"(?m)^(?: {4}|\\t)[^\\n]*", "", _md_stripped)\n'
+        '    _md_stripped = _report_re.sub(r"`[^`\\n]+`", "", _md_stripped)\n'
+        '    _md_raw_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _md_stripped)\n'
+        "    _md_verified_keys = set()\n"
+        "    for _s in _md_raw_embeds:\n"
+        '        if _s.lower().startswith("data:"):\n'
+        "            continue\n"
+        "        _p = _resolve_doc_img(_s)\n"
+        "        if _p is not None:\n"
+        "            _md_verified_keys.add(_canon_key(_p))\n"
+        "    class _ReportHTMLImgCollector(_ReportHTMLParser):\n"
+        "        def __init__(self):\n"
+        "            super().__init__()\n"
+        "            self.sources = []\n"
+        "        def handle_starttag(self, tag, attrs):\n"
+        '            if tag == "img":\n'
+        "                for _k, _v in attrs:\n"
+        '                    if _k == "src" and _v:\n'
+        "                        self.sources.append(_v)\n"
+        "    _html_parser = _ReportHTMLImgCollector()\n"
+        "    _html_parser.feed(html_document)\n"
+        "    _html_verified_keys = set()\n"
+        "    for _s in _html_parser.sources:\n"
+        '        if _s.lower().startswith("data:"):\n'
+        "            continue\n"
+        "        _p = _resolve_doc_img(_s)\n"
+        "        if _p is not None:\n"
+        "            _html_verified_keys.add(_canon_key(_p))\n"
+        "    _expected_keys = set(_expected_figs.keys())\n"
+        "    if _unresolved_expected:\n"
+        '        raise RuntimeError(f"W14J canonical report has unresolved expected figures: {_unresolved_expected}")\n'
+        "    if len(_expected_keys) < 3:\n"
+        '        raise RuntimeError(f"W14J canonical report requires at least 3 distinct figures, found {len(_expected_keys)}")\n'
+        "    if not _expected_keys.issubset(_md_verified_keys):\n"
+        "        _missing_md = _expected_keys - _md_verified_keys\n"
+        '        raise RuntimeError(f"W14J canonical markdown missing figure coverage for: {_missing_md}")\n'
+        "    if not _expected_keys.issubset(_html_verified_keys):\n"
+        "        _missing_html = _expected_keys - _html_verified_keys\n"
+        '        raise RuntimeError(f"W14J canonical html missing figure coverage for: {_missing_html}")\n'
+        "    from xhtml2pdf import pisa as _report_pisa\n"
+        "    _pdf_policy = None\n"
+        "    try:\n"
+        "        from xhtml2pdf.config.resources import ResourceAccessPolicy as _ReportResourceAccessPolicy\n"
+        "        _pdf_policy = _ReportResourceAccessPolicy(base_dir=reports_dir, extra_roots=tuple(_allowed_roots), allow_remote=False)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    def _report_link_callback(uri: str, rel: str) -> str:\n"
+        '        if str(uri or "").lower().startswith("data:"):\n'
+        "            return uri\n"
+        '        if "://" in str(uri or "").lower() or str(uri or "").lower().startswith("file:"):\n'
+        '            raise ValueError("Remote and file URIs are not allowed in report resources")\n'
+        "        candidate = _resolve_doc_img(uri)\n"
+        "        if candidate is None:\n"
+        '            raise FileNotFoundError(f"Report resource missing on disk or escapes root: {uri}")\n'
+        "        return str(candidate)\n"
+        '    _tmp_token = f"_tmp_{_report_os.getpid()}_{_report_uuid.uuid4().hex[:8]}"\n'
+        '    _staging_dir = reports_dir / f"._staging_{_tmp_token}"\n'
+        '    _backup_dir = reports_dir / f"._backup_{_tmp_token}"\n'
+        "    _staging_dir.mkdir(parents=True, exist_ok=True)\n"
+        '    md_tmp = _staging_dir / f"{_tmp_token}final_report.md"\n'
+        '    html_tmp = _staging_dir / f"{_tmp_token}final_report.html"\n'
+        '    pdf_tmp = _staging_dir / f"{_tmp_token}final_report.pdf"\n'
+        "    _report_generation_succeeded = False\n"
+        "    _retain_recovery_dirs = False\n"
+        "    try:\n"
+        '        md_tmp.write_text(canonical_source_md.rstrip() + "\\n", encoding="utf-8")\n'
+        '        html_tmp.write_text(html_document, encoding="utf-8")\n'
+        '        with pdf_tmp.open("wb") as _pdf_stream:\n'
+        '            _pdf_kwargs = {"src": html_document, "dest": _pdf_stream, "link_callback": _report_link_callback}\n'
+        "            if _pdf_policy is not None:\n"
+        '                _pdf_kwargs["resource_policy"] = _pdf_policy\n'
+        "            _pdf_status = _report_pisa.CreatePDF(**_pdf_kwargs)\n"
+        '        if getattr(_pdf_status, "err", 0):\n'
+        '            raise RuntimeError(f"W14J PDF generation failed with err={_pdf_status.err}")\n'
+        "        for _req_tmp in (md_tmp, html_tmp, pdf_tmp):\n"
+        "            if not _req_tmp.is_file() or _req_tmp.stat().st_size <= 0:\n"
+        '                raise RuntimeError(f"W14J required temporary report artifact missing or empty: {_req_tmp}")\n'
+        "        _backup_dir.mkdir(parents=True, exist_ok=True)\n"
+        "        _targets = [(md_tmp, md_path), (html_tmp, html_path), (pdf_tmp, pdf_path)]\n"
+        "        _backed_up = {}\n"
+        "        _existed_before = {}\n"
+        "        for _, _dst in _targets:\n"
+        "            _existed_before[_dst] = _dst.is_file()\n"
+        "            if _dst.is_file():\n"
+        "                _b_file = _backup_dir / _dst.name\n"
+        "                _report_shutil.copy2(_dst, _b_file)\n"
+        "                _backed_up[_dst] = _b_file\n"
+        "        _replaced = []\n"
+        "        try:\n"
+        "            _report_os.replace(md_tmp, md_path)\n"
+        "            _replaced.append(md_path)\n"
+        "            _report_os.replace(html_tmp, html_path)\n"
+        "            _replaced.append(html_path)\n"
+        "            _report_os.replace(pdf_tmp, pdf_path)\n"
+        "            _replaced.append(pdf_path)\n"
+        "            _report_generation_succeeded = True\n"
+        "        except Exception as _pub_err:\n"
+        "            _rollback_errors = []\n"
+        "            for _dst in reversed(_replaced):\n"
+        "                try:\n"
+        "                    if _existed_before.get(_dst, False):\n"
+        "                        _report_os.replace(_backed_up[_dst], _dst)\n"
+        "                    else:\n"
+        "                        if _dst.is_file():\n"
+        "                            _dst.unlink()\n"
+        "                except Exception as _rb_err:\n"
+        "                    _rollback_errors.append(_rb_err)\n"
+        "            if _rollback_errors:\n"
+        "                _retain_recovery_dirs = True\n"
+        '                raise RuntimeError(f"CRITICAL: Rollback failed during report publication: {_rollback_errors}. Retaining recovery dirs: {_staging_dir}, {_backup_dir}") from _pub_err\n'
+        "            raise _pub_err\n"
+        "    except Exception as _report_gen_exc:\n"
+        '        _pl_logger.error("W14J canonical report publication failed: %s", _report_gen_exc)\n'
+        "        _report_generation_succeeded = False\n"
+        "        if _retain_recovery_dirs:\n"
+        "            raise\n"
+        "    finally:\n"
+        "        if not _retain_recovery_dirs:\n"
+        "            if _staging_dir.exists():\n"
+        "                try:\n"
+        "                    _report_shutil.rmtree(_staging_dir, ignore_errors=True)\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "            if _backup_dir.exists():\n"
+        "                try:\n"
+        "                    _report_shutil.rmtree(_backup_dir, ignore_errors=True)\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "    if _report_generation_succeeded:\n"
+        "        rr = rr.model_copy(update={\n"
+        '            "markdown_report_path": str(md_path),\n'
+        '            "html_report_path": str(html_path),\n'
+        '            "pdf_report_path": str(pdf_path),\n'
+        "        })\n"
+        "        draft = canonical_source_md\n"
+        "    else:\n"
+        "        rr = rr.model_copy(update={\n"
+        '            "markdown_report_path": "",\n'
+        '            "html_report_path": "",\n'
+        '            "pdf_report_path": "",\n'
+        "        })\n"
+        '    memory_text = f"The Report Packager has produced the report results. The pdf can be found at {rr.pdf_report_path}, the html can be found at {rr.html_report_path}, and the markdown can be found at {rr.markdown_report_path}."\n'
+    )
+    report_patch_applied = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def report_packager_node(state: State):" not in src:
+            continue
+        src = replace_required(
+            src,
+            _W14J_DRAFT_ANCHOR,
+            _W14J_DRAFT_BLOCK,
+            patch_id="W14J-REPORT-DRAFT",
+        )
+        src = replace_required(
+            src,
+            _W14J_RENDER_ANCHOR,
+            _W14J_RENDER_BLOCK,
+            patch_id="W14J-REPORT-RENDER",
+        )
+        src = replace_required(
+            src,
+            '    finished_this_task = pdf_exists and html_exists and markdown_exists\n',
+            (
+                '    finished_this_task = bool(_report_generation_succeeded and pdf_exists and html_exists and markdown_exists)\n'
+                '    report_complete = bool(finished_this_task and rr.finished_this_task and not rr.expect_reply)\n'
+            ),
+            patch_id="W14J-REPORT-COMPLETION",
+        )
+        src = replace_required(
+            src,
+            '        "report_generator_complete": True,\n',
+            '        "report_generator_complete": report_complete,\n',
+            patch_id="W14J-REPORT-STATE",
+        )
+        src = replace_required(
+            src,
+            '        "last_agent_finished_this_task": rr.finished_this_task,\n',
+            '        "last_agent_finished_this_task": report_complete,\n',
+            patch_id="W14J-REPORT-LAST-AGENT",
+        )
+        src = replace_required(
+            src,
+            "    if not finished_this_task:\n",
+            "    if not report_complete:\n",
+            patch_id="W14J-REPORT-FALLBACK",
+        )
+        assert_patch_present(src, _W14J_REPORT_GUARD, patch_id="W14J-REPORT")
+        for required_fragment in (
+            "_dedupe_long_paragraphs(draft)",
+            "_normalize_report_headings(draft, title)",
+            "_polish_report_scaffold_leadins(draft)",
+            '_resolve_artifact_path("final_report.md"',
+            '_resolve_artifact_path("final_report.html"',
+            '_resolve_artifact_path("final_report.pdf"',
+        ):
+            if required_fragment not in src:
+                raise RequiredPatchError(
+                    f"W14J-REPORT: required generated fragment missing: {required_fragment}"
+                )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        report_patch_applied = True
+        print(
+            f"✅ Cell idx {idx}: W14J required report pipeline writes canonical artifacts"
+        )
+        break
+    if not report_patch_applied:
+        raise RequiredPatchError("W14J-REPORT: report_packager_node target not found")
+
+    _W14J_FINAL_GUARD = "# W14J-FW-FINAL-SEMANTICS: completion means final"
+    final_semantics_applied = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def file_writer_node(state: State):" not in src:
+            continue
+        old = (
+            "    is_final = False\n"
+            '    if not state.get("report_generator_complete", False):\n'
+            "        is_final = True\n"
+        )
+        new = (
+            f"    # {_W14J_FINAL_GUARD}\n"
+            '    is_final = bool(state.get("report_generator_complete", False))\n'
+            "    if not is_final:\n"
+        )
+        src = replace_required(
+            src,
+            old,
+            new,
+            patch_id="W14J-FW-FINAL-SEMANTICS",
+        )
+        assert_patch_present(
+            src,
+            _W14J_FINAL_GUARD,
+            patch_id="W14J-FW-FINAL-SEMANTICS",
+        )
+        _W14J_FW_COMPLETE_OLD = (
+            "        _w13s_existing_paths = set(_w13s_report_paths + _w13s_viz_paths)\n"
+            "        _w13s_report_file_results = []\n"
+            "        _w13s_viz_file_results = []\n"
+            "        for _w13s_fr in file_results.files:\n"
+            '            _w13s_fp = str(getattr(_w13s_fr, "file_path", "") or "")\n'
+            '            _w13s_tag = (getattr(_w13s_fr, "category_tag", "") or "").lower().strip()\n'
+            "            if _w13s_fp not in _w13s_existing_paths:\n"
+            "                _w13s_base = PathlibPath(_w13s_fp).name\n"
+            "                _w13s_match = next((str(_p) for _p in _w13s_existing_paths if PathlibPath(str(_p)).name == _w13s_base), None)\n"
+            "                if _w13s_match:\n"
+            "                    _w13s_fp = _w13s_match\n"
+            "                    try:\n"
+            "                        _w13s_fr.file_path = _w13s_match\n"
+            "                    except Exception:\n"
+            "                        pass\n"
+            "            if _w13s_fp not in _w13s_existing_paths or not PathlibPath(_w13s_fp).is_file():\n"
+            '                _pl_logger.warning("STATE file_writer.final_manifest path_normalized_missing returned=%s", _w13s_fp)\n'
+            "                continue\n"
+            '            if _w13s_tag == "report":\n'
+            "                _w13s_report_file_results.append(_w13s_fr)\n"
+            '            elif _w13s_tag == "visualization":\n'
+            "                _w13s_viz_file_results.append(_w13s_fr)\n"
+            '        final_report_path = next((getattr(_fr, "file_path", None) for _fr in _w13s_report_file_results if getattr(_fr, "is_final_report", False)), None)\n'
+            "        if not final_report_path:\n"
+            '            final_report_path = getattr(_w13s_rr, "html_report_path", None)\n'
+            '        report_paths = [getattr(_fr, "file_path", "") for _fr in _w13s_report_file_results if getattr(_fr, "file_path", None)] or _w13s_report_paths\n'
+            '        viz_paths = [getattr(_fr, "file_path", "") for _fr in _w13s_viz_file_results if getattr(_fr, "file_path", None)] or _w13s_viz_paths\n'
+            "        _w13s_complete = len(report_paths) >= 3 and len(viz_paths) >= min(3, len(_w13s_viz_paths) or 3)\n"
+        )
+        _W14J_FW_COMPLETE_NEW = (
+            "        # W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid\n"
+            "        import re as _fw_re\n"
+            "        from html.parser import HTMLParser as _FWHTMLParser\n"
+            "        def _w13s_canon_key(_p):\n"
+            "            try:\n"
+            "                return os.path.normcase(str(PathlibPath(_p).resolve()))\n"
+            "            except Exception:\n"
+            "                return str(_p).replace('\\\\', '/').strip().casefold()\n"
+            "        _fw_config = state.get('_config')\n"
+            "        _fw_art_root = _get_artifacts_base(_fw_config).resolve() if '_get_artifacts_base' in globals() else (PathlibPath(WORKING_DIRECTORY) / 'artifacts').resolve()\n"
+            "        _fw_run_root = None\n"
+            "        if 'RUNTIME' in globals() and getattr(globals()['RUNTIME'], 'run_dir', None):\n"
+            "            _fw_run_root = PathlibPath(globals()['RUNTIME'].run_dir).resolve()\n"
+            "        elif _fw_config and isinstance(_fw_config, dict):\n"
+            "            _cfg_run = _fw_config.get('configurable', {}).get('runtime')\n"
+            "            if getattr(_cfg_run, 'run_dir', None):\n"
+            "                _fw_run_root = PathlibPath(_cfg_run.run_dir).resolve()\n"
+            "        _fw_working_dir = PathlibPath(WORKING_DIRECTORY).resolve()\n"
+            "        _fw_allowed_roots = [_fw_art_root, _fw_working_dir]\n"
+            "        if _fw_run_root is not None:\n"
+            "            _fw_allowed_roots.append(_fw_run_root)\n"
+            "        def _fw_is_safe_artifact(cand: PathlibPath) -> bool:\n"
+            "            try:\n"
+            "                c_res = cand.resolve()\n"
+            "                if not c_res.is_file() or c_res.stat().st_size <= 0:\n"
+            "                    return False\n"
+            "                for r in _fw_allowed_roots:\n"
+            "                    try:\n"
+            "                        c_res.relative_to(r.resolve())\n"
+            "                        return True\n"
+            "                    except ValueError:\n"
+            "                        continue\n"
+            "                return False\n"
+            "            except Exception:\n"
+            "                return False\n"
+            "        if '_resolve_artifact_path' in globals():\n"
+            "            _canonical_md = _resolve_artifact_path('final_report.md', config=_fw_config, subdir='reports').resolve()\n"
+            "            _canonical_html = _resolve_artifact_path('final_report.html', config=_fw_config, subdir='reports').resolve()\n"
+            "            _canonical_pdf = _resolve_artifact_path('final_report.pdf', config=_fw_config, subdir='reports').resolve()\n"
+            "        else:\n"
+            "            _canonical_md = (_fw_art_root / 'reports' / 'final_report.md').resolve()\n"
+            "            _canonical_html = (_fw_art_root / 'reports' / 'final_report.html').resolve()\n"
+            "            _canonical_pdf = (_fw_art_root / 'reports' / 'final_report.pdf').resolve()\n"
+            "        _canonical_reports = {\n"
+            "            'markdown': _canonical_md,\n"
+            "            'html': _canonical_html,\n"
+            "            'pdf': _canonical_pdf,\n"
+            "        }\n"
+            "        _reports_valid = bool(\n"
+            "            _fw_is_safe_artifact(_canonical_md)\n"
+            "            and _fw_is_safe_artifact(_canonical_html)\n"
+            "            and _fw_is_safe_artifact(_canonical_pdf)\n"
+            "        )\n"
+            "        _reports_dir = _canonical_html.parent\n"
+            "        _fw_candidate_bases = [\n"
+            "            _reports_dir.parent / 'visualizations',\n"
+            "            _fw_art_root / 'visualizations',\n"
+            "            _reports_dir.parent,\n"
+            "            _fw_art_root,\n"
+            "            _reports_dir,\n"
+            "            _fw_working_dir / 'visualizations',\n"
+            "            _fw_working_dir,\n"
+            "        ]\n"
+            "        if _fw_run_root is not None:\n"
+            "            _fw_candidate_bases.extend([\n"
+            "                _fw_run_root / 'visualizations',\n"
+            "                _fw_run_root,\n"
+            "            ])\n"
+            "        def _w13s_resolve_file(_p):\n"
+            "            if not _p:\n"
+            "                return None\n"
+            "            _p_str = str(_p).strip().replace('\\\\', '/')\n"
+            "            if not _p_str or _p_str.lower().startswith(('data:', 'http://', 'https://', 'file:')) or '://' in _p_str:\n"
+            "                return None\n"
+            "            _cand = PathlibPath(_p_str.replace('/', os.sep))\n"
+            "            if _cand.is_absolute():\n"
+            "                if _fw_is_safe_artifact(_cand):\n"
+            "                    return _cand.resolve()\n"
+            "                return None\n"
+            "            _matched = set()\n"
+            "            for _b in _fw_candidate_bases:\n"
+            "                _probe = (PathlibPath(_b) / _cand).resolve()\n"
+            "                if _fw_is_safe_artifact(_probe):\n"
+            "                    _matched.add(_probe)\n"
+            "            if len(_matched) == 1:\n"
+            "                return next(iter(_matched))\n"
+            "            return None\n"
+            "        def _fw_resolve_doc_img(_s):\n"
+            "            if not _s:\n"
+            "                return None\n"
+            "            _s_str = str(_s).strip().replace('\\\\', '/')\n"
+            "            if not _s_str or _s_str.lower().startswith(('data:', 'http://', 'https://', 'file:')) or '://' in _s_str:\n"
+            "                return None\n"
+            "            _c = PathlibPath(_s_str.replace('/', os.sep))\n"
+            "            if _c.is_absolute():\n"
+            "                if _fw_is_safe_artifact(_c):\n"
+            "                    return _c.resolve()\n"
+            "                return None\n"
+            "            _probe = (_reports_dir / _c).resolve()\n"
+            "            if _fw_is_safe_artifact(_probe):\n"
+            "                return _probe\n"
+            "            return None\n"
+            "        _E = {}\n"
+            "        _U = []\n"
+            "        def _fw_collect_expected(_ref):\n"
+            "            if not _ref:\n"
+            "                return\n"
+            "            _res = _w13s_resolve_file(_ref)\n"
+            "            if _res is None:\n"
+            "                _U.append(str(_ref))\n"
+            "            else:\n"
+            "                _E[_w13s_canon_key(_res)] = _res\n"
+            "        for _sec in (state.get('sections') or []):\n"
+            "            _s_figs = getattr(_sec, 'expected_figures', None) or (_sec.get('expected_figures') if isinstance(_sec, dict) else None) or []\n"
+            "            for _f in _s_figs:\n"
+            "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
+            "                if _fp:\n"
+            "                    _fw_collect_expected(_fp)\n"
+            "                else:\n"
+            "                    _U.append(str(_f))\n"
+            "        _vr_obj = state.get('visualization_results')\n"
+            "        if isinstance(_vr_obj, VisualizationResults):\n"
+            "            for _f in (_vr_obj.visualizations or []):\n"
+            "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
+            "                if _fp:\n"
+            "                    _fw_collect_expected(_fp)\n"
+            "        elif isinstance(_vr_obj, dict):\n"
+            "            for _f in (_vr_obj.get('visualizations', []) or []):\n"
+            "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
+            "                if _fp:\n"
+            "                    _fw_collect_expected(_fp)\n"
+            "        _vz_obj = state.get('viz_results')\n"
+            "        if isinstance(_vz_obj, list):\n"
+            "            for _f in _vz_obj:\n"
+            "                _fp = getattr(_f, 'path', None) or (_f.get('path') if isinstance(_f, dict) else None)\n"
+            "                if _fp:\n"
+            "                    _fw_collect_expected(_fp)\n"
+            "        _vp_obj = state.get('viz_paths')\n"
+            "        if isinstance(_vp_obj, list):\n"
+            "            for _p in _vp_obj:\n"
+            "                if _p:\n"
+            "                    _fw_collect_expected(_p)\n"
+            "        elif isinstance(_vp_obj, dict):\n"
+            "            for _p in _vp_obj.values():\n"
+            "                if _p:\n"
+            "                    _fw_collect_expected(_p)\n"
+            "        elif isinstance(_vp_obj, (str, PathlibPath)):\n"
+            "            if _vp_obj:\n"
+            "                _fw_collect_expected(_vp_obj)\n"
+            "        _M = set()\n"
+            "        if _reports_valid:\n"
+            "            try:\n"
+            "                _md_content = _canonical_md.read_text(encoding='utf-8', errors='replace')\n"
+            "                _md_stripped = _fw_re.sub(r'(?ms)^```.*?^```', '', _md_content)\n"
+            "                _md_stripped = _fw_re.sub(r'(?m)^(?: {4}|\\t)[^\\n]*', '', _md_stripped)\n"
+            "                _md_stripped = _fw_re.sub(r'`[^`\\n]+`', '', _md_stripped)\n"
+            '                for _s in _fw_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\"][^\'\\"]*[\'\\"])?\\)", _md_stripped):\n'
+            "                    _res = _fw_resolve_doc_img(_s)\n"
+            "                    if _res is not None:\n"
+            "                        _M.add(_w13s_canon_key(_res))\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "        _H = set()\n"
+            "        if _reports_valid:\n"
+            "            try:\n"
+            "                class _FWHTMLImgCollector(_FWHTMLParser):\n"
+            "                    def __init__(self):\n"
+            "                        super().__init__()\n"
+            "                        self.sources = []\n"
+            "                    def handle_starttag(self, tag, attrs):\n"
+            "                        if tag == 'img':\n"
+            "                            for _k, _v in attrs:\n"
+            "                                if _k == 'src' and _v:\n"
+            "                                    self.sources.append(_v)\n"
+            "                _h_parser = _FWHTMLImgCollector()\n"
+            "                _h_parser.feed(_canonical_html.read_text(encoding='utf-8', errors='replace'))\n"
+            "                for _s in _h_parser.sources:\n"
+            "                    _res = _fw_resolve_doc_img(_s)\n"
+            "                    if _res is not None:\n"
+            "                        _H.add(_w13s_canon_key(_res))\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "        _seen_report_fmts = set()\n"
+            "        _seen_viz_keys = set()\n"
+            "        _reconciled_files = []\n"
+            "        for _fr in file_results.files:\n"
+            "            _fp = getattr(_fr, 'file_path', '')\n"
+            "            _res_fr = _w13s_resolve_file(_fp)\n"
+            "            if _res_fr is None:\n"
+            "                continue\n"
+            "            _ck = _w13s_canon_key(_res_fr)\n"
+            "            _is_rep = False\n"
+            "            for _fmt, _rp in _canonical_reports.items():\n"
+            "                if _w13s_canon_key(_rp) == _ck:\n"
+            "                    _is_rep = True\n"
+            "                    if _fmt not in _seen_report_fmts:\n"
+            "                        _seen_report_fmts.add(_fmt)\n"
+            "                        _fr.category_tag = 'report'\n"
+            "                        _fr.file_path = str(_rp)\n"
+            "                        if _fmt == 'html':\n"
+            "                            _fr.is_final_report = True\n"
+            "                        _reconciled_files.append(_fr)\n"
+            "                    break\n"
+            "            if not _is_rep and _ck in _E:\n"
+            "                if _ck not in _seen_viz_keys:\n"
+            "                    _seen_viz_keys.add(_ck)\n"
+            "                    _fr.category_tag = 'visualization'\n"
+            "                    _fr.file_path = str(_E[_ck])\n"
+            "                    _reconciled_files.append(_fr)\n"
+            "        for _fmt, _rp in _canonical_reports.items():\n"
+            "            if _fmt not in _seen_report_fmts and _fw_is_safe_artifact(_rp):\n"
+            "                _reconciled_files.append(FileResult(\n"
+            "                    write_success=True,\n"
+            "                    file_path=str(_rp),\n"
+            "                    file_type='html' if _fmt == 'html' else ('markdown' if _fmt == 'markdown' else 'pdf'),\n"
+            "                    file_name=_rp.name,\n"
+            "                    file_description=f'Final {_fmt.upper()} report',\n"
+            "                    is_final_report=(_fmt == 'html'),\n"
+            "                    category_tag='report',\n"
+            "                    reply_msg_to_supervisor='reconciled manifest',\n"
+            "                    finished_this_task=True,\n"
+            "                    expect_reply=False,\n"
+            "                ))\n"
+            "                _seen_report_fmts.add(_fmt)\n"
+            "        for _ck, _vp in _E.items():\n"
+            "            if _ck not in _seen_viz_keys and _fw_is_safe_artifact(_vp):\n"
+            "                _reconciled_files.append(FileResult(\n"
+            "                    write_success=True,\n"
+            "                    file_path=str(_vp),\n"
+            "                    file_type='png',\n"
+            "                    file_name=_vp.name,\n"
+            "                    file_description=f'Visualization {_vp.stem}',\n"
+            "                    is_final_report=False,\n"
+            "                    category_tag='visualization',\n"
+            "                    reply_msg_to_supervisor='reconciled manifest',\n"
+            "                    finished_this_task=True,\n"
+            "                    expect_reply=False,\n"
+            "                ))\n"
+            "                _seen_viz_keys.add(_ck)\n"
+            "        file_results.files = _reconciled_files\n"
+            "        _F = set(_seen_viz_keys)\n"
+            "        final_report_path = str(_canonical_html)\n"
+            "        report_paths = [str(_p) for _p in _canonical_reports.values()]\n"
+            "        viz_paths = [str(_p) for _p in _E.values()]\n"
+            "        _E_keys = set(_E.keys())\n"
+            "        _w13s_complete = bool(\n"
+            "            len(_U) == 0\n"
+            "            and len(_E_keys) >= 3\n"
+            "            and _reports_valid\n"
+            "            and len(_seen_report_fmts) == 3\n"
+            "            and _E_keys.issubset(_M)\n"
+            "            and _E_keys.issubset(_H)\n"
+            "            and _E_keys.issubset(_F)\n"
+            "        )\n"
+        )
+        src = replace_required(
+            src,
+            _W14J_FW_COMPLETE_OLD,
+            _W14J_FW_COMPLETE_NEW,
+            patch_id="W14J-FW-MANIFEST-VALIDATION",
+        )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        final_semantics_applied = True
+        print(f"✅ Cell idx {idx}: W14J corrected file_writer final/non-final branch and manifest validation")
+        break
+    if not final_semantics_applied:
+        raise RequiredPatchError("W14J-FW-FINAL-SEMANTICS: file_writer_node target not found")
+
+    _W14J_ROUTE_GUARD = "# W14J-RTW: reachable final writer route"
+    _W14J_ROUTE_FUNCTION = (
+        'def route_to_writer(state) -> Literal["file_writer", "supervisor","END"]:\n'
+        f"    # {_W14J_ROUTE_GUARD}\n"
+        '    report_done = bool(state.get("report_generator_complete"))\n'
+        '    report_results = state.get("report_results")\n'
+        '    outline = state.get("report_outline")\n'
+        '    expected_sections = len(outline.sections) if isinstance(outline, ReportOutline) else 0\n'
+        '    written_sections = state.get("written_sections", []) or []\n'
+        '    report_ready = bool(report_done and isinstance(report_results, ReportResults) and expected_sections > 0 and len(written_sections) >= expected_sections and state.get("report_draft"))\n'
+        '    already_wrote = bool(state.get("file_writer_complete"))\n'
+        '    if already_wrote:\n'
+        '        return "END"\n'
+        '    if report_ready:\n'
+        '        return "file_writer"\n'
+        '    return "supervisor"\n\n'
+    )
+    route_patch_applied = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def route_to_writer(state)" not in src:
+            continue
+        src = replace_required_regex(
+            src,
+            r"^def route_to_writer\(state\).*?(?=^def |\Z)",
+            _W14J_ROUTE_FUNCTION,
+            patch_id="W14J-RTW",
+        )
+        assert_patch_present(src, _W14J_ROUTE_GUARD, patch_id="W14J-RTW")
+        for dead_field in (
+            "report_sections_agent_generated",
+            "report_section_agent_count",
+            "report_packager_agent_generated",
+        ):
+            route_source = re.search(
+                r"^def route_to_writer\(state\).*?(?=^def |\Z)",
+                src,
+                flags=re.MULTILINE | re.DOTALL,
+            ).group(0)
+            if dead_field in route_source:
+                raise RequiredPatchError(
+                    f"W14J-RTW: route still depends on unwritten field {dead_field}"
+                )
+        cell["source"] = src
+        cell["outputs"] = []
+        cell["execution_count"] = None
+        route_patch_applied = True
+        print(f"✅ Cell idx {idx}: W14J route_to_writer uses reachable W14 state")
+        break
+    if not route_patch_applied:
+        raise RequiredPatchError("W14J-RTW: route_to_writer target not found")
 
     # ============================  END WAVE 4 PATCHES  ===========================
 

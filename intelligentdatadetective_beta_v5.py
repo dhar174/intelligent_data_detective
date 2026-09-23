@@ -3404,6 +3404,45 @@ def drop_column(df_id: str, column_name: str) -> str:
     )
     return f"Column dropped successfully. New columns: {new_columns}"
 
+def _build_query_view(df: pd.DataFrame) -> pd.DataFrame:
+    """Construct a query-only DataFrame projection with deterministic bindings.
+
+    Rules:
+    1. Original string labels keep their unchanged names and bindings.
+    2. Non-string labels receive a string compatibility alias (str(col)) only
+       when the alias is unique among candidate aliases and not already owned
+       by an original string column.
+    3. Shadowed or ambiguous non-string columns are excluded from the query
+       namespace only; the stored DataFrame and its schema remain untouched.
+    4. Positional selection (.iloc) ensures competing raw labels never collide.
+    """
+    string_labels = {col for col in df.columns if isinstance(col, str)}
+    alias_counts: dict[str, int] = {}
+    for col in df.columns:
+        if not isinstance(col, str):
+            alias = str(col)
+            alias_counts[alias] = alias_counts.get(alias, 0) + 1
+
+    kept_indices: list[int] = []
+    kept_names: list[str] = []
+    for i, col in enumerate(df.columns):
+        if isinstance(col, str):
+            kept_indices.append(i)
+            kept_names.append(col)
+        else:
+            alias = str(col)
+            if alias not in string_labels and alias_counts.get(alias, 0) == 1:
+                kept_indices.append(i)
+                kept_names.append(alias)
+
+    if not kept_indices:
+        return pd.DataFrame(index=df.index)
+
+    query_df = df.iloc[:, kept_indices].copy(deep=False)
+    query_df.columns = kept_names
+    return query_df
+
+
 @tool("delete_rows")
 @cap_output(max_chars=3000, max_bytes=10_000, max_lines=200, add_footer=True, mode="preserve")
 @handle_tool_errors
@@ -3446,7 +3485,8 @@ def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bo
     query_str = " and ".join(f"({condition})" for condition in query_parts)
     df = global_df_registry.get_dataframe(df_id)
     try:
-        rows_to_drop = df.query(query_str).index
+        query_df = _build_query_view(df)
+        rows_to_drop = query_df.query(query_str).index
     except (KeyError, NameError, pd.errors.UndefinedVariableError, SyntaxError, ValueError, TypeError) as exc:
         return _tool_error(
             operation,
@@ -16216,6 +16256,13 @@ def viz_evaluator_node(state: State):
             if t not in task_result_map.keys() and t not in result_task_map.values():
                 final_grade.redo_list.append(t)
         vr_results = state.get("viz_results", []) or []
+        # Pre-calculate sets for membership testing to improve performance from O(N*M) to O(N+M)
+        task_result_titles = {r.visualization_title for r in task_result_map.values()}
+        spec_result_ids = {res.visualization_id for res in spec_result_map.values()}
+        normalized_spec_result_keys = {
+            s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)
+        }
+
         for r in results:
             if r.visualization_title in final_grade.redo_list:
                 results.remove(r)
@@ -16224,13 +16271,21 @@ def viz_evaluator_node(state: State):
                         vr_results.remove(vr)
                         break
             else:
+                normalized_visualization_id = (
+                    r.visualization_id.lower().strip()
+                    if isinstance(r.visualization_id, str)
+                    else None
+                )
                 if r.visualization_id in result_task_map.keys():
                     tasks.remove(result_task_map[r.visualization_id])
-                elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:
+                elif r.visualization_title in task_result_titles:
                     tasks.remove(r.visualization_title)
                 if r.visualization_id in result_spec_map.keys():
                     specs.remove(result_spec_map[r.visualization_id])
-                elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:
+                elif (
+                    r.visualization_id in spec_result_ids
+                    or normalized_visualization_id in normalized_spec_result_keys
+                ):
                     specs.remove(result_spec_map[r.visualization_title])
         memory_text = f"The Visualization Evaluator has produced feedback on the latest run of visualizations. The final grade is {final_grade.grade} with the following feedback: {final_grade.feedback}.\n"
         for res in results:
