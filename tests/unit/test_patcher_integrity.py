@@ -291,6 +291,16 @@ def test_obsolete_report_state_fields_are_not_generated(generated_notebook):
         assert obsolete_field not in source
 
 
+def test_generated_supervisor_converts_tool_and_ai_messages_to_human_messages(
+    generated_notebook,
+):
+    notebook = generated_notebook["notebook"]
+    source = _cell_source(notebook, "make_supervisor_node")
+    assert 'HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}"' in source
+    assert "isinstance(agent_msg, (ToolMessage, AIMessage))" in source
+    assert "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg" not in source
+
+
 def _create_dummy_png(path: Path, color=(200, 50, 50)):
     path.parent.mkdir(parents=True, exist_ok=True)
     img = Image.new("RGB", (120, 80), color=color)

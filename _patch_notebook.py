@@ -2820,6 +2820,49 @@ def main():
     if not sv_assert_patched:
         print("⚠️  P1-G assert fallback: supervisor cell not found")
 
+    # --- Patch supervisor_node: P1-TM convert ToolMessage and AIMessage to HumanMessage ---
+    # Convert ToolMessage and AIMessage to HumanMessage to avoid "No tool call found" errors
+    # when worker agent responses are passed back as supervisor context.
+    sv_tm_conv_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        if "PATCH: P1-TM" in src or (
+            'agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}"' in src
+            and 'isinstance(agent_msg, (ToolMessage, AIMessage))' in src
+        ):
+            print(f"ℹ️  Cell idx {idx}: supervisor already has P1-TM tool/AI message conversion patch")
+            sv_tm_conv_patched = True
+            break
+        new_src = src
+        # 1. agent_rq_msgs append: convert AIMessage to HumanMessage with [Agent Tool Output] prefix
+        old_rq_append = "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))"
+        new_rq_append = 'agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}", name=this_last_agent_id))  # PATCH: P1-TM'
+        if old_rq_append in new_src:
+            new_src = new_src.replace(old_rq_append, new_rq_append, 1)
+
+        # 2. Convert ToolMessage and AIMessage in recipient matching loops
+        old_isinstance = "if isinstance(agent_msg, ToolMessage):"
+        new_isinstance = "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM"
+        if old_isinstance in new_src:
+            new_src = new_src.replace(old_isinstance, new_isinstance)
+
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-TM ToolMessage/AIMessage to HumanMessage conversion patched")
+            sv_tm_conv_patched = True
+        else:
+            print(f"ℹ️  Cell idx {idx}: P1-TM conversion pattern already present or absent")
+            sv_tm_conv_patched = True
+        break
+    if not sv_tm_conv_patched:
+        print("ℹ️  P1-TM tool/AI message conversion: supervisor cell not found")
+
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
     # Fix: cap at 60 steps; on GraphRecursionError return a recovery DataVisualization.
