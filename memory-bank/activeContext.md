@@ -465,7 +465,35 @@ This is now the strongest completion baseline:
 - `test_validate_run.py tests/unit tests/integration -q`: **366 passed, 9 skipped, 0 failed** (100% pass).
 - `test_prompt_formatting.py test_prompt_template_fixes.py`: **17 passed**.
 - `git diff --check`: 0 errors.
-- Hosted GitHub Actions validation (Run `35646531086`, Job `106488238896`): **passed green in 1m55s** (test-merge `9c69652` on Python 3.12.14 / `pandas-3.0.6`, 366 passed, 9 skipped).
-<!-- session-curated:2026-09-21-pr149-correctness-fixes:end -->
+<!-- session-curated:2026-09-23-pr130-tool-message-conversion:start -->
+## 2026-09-23 — PR #130: Convert ToolMessage and AIMessage to HumanMessage in Supervisor Workflow
+
+### Context & Review Findings
+- PR #130 initially modified only `IntelligentDataDetective_beta_v5.ipynb` to convert `ToolMessage` and `AIMessage` to `HumanMessage` with prefix `[Agent Tool Output]: ` in the supervisor reply context.
+- Reviews from `chatgpt-codex-connector` and `copilot-pull-request-reviewer` correctly noted that the canonical runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb` remained unregenerated, and the patch was not encoded in `_patch_notebook.py`.
+- Additionally, `intelligentdatadetective_beta_v5.py` lacked parity with the notebook supervisor message handling.
+
+### Solution Applied
+1. **Patcher Workflow Integration (`_patch_notebook.py`):**
+   - Added patch `P1-TM` to target the `supervisor_node` factory cell.
+   - Converts `agent_rq_msgs.append(AIMessage(...))` to `agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: ..."))`.
+   - Converts `if isinstance(agent_msg, ToolMessage):` to `if isinstance(agent_msg, (ToolMessage, AIMessage)):` in recipient matching loops.
+   - Fully idempotent: detects if changes are already present in source cell and skips gracefully.
+2. **Canonical Runnable Notebook (`IntelligentDataDetective_beta_v5_patched.ipynb`):**
+   - Regenerated via `_patch_notebook.py`; 99 cells preserved; verified clean AST compilation across all code cells.
+3. **Python Module Parity (`intelligentdatadetective_beta_v5.py`):**
+   - Synchronized lines 13587, 13707, and 13722 to use `HumanMessage` and `(ToolMessage, AIMessage)` checks.
+4. **Patcher Integrity Test (`tests/unit/test_patcher_integrity.py`):**
+   - Added `test_generated_supervisor_converts_tool_and_ai_messages_to_human_messages` ensuring the patched notebook contains the expected conversions and does not emit raw `AIMessage` appends.
+
+### Verification Baseline
+- `tests/unit/test_patcher_integrity.py`: **47/47 passed** (was 46).
+- `test_validate_run.py tests/unit tests/integration -q`: **367 passed, 9 skipped, 0 failed** (was 366).
+- `test_prompt_formatting.py test_prompt_template_fixes.py`: **17/17 passed**.
+- `test_intelligent_data_detective.py`: **22/22 passed**.
+- `prompt_template_validator.py`: **0 errors**.
+- `git diff --check`: 0 errors.
+<!-- session-curated:2026-09-23-pr130-tool-message-conversion:end -->
+
 
 

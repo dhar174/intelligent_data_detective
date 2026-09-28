@@ -13,7 +13,12 @@ from unittest.mock import MagicMock
 from PIL import Image
 import pytest
 
-from _patch_notebook import RequiredPatchError, replace_required, replace_required_regex
+from _patch_notebook import (
+    RequiredPatchError,
+    apply_p1_tm_supervisor_patch,
+    replace_required,
+    replace_required_regex,
+)
 from idd_core import (
     DataVisualization,
     FileResult,
@@ -26,13 +31,19 @@ from idd_core import (
     _is_subpath,
     _resolve_artifact_path,
 )
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    ToolMessage,
+    convert_to_openai_messages,
+)
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from validate_artifact_quality import check_embeds, check_pdf
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PATCHER = REPO_ROOT / "_patch_notebook.py"
+SOURCE_NOTEBOOK = REPO_ROOT / "IntelligentDataDetective_beta_v5.ipynb"
 PATCHED_NOTEBOOK = REPO_ROOT / "IntelligentDataDetective_beta_v5_patched.ipynb"
 
 
@@ -289,6 +300,121 @@ def test_obsolete_report_state_fields_are_not_generated(generated_notebook):
         "report_generation_trace",
     ):
         assert obsolete_field not in source
+
+
+def test_generated_supervisor_converts_tool_and_ai_messages_to_human_messages(
+    generated_notebook,
+):
+    notebook = generated_notebook["notebook"]
+    source = _cell_source(notebook, "make_supervisor_node")
+    assert 'HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}"' in source
+    assert "isinstance(agent_msg, (ToolMessage, AIMessage))" in source
+    assert "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg" not in source
+
+
+def _source_supervisor():
+    return _cell_source(json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8")), "make_supervisor_node")
+
+
+def test_p1_tm_patch_is_complete_and_idempotent():
+    original = _source_supervisor()
+    patched = apply_p1_tm_supervisor_patch(original)
+    assert patched != original
+    assert patched.count("# PATCH: P1-TM") == 3
+    assert apply_p1_tm_supervisor_patch(patched) == patched
+
+
+@pytest.mark.parametrize("damage", ["append", "conversion", "sentinel_incomplete"])
+def test_p1_tm_patch_rejects_missing_or_partial_structure(damage):
+    original = _source_supervisor()
+    if damage == "append":
+        source = original.replace(
+            "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))",
+            "agent_rq_msgs.append(HumanMessage(content=this_last_agent_reply_msg))",
+            1,
+        )
+    elif damage == "conversion":
+        source = original.replace("if isinstance(agent_msg, ToolMessage):", "if agent_msg is None:", 1)
+    else:
+        complete = apply_p1_tm_supervisor_patch(original)
+        source = complete.replace(
+            "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM",
+            "if isinstance(agent_msg, ToolMessage):  # PATCH: P1-TM",
+            1,
+        )
+    with pytest.raises(RequiredPatchError, match="P1-TM"):
+        apply_p1_tm_supervisor_patch(source)
+
+
+def _supervisor_message_statements(source):
+    function = _function_node(source, "make_supervisor_node")
+    append_sites = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Expr)
+        and "agent_rq_msgs.append(" in ast.unparse(node)
+        and "this_last_agent_reply_msg" in ast.unparse(node)
+    ]
+    conversion_sites = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.If)
+        and "isinstance(agent_msg," in ast.unparse(node.test)
+        and "corresponding_agent_msg" in ast.unparse(node)
+    ]
+    assert len(append_sites) == 1
+    assert len(conversion_sites) == 2
+    return append_sites[0], conversion_sites
+
+
+def _execute_message_statement(statement, **values):
+    namespace = {"AIMessage": AIMessage, "HumanMessage": HumanMessage, "ToolMessage": ToolMessage, **values}
+    module = ast.Module(body=[statement], type_ignores=[])
+    ast.fix_missing_locations(module)
+    exec(compile(module, "<supervisor_message>", "exec"), namespace)
+    return namespace
+
+
+def _has_orphaned_tool_call(messages):
+    calls = {call["id"] for msg in messages for call in msg.get("tool_calls", [])}
+    outputs = {msg["tool_call_id"] for msg in messages if msg["role"] == "tool"}
+    return bool(calls - outputs or outputs - calls)
+
+
+def test_generated_supervisor_model_messages_have_safe_roles_and_tool_linkage(generated_notebook):
+    original_append, original_conversions = _supervisor_message_statements(_source_supervisor())
+    generated_source = _cell_source(generated_notebook["notebook"], "make_supervisor_node")
+    patched_append, patched_conversions = _supervisor_message_statements(generated_source)
+
+    def append_reply(statement):
+        values = _execute_message_statement(
+            statement,
+            agent_rq_msgs=[],
+            this_last_agent_reply_msg="worker finished",
+            this_last_agent_id="analyst",
+        )
+        return values["agent_rq_msgs"][0]
+
+    assert convert_to_openai_messages([append_reply(original_append)])[0]["role"] == "assistant"
+    appended = convert_to_openai_messages([append_reply(patched_append)])
+    assert appended == [{"role": "user", "name": "analyst", "content": "[Agent Tool Output]: worker finished"}]
+
+    orphaned_call = AIMessage(
+        content="worker requested tool",
+        name="analyst",
+        tool_calls=[{"name": "inspect_data", "args": {}, "id": "worker-call-1"}],
+    )
+    orphaned_output = ToolMessage(content="tool result", tool_call_id="missing-call", name="analyst")
+    for old_site, new_site in zip(original_conversions, patched_conversions):
+        old = _execute_message_statement(old_site, agent_msg=orphaned_call)["corresponding_agent_msg"]
+        assert _has_orphaned_tool_call(convert_to_openai_messages([old]))
+        for worker_message in (orphaned_call, orphaned_output):
+            normalized = _execute_message_statement(new_site, agent_msg=worker_message)["corresponding_agent_msg"]
+            payload = convert_to_openai_messages([normalized])
+            assert len(payload) == 1
+            assert payload[0]["role"] == "user"
+            assert payload[0]["name"] == "analyst"
+            assert not _has_orphaned_tool_call(payload)
 
 
 def _create_dummy_png(path: Path, color=(200, 50, 50)):

@@ -437,6 +437,39 @@ def assert_patch_present(source, marker, *, patch_id):
         )
 
 
+def apply_p1_tm_supervisor_patch(source):
+    """Replace all supervisor worker-message sites or reject a partial patch."""
+    old_append = "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))"
+    new_append = (
+        'agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: '
+        '{this_last_agent_reply_msg}", name=this_last_agent_id))  # PATCH: P1-TM'
+    )
+    old_conversion = "if isinstance(agent_msg, ToolMessage):"
+    new_conversion = "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM"
+    sites = (
+        (old_append, new_append, 1),
+        (old_conversion, new_conversion, 2),
+    )
+    old_counts = tuple(source.count(old) for old, _, _ in sites)
+    new_counts = tuple(source.count(new) for _, new, _ in sites)
+    expected = tuple(count for _, _, count in sites)
+    if old_counts == (0, 0) and new_counts == expected:
+        return source
+    if old_counts != expected or new_counts != (0, 0):
+        raise RequiredPatchError(
+            f"P1-TM: expected original counts {expected} or patched counts {expected}; "
+            f"found original {old_counts}, patched {new_counts}"
+        )
+    patched = source
+    for old, new, count in sites:
+        patched = patched.replace(old, new, count)
+    if any(patched.count(old) for old, _, _ in sites) or tuple(
+        patched.count(new) for _, new, _ in sites
+    ) != expected:
+        raise RequiredPatchError("P1-TM: incomplete postcondition after replacement")
+    return patched
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -2819,6 +2852,29 @@ def main():
         break
     if not sv_assert_patched:
         print("⚠️  P1-G assert fallback: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-TM convert ToolMessage and AIMessage to HumanMessage ---
+    # Convert ToolMessage and AIMessage to HumanMessage to avoid "No tool call found" errors
+    # when worker agent responses are passed back as supervisor context.
+    sv_tm_conv_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        new_src = apply_p1_tm_supervisor_patch(src)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-TM ToolMessage/AIMessage to HumanMessage conversion patched")
+        else:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has complete P1-TM conversion")
+        sv_tm_conv_patched = True
+        break
+    if not sv_tm_conv_patched:
+        raise RequiredPatchError("P1-TM: supervisor cell not found")
 
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.
