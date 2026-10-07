@@ -1,9 +1,15 @@
 """
-run_notebook_live.py -- Headless execution of the IDD v5 source notebook
+run_notebook_live.py -- Headless execution of the IDD v5 patched notebook
 
 Usage:
     python run_notebook_live.py           # fresh run (deletes checkpoints.sqlite)
     python run_notebook_live.py --resume  # resume from last checkpoint
+    python run_notebook_live.py --preflight  # scientific imports only; no full runtime proof
+
+Defaults to IntelligentDataDetective_beta_v5_patched.ipynb.
+Set IDD_NOTEBOOK deliberately to select another notebook.
+--preflight checks six scientific imports and the install flag in the selected
+Jupyter kernel, not all notebook imports, API keys, graph execution, or reporting.
 
 Requirements:
     pip install nbclient nbformat jupyter_client ipykernel
@@ -28,7 +34,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent
-NOTEBOOK_NAME = os.environ.get("IDD_NOTEBOOK", "IntelligentDataDetective_beta_v5.ipynb")
+NOTEBOOK_NAME = os.environ.get("IDD_NOTEBOOK", "IntelligentDataDetective_beta_v5_patched.ipynb")
 NOTEBOOK_PATH = REPO_ROOT / NOTEBOOK_NAME
 OUTPUT_DIR = REPO_ROOT / "IDD_results"
 TIMEOUT = 3600  # 60 minutes — analyst/data_cleaner each cap at ~15-20 min with recovery
@@ -40,6 +46,14 @@ LANGSMITH_ENV_NAMES = (
     "LANGCHAIN_TRACING_V2",
     "LANGSMITH_WORKSPACE_ID",
     "LANGCHAIN_CALLBACKS_BACKGROUND",
+)
+SCIENTIFIC_MODULES = (
+    "numpy",
+    "pandas",
+    "scipy.stats",
+    "sklearn.preprocessing",
+    "matplotlib.pyplot",
+    "matplotlib.figure",
 )
 
 
@@ -279,7 +293,7 @@ def configure_skip_notebook_installs() -> str:
 
 
 def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
-    """Preflight check the scientific imports used by the notebook."""
+    """Check scientific imports and install-flag inheritance, not the full runtime."""
     try:
         import nbformat
         from nbclient import NotebookClient
@@ -292,9 +306,8 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
 
     print(f"OK  Probing scientific stack in kernel: {kernel_name}")
     code = (
-        "import importlib, json\n"
-        "modules = ['numpy', 'pandas', 'scipy.stats', 'sklearn.preprocessing', "
-        "'matplotlib.pyplot', 'matplotlib.figure']\n"
+        "import importlib, json, os\n"
+        f"modules = {SCIENTIFIC_MODULES!r}\n"
         "results = {}\n"
         "for name in modules:\n"
         "    try:\n"
@@ -303,7 +316,10 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
         "        results[name] = {'ok': True, 'version': getattr(package, '__version__', 'unknown')}\n"
         "    except Exception as exc:\n"
         "        results[name] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}\n"
-        "print('SCIENTIFIC_STACK_PREFLIGHT=' + json.dumps(results, sort_keys=True))\n"
+        "flag = os.environ.get('IDD_SKIP_NOTEBOOK_INSTALLS')\n"
+        "payload = {'modules': results, 'install_flag': flag,\n"
+        "           'installs_skipped': (flag or '').strip().lower() in {'1', 'true', 'yes', 'on'}}\n"
+        "print('SCIENTIFIC_STACK_PREFLIGHT=' + json.dumps(payload, sort_keys=True))\n"
     )
     nb = nbformat.v4.new_notebook()
     nb.cells.append(nbformat.v4.new_code_cell(code))
@@ -331,7 +347,27 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
         return False
 
     import json as _json
-    data = _json.loads(probe_line.split("=", 1)[1])
+    try:
+        payload = _json.loads(probe_line.split("=", 1)[1])
+        if not isinstance(payload, dict):
+            raise ValueError("expected a result object")
+        data = payload.get("modules")
+        if not isinstance(data, dict) or set(data) != set(SCIENTIFIC_MODULES):
+            raise ValueError("missing or unexpected scientific import results")
+        if any(not isinstance(info, dict) or type(info.get("ok")) is not bool for info in data.values()):
+            raise ValueError("invalid scientific import status")
+        expected_flag = os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")
+        expected_skip = (expected_flag or "").strip().lower() in {"1", "true", "yes", "on"}
+        if (
+            "install_flag" not in payload
+            or payload["install_flag"] != expected_flag
+            or type(payload.get("installs_skipped")) is not bool
+            or payload["installs_skipped"] != expected_skip
+        ):
+            raise ValueError("IDD_SKIP_NOTEBOOK_INSTALLS inheritance or normalization mismatch")
+    except (ValueError, TypeError) as exc:
+        print(f"ERR Invalid scientific stack probe result: {exc}")
+        return False
     failed = [f"{name} ({info.get('error', 'unknown error')})" for name, info in sorted(data.items()) if not info.get("ok")]
     if failed:
         print(f"ERR Kernel scientific stack preflight failed: {', '.join(failed)}")
@@ -339,6 +375,7 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
 
     versions_str = ", ".join(f"{name} {info.get('version', '?')}" for name, info in sorted(data.items()))
     print(f"OK  Kernel scientific stack preflight passed ({kernel_name}): {versions_str}")
+    print(f"OK  Kernel install flag inherited; installs_skipped={expected_skip}")
     return True
 
 
@@ -633,7 +670,9 @@ def print_artifact_summary(artifacts_by_ext, notebook_paths):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run IDD v5 notebook headlessly")
+    parser = argparse.ArgumentParser(
+        description="Run IDD v5 patched notebook headlessly (override with IDD_NOTEBOOK)"
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -654,9 +693,15 @@ def main():
     parser.add_argument(
         "--preflight",
         action="store_true",
-        help="Run scientific stack and environment preflight without executing the full notebook.",
+        help="Check six scientific imports and install-flag inheritance in Jupyter; not a full runtime/environment proof.",
     )
     args = parser.parse_args()
+
+    print(f"OK  Selected notebook: {NOTEBOOK_PATH}")
+    if not NOTEBOOK_PATH.is_file():
+        print(f"ERR Notebook not found: {NOTEBOOK_PATH}")
+        print("    Set IDD_NOTEBOOK to an existing notebook filename if overriding the default.")
+        sys.exit(1)
 
     if args.preflight:
         configure_skip_notebook_installs()

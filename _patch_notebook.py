@@ -672,6 +672,23 @@ def apply_dataframe_registry_path_binding_patch(source: str) -> str:
     return patched
 
 
+def apply_dataframe_registry_retained_path_patch(source: str) -> str:
+    """Keep the new-ID reload metadata identical to the normalized I/O path."""
+    old = (
+        '          self.registry[df_id] = {"df": df, "raw_path": str(raw_path)}\n'
+        '          self.df_id_to_raw_path[df_id] = str(raw_path)'
+    )
+    new = (
+        '          self.registry[df_id] = {"df": df, "raw_path": str(path)}\n'
+        '          self.df_id_to_raw_path[df_id] = str(path)  # PATCH: P3-RETAINED-PATH'
+    )
+    if "# PATCH: P3-RETAINED-PATH" in source:
+        if source.count(new) != 1 or source.count(old) != 0 or source.count("# PATCH: P3-RETAINED-PATH") != 1:
+            raise RequiredPatchError("P3-RETAINED-PATH: corrupted retained path metadata")
+        return source
+    return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -707,6 +724,7 @@ def main():
         )
     idx, cell = df_reg_cells[0]
     cell["source"] = apply_dataframe_registry_path_binding_patch(join_source(cell["source"]))
+    cell["source"] = apply_dataframe_registry_retained_path_patch(cell["source"])
     cell["outputs"] = []
     cell["execution_count"] = None
     print(f"✅ Cell idx {idx}: fixed DataFrameRegistry path binding (P3-DF-REG-PATH)")

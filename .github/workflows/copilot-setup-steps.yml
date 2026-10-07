@@ -124,6 +124,22 @@ jobs:
       - name: Run no-key unit and integration tests
         run: python -m pytest test_validate_run.py tests/unit tests/integration -q
 
+      - name: Provision scientific preflight smoke kernel
+        run: |
+          python -m pip install nbclient==0.11.0 nbformat==5.11.1 jupyter-client==8.10.0 ipykernel==7.4.0
+          python -m ipykernel install --user --name idd-preflight --display-name "IDD scientific smoke"
+
+      - name: Run real-kernel scientific preflight smoke
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+        run: python -m pytest tests/smoke/test_scientific_kernel.py -q -s
+
+      - name: Record validation dependency environment
+        run: |
+          python --version
+          python -m pip freeze
+
       - name: Run root regression tests
         run: |
           python -m pytest \

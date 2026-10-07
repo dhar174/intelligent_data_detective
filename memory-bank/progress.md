@@ -21,17 +21,22 @@
 - Error handling tests: **15/16 pass** (1 known edge-case failure — acceptable)
 - Memory test suites: all pass
 - Notebook execution: functional end-to-end (requires `OPENAI_API_KEY`; 6–25 min)
-- Patched notebook completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`
-- Final artifacts: canonical root `final_report.html`, `final_report.md`, `final_report.pdf`, resolving HTML images, parseable PDF, no marker `.txt` artifacts
+- Historical W14 completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`; not a fresh PR #153 proof.
+- Historical W14 artifacts: canonical root `final_report.html`, `final_report.md`, `final_report.pdf`, resolving HTML images, parseable PDF, no marker `.txt` artifacts.
 - Agent stack: all guidance files present, managed sections safe for future maintenance runs
 
 ## What is incomplete
+- #115/#119 remain open production-completion blockers: the reported September 29 run failed 5/12 with zero sections and `report=None`. PR #153 is bootstrap/registry prerequisite work, not report routing or production certification.
+- Whole-runtime consolidation of the textual Python export belongs to #140; registry ownership/deduplication and broader persistence policy remain in #141. Only selected snippet parity is tested here.
+- Antigravity memory-rule proposals are inactive evidence for #152, not empirically loaded rules; [preserved memory proposal](../docs/evidence/proposals/issue-152-memory.txt), [workflow proposal](../docs/evidence/proposals/issue-152-memory-workflow.txt).
 - CI intentionally excludes the full API-key notebook trajectory proof; `.github/workflows/copilot-setup-steps.yml` currently gates only no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps on `pull_request`, `push` to `main`, and `workflow_dispatch`.
 - `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
 - Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
 - The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.
 
 ## Validation status
+PR #153 revised-worktree evidence: [commands, dependency environment, skips, known isolated failure, and actual-kernel smoke](../docs/evidence/pr-153-validation.json). Required local suites passed (451 no-key + 94 root/prompt + 15 required error-handling); actual-kernel smoke passed 3/3. The exact pre-existing signature exception still fails separately. These are local results, not hosted CI or production certification.
+
 ```bash
 python -m pytest test_validate_run.py -q
 python -m pytest test_validate_run.py tests/unit tests/integration -q
@@ -53,7 +58,7 @@ Post-W14 repo hygiene: closed stale Phase 6 issues, rescoped #121 as defensive h
 
 | Run | Outcome | Notes |
 |---|---|---|
-| Fresh Live (2026-09-29) | **5/12 (`validate_run.py`)** | `run_default_id-20260929-0210-367d732a` (877s). Preflight clean with `IDD_SKIP_NOTEBOOK_INSTALLS=1`; Cell 19 path binding patched (`P3-DF-REG-PATH`). 0 recoveries, 0 tracebacks, 0 stub files. Reached report fan-out where `dispatch_sections` omitted `cleaning_metadata`, causing `section_worker` to abort with `goto="data_cleaner"`. RC2 root cause verified. |
+| Failed Live (reported 2026-09-29) | **5/12 (`validate_run.py`), not accepted proof** | `run_default_id-20260929-0210-367d732a` (877s). Zero sections, `report=None`, two distinct visualizations. [Stable log](../docs/evidence/runs/2026-09-29-run_default_id-20260929-0210-367d732a/notebook_run_log.txt) and [reported environment/validator/provenance](../docs/evidence/runs/2026-09-29-run_default_id-20260929-0210-367d732a/provenance.json). Execution SHA/notebook hash unavailable; run predates the final PR candidate. Report-dispatch repair deferred to #115/#119. |
 | 73 | Baseline; `viz=True / report=True` | Every agent hit `recursion_limit=160` and went down the recovery path. Artifacts produced but not clean. |
 | 74 | **Regression — BR-7** | Managed-channel collision (`remaining_steps`) after switching `State` to inherit from `langgraph.prebuilt` AgentState. Fix: declare `messages` directly with `add_messages`. |
 | 75 | **Regression — BR-8** | `InvalidUpdateError` on `structured_response` at cell 81 (concurrent writes from main node + recovery shims). Also: 12× final-hop `with_structured_output` recovery hits in `viz_evaluator`. Fix: introduce `_sr_reducer`. |

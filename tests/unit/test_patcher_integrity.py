@@ -17,6 +17,7 @@ import pytest
 from _patch_notebook import (
     RequiredPatchError,
     apply_dataframe_registry_path_binding_patch,
+    apply_dataframe_registry_retained_path_patch,
     apply_notebook_install_guard_patch,
     apply_p1_tm_supervisor_patch,
     replace_required,
@@ -478,8 +479,13 @@ def test_kernel_preflight_checks_notebook_scientific_submodules(monkeypatch):
 
         def execute(self):
             result = {name: {"ok": True, "version": "test"} for name in modules}
+            flag = os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")
             self.notebook.cells[0]["outputs"] = [
-                {"text": "SCIENTIFIC_STACK_PREFLIGHT=" + json.dumps(result)}
+                {"text": "SCIENTIFIC_STACK_PREFLIGHT=" + json.dumps({
+                    "modules": result,
+                    "install_flag": flag,
+                    "installs_skipped": (flag or "").strip().lower() in {"1", "true", "yes", "on"},
+                })}
             ]
 
     fake_nbformat = SimpleNamespace(
@@ -684,6 +690,109 @@ def test_generated_dataframe_registry_cell_registers_dataframe(generated_noteboo
     retrieved2 = reg.get_dataframe("test_memory_only")
     assert retrieved2 is not None
     assert len(retrieved2) == 3
+
+
+def test_retained_registry_path_patch_is_idempotent_and_rejects_corruption():
+    original = _source_dataframe_registry_cell()
+    patched = apply_dataframe_registry_retained_path_patch(original)
+    assert apply_dataframe_registry_retained_path_patch(patched) == patched
+    with pytest.raises(RequiredPatchError, match="P3-RETAINED-PATH"):
+        apply_dataframe_registry_retained_path_patch(
+            patched.replace('"raw_path": str(path)', '"raw_path": str(raw_path)', 1)
+        )
+
+
+@pytest.fixture(params=["notebook", "textual_export"])
+def production_registry(request, generated_notebook, tmp_path):
+    import threading
+    import uuid
+    from collections import OrderedDict
+    import pandas as pd
+
+    if request.param == "notebook":
+        source = next(
+            "".join(cell["source"])
+            for cell in generated_notebook["notebook"]["cells"]
+            if cell.get("cell_type") == "code"
+            and "class DataFrameRegistry:" in "".join(cell["source"])
+        )
+        node = next(node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == "DataFrameRegistry")
+    else:
+        source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(encoding="utf-8")
+        # The textual export is not importable; compile only the real registry class.
+        registry_source = source.split("class DataFrameRegistry:", 1)[1]
+        lines = []
+        for line in registry_source.splitlines():
+            if line and not line[0].isspace():
+                break
+            lines.append(line)
+        node = ast.parse("class DataFrameRegistry:" + "\n".join(lines)).body[0]
+    namespace = {
+        "threading": threading, "uuid": uuid, "OrderedDict": OrderedDict,
+        "pd": pd, "PathlibPath": Path, "WORKING_DIRECTORY": tmp_path,
+        "Dict": Dict, "Optional": Optional, "List": List, "os": os, "logging": logging,
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<production_registry>", "exec"), namespace)
+    return namespace["DataFrameRegistry"]()
+
+
+@pytest.mark.parametrize("explicit_path", [False, True])
+def test_production_registry_new_id_paths(production_registry, tmp_path, explicit_path):
+    import pandas as pd
+
+    df = pd.DataFrame({"value": [1, 2]})
+    path = tmp_path / ("explicit.csv" if explicit_path else "new.csv")
+    kwargs = {"raw_path": str(path)} if explicit_path else {}
+    assert production_registry.register_dataframe(df, "new", **kwargs) == "new"
+    assert path.is_file()
+    assert production_registry.registry["new"]["raw_path"] == str(path)
+    assert production_registry.get_raw_path_from_id("new") == str(path)
+    pd.testing.assert_frame_equal(production_registry.get_dataframe("new"), df)
+
+
+@pytest.mark.parametrize("raw_path", ["", None, "explicit.csv"])
+@pytest.mark.parametrize("with_dataframe", [False, True])
+def test_production_registry_existing_id_paths(production_registry, tmp_path, raw_path, with_dataframe):
+    import pandas as pd
+
+    df = pd.DataFrame({"value": [1]})
+    original_path = tmp_path / "original.csv"
+    production_registry.register_dataframe(df, "existing", str(original_path))
+    updated = pd.DataFrame({"value": [2]}) if with_dataframe else None
+    explicit = str(tmp_path / raw_path) if raw_path else raw_path
+    production_registry.register_dataframe(updated, "existing", explicit)
+    if raw_path:
+        expected = tmp_path / raw_path
+    elif with_dataframe:
+        expected = tmp_path / "existing.csv"
+        pd.testing.assert_frame_equal(pd.read_csv(expected), updated)
+    else:
+        expected = original_path
+    assert production_registry.registry["existing"]["raw_path"] == str(expected)
+    assert production_registry.get_raw_path_from_id("existing") == str(expected)
+    if updated is not None:
+        pd.testing.assert_frame_equal(production_registry.get_dataframe("existing"), updated)
+
+
+@pytest.mark.parametrize("with_dataframe", [False, True])
+def test_production_registry_relative_path_reload_after_chdir(production_registry, tmp_path, monkeypatch, with_dataframe):
+    import pandas as pd
+
+    monkeypatch.chdir(tmp_path)
+    df = pd.DataFrame({"value": [3, 4]})
+    original_path = tmp_path / "relative.csv"
+    df.to_csv(original_path, index=False)
+    production_registry.register_dataframe(df if with_dataframe else None, "relative", "relative.csv")
+    assert production_registry.registry["relative"]["raw_path"] == str(original_path)
+    assert production_registry.get_raw_path_from_id("relative") == str(original_path)
+    production_registry.cache.clear()
+    production_registry.registry["relative"]["df"] = None
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    pd.testing.assert_frame_equal(
+        production_registry.get_dataframe("relative", load_if_not_exists=True), df
+    )
 
 
 def _supervisor_message_statements(source):

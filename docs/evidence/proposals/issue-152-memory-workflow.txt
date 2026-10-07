@@ -1,3 +1,8 @@
+Deferred proposal for #152; NOT an active Antigravity rule.
+Preserved from b633da5 for follow-up configuration/discovery review.
+Required follow-up: activation metadata, named team/one-writer role mappings,
+real authority paths, local-memory fallback, and actual runtime discovery.
+
 # Memory Workflow
 
 mem0ry4ai is the repository's durable cross-session context layer. It is useful context, never a higher authority than current repository contracts or evidence.

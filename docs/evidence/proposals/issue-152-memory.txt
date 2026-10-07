@@ -1,3 +1,7 @@
+Deferred proposal for #152; NOT an active Antigravity rule.
+Preserved from b633da5 for follow-up configuration/discovery review.
+Known correction needed: replace the nonexistent Archcore/.archcore authority.
+
 # Memory & Context
 
 Use the mem0ry4ai MCP tools for durable cross-session context.
