@@ -9,12 +9,11 @@ When information conflicts, prefer this order:
 1. current user instruction;
 2. `AGENTS.md` and `GEMINI.md`;
 3. applicable `.agents/rules/`;
-4. `.archcore/` contracts and architecture;
-5. active issue / task requirements;
-6. current source code and tests;
-7. current verified documentation;
-8. mem0ry4ai durable memory;
-9. tentative working-memory notes.
+4. active issue / task requirements;
+5. current source code and tests;
+6. `docs/architecture.md` and current verified documentation;
+7. mem0ry4ai durable memory;
+8. tentative working-memory notes.
 
 Never implement something merely because a memory says it was once true.
 

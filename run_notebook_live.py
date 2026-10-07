@@ -279,7 +279,7 @@ def configure_skip_notebook_installs() -> str:
 
 
 def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
-    """Preflight check: verify kernel can import numpy, pandas, scipy, matplotlib without errors."""
+    """Preflight check the scientific imports used by the notebook."""
     try:
         import nbformat
         from nbclient import NotebookClient
@@ -292,13 +292,15 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
 
     print(f"OK  Probing scientific stack in kernel: {kernel_name}")
     code = (
-        "import sys, json\n"
-        "modules = ['numpy', 'pandas', 'scipy', 'matplotlib']\n"
+        "import importlib, json\n"
+        "modules = ['numpy', 'pandas', 'scipy.stats', 'sklearn.preprocessing', "
+        "'matplotlib.pyplot', 'matplotlib.figure']\n"
         "results = {}\n"
         "for name in modules:\n"
         "    try:\n"
-        "        mod = __import__(name)\n"
-        "        results[name] = {'ok': True, 'version': getattr(mod, '__version__', 'unknown')}\n"
+        "        importlib.import_module(name)\n"
+        "        package = importlib.import_module(name.split('.', 1)[0])\n"
+        "        results[name] = {'ok': True, 'version': getattr(package, '__version__', 'unknown')}\n"
         "    except Exception as exc:\n"
         "        results[name] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}\n"
         "print('SCIENTIFIC_STACK_PREFLIGHT=' + json.dumps(results, sort_keys=True))\n"

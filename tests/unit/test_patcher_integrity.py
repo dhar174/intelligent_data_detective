@@ -7,6 +7,7 @@ import sys
 import logging
 import os
 import re
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Union
 from unittest.mock import MagicMock
 
@@ -432,6 +433,46 @@ def test_runner_exports_skip_notebook_installs_to_child_process(monkeypatch):
         text=True,
     )
     assert child_val.strip() == skip_val
+
+
+def test_kernel_preflight_checks_notebook_scientific_submodules(monkeypatch):
+    import run_notebook_live
+
+    captured = {}
+    modules = [
+        "numpy",
+        "pandas",
+        "scipy.stats",
+        "sklearn.preprocessing",
+        "matplotlib.pyplot",
+        "matplotlib.figure",
+    ]
+
+    class FakeNotebookClient:
+        def __init__(self, notebook, **kwargs):
+            self.notebook = notebook
+            captured["code"] = notebook.cells[0]["source"]
+
+        def execute(self):
+            result = {name: {"ok": True, "version": "test"} for name in modules}
+            self.notebook.cells[0]["outputs"] = [
+                {"text": "SCIENTIFIC_STACK_PREFLIGHT=" + json.dumps(result)}
+            ]
+
+    fake_nbformat = SimpleNamespace(
+        v4=SimpleNamespace(
+            new_notebook=lambda: SimpleNamespace(cells=[]),
+            new_code_cell=lambda source: {"source": source, "outputs": []},
+        )
+    )
+    fake_nbclient = SimpleNamespace(NotebookClient=FakeNotebookClient)
+    monkeypatch.setitem(sys.modules, "nbformat", fake_nbformat)
+    monkeypatch.setitem(sys.modules, "nbclient", fake_nbclient)
+
+    assert run_notebook_live.probe_kernel_scientific_stack("python3")
+    assert "importlib.import_module(name)" in captured["code"]
+    for module in modules:
+        assert repr(module) in captured["code"]
 
 
 @pytest.mark.parametrize("nbclient_available", [False, True])
