@@ -53,6 +53,7 @@ Post-W14 repo hygiene: closed stale Phase 6 issues, rescoped #121 as defensive h
 
 | Run | Outcome | Notes |
 |---|---|---|
+| Fresh Live (2026-09-29) | **5/12 (`validate_run.py`)** | `run_default_id-20260929-0210-367d732a` (877s). Preflight clean with `IDD_SKIP_NOTEBOOK_INSTALLS=1`; Cell 19 path binding patched (`P3-DF-REG-PATH`). 0 recoveries, 0 tracebacks, 0 stub files. Reached report fan-out where `dispatch_sections` omitted `cleaning_metadata`, causing `section_worker` to abort with `goto="data_cleaner"`. RC2 root cause verified. |
 | 73 | Baseline; `viz=True / report=True` | Every agent hit `recursion_limit=160` and went down the recovery path. Artifacts produced but not clean. |
 | 74 | **Regression — BR-7** | Managed-channel collision (`remaining_steps`) after switching `State` to inherit from `langgraph.prebuilt` AgentState. Fix: declare `messages` directly with `add_messages`. |
 | 75 | **Regression — BR-8** | `InvalidUpdateError` on `structured_response` at cell 81 (concurrent writes from main node + recovery shims). Also: 12× final-hop `with_structured_output` recovery hits in `viz_evaluator`. Fix: introduce `_sr_reducer`. |

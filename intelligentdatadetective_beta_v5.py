@@ -1112,6 +1112,7 @@ class DataFrameRegistry:
           if raw_path == "" or raw_path is None:
               raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()
               raw_path = str(raw_path)
+          path = self._norm_path(raw_path)
 
           # new id: must have either df or an existing path
           if df is None and not path.exists():

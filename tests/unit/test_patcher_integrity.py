@@ -15,6 +15,8 @@ import pytest
 
 from _patch_notebook import (
     RequiredPatchError,
+    apply_dataframe_registry_path_binding_patch,
+    apply_notebook_install_guard_patch,
     apply_p1_tm_supervisor_patch,
     replace_required,
     replace_required_regex,
@@ -344,6 +346,193 @@ def test_p1_tm_patch_rejects_missing_or_partial_structure(damage):
         )
     with pytest.raises(RequiredPatchError, match="P1-TM"):
         apply_p1_tm_supervisor_patch(source)
+
+
+def _source_dependency_cell():
+    nb = json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8"))
+    return "".join(nb["cells"][4]["source"])
+
+
+def test_apply_notebook_install_guard_patch_complete_and_idempotent():
+    original = _source_dependency_cell()
+    patched = apply_notebook_install_guard_patch(original)
+    assert patched != original
+    assert patched.count("# PATCH: P2-SKIP-INSTALLS") == 1
+    assert "IDD_SKIP_NOTEBOOK_INSTALLS" in patched
+    assert "_skip_notebook_installs" in patched
+    assert "Skipping in-notebook dependency installation;" in patched
+    assert not any(re.match(r"^\s*!pip\b", line) for line in patched.splitlines())
+    # Idempotence check
+    assert apply_notebook_install_guard_patch(patched) == patched
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_anchor",
+        "partial_guard_flag",
+        "partial_guard_env",
+        "corrupted_postcondition",
+        "multiple_anchors",
+    ],
+)
+def test_apply_notebook_install_guard_patch_rejects_missing_or_partial_structure(damage):
+    original = _source_dependency_cell()
+    if damage == "missing_anchor":
+        source = "x = 1\ny = 2\n"
+    elif damage == "partial_guard_flag":
+        source = original + "\n_skip_notebook_installs = True\n"
+    elif damage == "partial_guard_env":
+        source = original + '\nos.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")\n'
+    elif damage == "corrupted_postcondition":
+        patched = apply_notebook_install_guard_patch(original)
+        source = patched.replace("Skipping in-notebook dependency installation;", "hello")
+    else:  # multiple_anchors
+        source = original + "\n" + original
+    with pytest.raises(RequiredPatchError, match="P2-SKIP-INSTALLS"):
+        apply_notebook_install_guard_patch(source)
+
+
+def test_generated_dependency_cell_contains_skip_contract(generated_notebook):
+    nb = generated_notebook["notebook"]
+    assert len(nb["cells"]) == 99
+    c4 = nb["cells"][4]
+    src4 = "".join(c4["source"])
+    assert "# PATCH: P2-SKIP-INSTALLS" in src4
+    assert "IDD_SKIP_NOTEBOOK_INSTALLS" in src4
+    assert "_skip_notebook_installs" in src4
+    assert "Skipping in-notebook dependency installation;" in src4
+    assert not any(re.match(r"^\s*!pip\b", line) for line in src4.splitlines())
+    # Verify the cell parses as valid Python AST
+    ast.parse(src4)
+
+
+def test_runner_exports_skip_notebook_installs_to_kernel():
+    import run_notebook_live
+    import nbformat
+    from nbclient import NotebookClient
+
+    # Ensure configure_skip_notebook_installs sets the contract variable
+    skip_val = run_notebook_live.configure_skip_notebook_installs()
+    assert skip_val in {"1", "true", "yes", "on"}
+    assert os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS") == skip_val
+
+    # Inexpensive executable helper test proving kernel environment inheritance
+    kernel_name = run_notebook_live.select_kernel_name()
+    nb = nbformat.v4.new_notebook()
+    code = (
+        "import os\n"
+        "print('KERNEL_ENV_SKIP=' + str(os.environ.get('IDD_SKIP_NOTEBOOK_INSTALLS', 'MISSING')))\n"
+    )
+    nb.cells.append(nbformat.v4.new_code_cell(code))
+    client = NotebookClient(
+        nb,
+        timeout=30,
+        kernel_name=kernel_name,
+        allow_errors=False,
+    )
+    client.execute()
+    output_text = "".join(
+        out.get("text", "") for out in nb.cells[0].get("outputs", [])
+    )
+    assert "KERNEL_ENV_SKIP=1" in output_text or f"KERNEL_ENV_SKIP={skip_val}" in output_text
+
+
+def _source_dataframe_registry_cell():
+    nb = json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8"))
+    for cell in nb["cells"]:
+        src = "".join(cell.get("source", []))
+        if "class DataFrameRegistry:" in src:
+            return src
+    raise ValueError("DataFrameRegistry cell not found in source notebook")
+
+
+def test_apply_dataframe_registry_path_binding_patch_complete_and_idempotent():
+    original = _source_dataframe_registry_cell()
+    patched = apply_dataframe_registry_path_binding_patch(original)
+    assert patched != original
+    assert "# PATCH: P3-DF-REG-PATH" in patched
+    assert patched.count("path = self._norm_path(raw_path)") == 2
+    # Verify idempotence
+    assert apply_dataframe_registry_path_binding_patch(patched) == patched
+    # Verify AST is valid
+    ast.parse(patched)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_anchor",
+        "multiple_anchors",
+        "corrupted_postcondition",
+    ],
+)
+def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_structure(damage):
+    original = _source_dataframe_registry_cell()
+    if damage == "missing_anchor":
+        source = "class DataFrameRegistry:\n    pass\n"
+    elif damage == "multiple_anchors":
+        source = original + "\n" + original
+    else:  # corrupted_postcondition
+        patched = apply_dataframe_registry_path_binding_patch(original)
+        source = patched.replace("path = self._norm_path(raw_path)  # PATCH: P3-DF-REG-PATH", "# PATCH: P3-DF-REG-PATH")
+    with pytest.raises(RequiredPatchError, match="P3-DF-REG-PATH"):
+        apply_dataframe_registry_path_binding_patch(source)
+
+
+def test_generated_dataframe_registry_cell_registers_dataframe(generated_notebook, tmp_path):
+    import pandas as pd
+    nb = generated_notebook["notebook"]
+    reg_cell_src = None
+    for cell in nb["cells"]:
+        src = "".join(cell.get("source", []))
+        if "class DataFrameRegistry:" in src:
+            reg_cell_src = src
+            break
+    assert reg_cell_src is not None
+    assert "# PATCH: P3-DF-REG-PATH" in reg_cell_src
+
+    # Compile and execute DataFrameRegistry in an isolated namespace
+    import uuid
+    from collections import OrderedDict
+    from idd_core import BaseNoExtrasModel, DataVisualization, Field, Literal
+
+    ns = {
+        "WORKING_DIRECTORY": tmp_path,
+        "PathlibPath": Path,
+        "pd": pd,
+        "uuid": uuid,
+        "os": os,
+        "OrderedDict": OrderedDict,
+        "Dict": Dict,
+        "Optional": Optional,
+        "List": List,
+        "Union": Union,
+        "BaseNoExtrasModel": BaseNoExtrasModel,
+        "DataVisualization": DataVisualization,
+        "Field": Field,
+        "Literal": Literal,
+    }
+    exec(reg_cell_src, ns)
+
+    reg = ns["get_global_df_registry"]()
+    df = pd.DataFrame({"col_a": [10, 20, 30], "col_b": ["x", "y", "z"]})
+    test_csv = tmp_path / "orders.csv"
+    df.to_csv(test_csv, index=False)
+
+    # 1. Register with df and explicit raw_path (the exact call from Cell 49)
+    res_id1 = reg.register_dataframe(df, "test_orders", str(test_csv))
+    assert res_id1 == "test_orders"
+    retrieved1 = reg.get_dataframe("test_orders")
+    assert retrieved1 is not None
+    assert len(retrieved1) == 3
+
+    # 2. Register with df and NO raw_path (triggers default WORKING_DIRECTORY path)
+    res_id2 = reg.register_dataframe(df, "test_memory_only")
+    assert res_id2 == "test_memory_only"
+    retrieved2 = reg.get_dataframe("test_memory_only")
+    assert retrieved2 is not None
+    assert len(retrieved2) == 3
 
 
 def _supervisor_message_statements(source):

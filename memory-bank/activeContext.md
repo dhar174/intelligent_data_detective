@@ -47,6 +47,23 @@ The committed runnable notebook is now `IntelligentDataDetective_beta_v5_patched
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
+## 2026-09-29 — Fresh End-to-End Production Run & RC2 Root Cause Verified
+
+### Live Run Summary
+- **Run ID**: `run_default_id-20260929-0210-367d732a` (877s / 14.6 min wall time)
+- **Runtime Environment**: Clean Python 3.12.2 isolated stack (`numpy 1.26.4`, `pandas 2.2.1`, `scipy 1.12.0`, `matplotlib 3.8.3`). Zero package mutation via `# PATCH: P2-SKIP-INSTALLS` (`IDD_SKIP_NOTEBOOK_INSTALLS=1`).
+- **Initialization Fix**: Resolved `UnboundLocalError` on `path` in `DataFrameRegistry.register_dataframe` via `# PATCH: P3-DF-REG-PATH`.
+- **`validate_run.py` Score**: **5 / 12**
+  - **PASS**: Criterion 1 (FINAL marker present), Criterion 3 (0 recoveries / 0 W2-BA-finalhop / 0 W4 negatives), Criterion 4 (0 Tracebacks), Criterion 5 (Native Pydantic structured outputs), Criterion 11 (0 stub marker files — clean!).
+  - **FAIL**: Criterion 2 (`report=None`), Criteria 6–8, 10, 12 (report stage incomplete), Criterion 9 (2 unique viz slugs vs 3 required).
+
+### Critical Forensic Discovery: Root Cause of RC2 (#115)
+- `dispatch_sections` in Cell 57 constructs `Send("report_section_worker", {"section": s.model_dump(...)})` without forwarding `cleaning_metadata` (and companion parent state: `analysis_insights`, `viz_results`, `available_df_ids`).
+- `section_worker` guards on `cm = state.get("cleaning_metadata")`. When `cm is None`, it immediately returns `Command(goto="data_cleaner")`.
+- Every section worker aborted to `data_cleaner` without writing sections, resulting in `written_sections_count=0` at `report_join`.
+- `data_cleaner` skipped ("Data cleaning already complete"), and supervisor looped until the 15-turn limit terminated the run with `report=None`.
+- **Action**: Fix `dispatch_sections` to forward parent state context in the `Send` payload (mirroring `assign_viz_workers` Fix AM-1).
+
 ## Session context — pipeline debugging (mid-session checkpoint)
 
 ### Current objective

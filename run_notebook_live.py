@@ -267,6 +267,79 @@ def probe_langsmith_kernel_env() -> bool:
     return True
 
 
+def configure_skip_notebook_installs() -> str:
+    """Ensure IDD_SKIP_NOTEBOOK_INSTALLS=1 by default; preserve user overrides."""
+    if "IDD_SKIP_NOTEBOOK_INSTALLS" not in os.environ:
+        os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"] = "1"
+        print("OK  Notebook dependency bootstrap: disabled by live-run harness")
+    else:
+        val = os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"]
+        print(f"INFO Notebook dependency bootstrap: preserved from environment (IDD_SKIP_NOTEBOOK_INSTALLS={val})")
+    return os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"]
+
+
+def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
+    """Preflight check: verify kernel can import numpy, pandas, scipy, matplotlib without errors."""
+    try:
+        import nbformat
+        from nbclient import NotebookClient
+    except ImportError as exc:
+        print(f"WARN Cannot probe kernel scientific stack; missing notebook dependency: {exc}")
+        return False
+
+    if not kernel_name:
+        kernel_name = select_kernel_name()
+
+    print(f"OK  Probing scientific stack in kernel: {kernel_name}")
+    code = (
+        "import sys, json\n"
+        "modules = ['numpy', 'pandas', 'scipy', 'matplotlib']\n"
+        "results = {}\n"
+        "for name in modules:\n"
+        "    try:\n"
+        "        mod = __import__(name)\n"
+        "        results[name] = {'ok': True, 'version': getattr(mod, '__version__', 'unknown')}\n"
+        "    except Exception as exc:\n"
+        "        results[name] = {'ok': False, 'error': f'{type(exc).__name__}: {exc}'}\n"
+        "print('SCIENTIFIC_STACK_PREFLIGHT=' + json.dumps(results, sort_keys=True))\n"
+    )
+    nb = nbformat.v4.new_notebook()
+    nb.cells.append(nbformat.v4.new_code_cell(code))
+    try:
+        client = NotebookClient(
+            nb,
+            timeout=60,
+            kernel_name=kernel_name,
+            allow_errors=False,
+            resources={"metadata": {"path": str(REPO_ROOT)}},
+        )
+        client.execute()
+    except Exception as exc:
+        print(f"ERR Scientific stack kernel probe execution failed: {exc}")
+        return False
+
+    probe_line = ""
+    for out in nb.cells[0].get("outputs", []):
+        text = "".join(out.get("text", ""))
+        for line in text.splitlines():
+            if line.startswith("SCIENTIFIC_STACK_PREFLIGHT="):
+                probe_line = line
+    if not probe_line:
+        print("ERR Scientific stack kernel probe produced no result")
+        return False
+
+    import json as _json
+    data = _json.loads(probe_line.split("=", 1)[1])
+    failed = [f"{name} ({info.get('error', 'unknown error')})" for name, info in sorted(data.items()) if not info.get("ok")]
+    if failed:
+        print(f"ERR Kernel scientific stack preflight failed: {', '.join(failed)}")
+        return False
+
+    versions_str = ", ".join(f"{name} {info.get('version', '?')}" for name, info in sorted(data.items()))
+    print(f"OK  Kernel scientific stack preflight passed ({kernel_name}): {versions_str}")
+    return True
+
+
 def check_nbclient():
     try:
         import nbclient  # noqa
@@ -576,7 +649,18 @@ def main():
             "Jupyter kernel without running the full notebook. Secret values are never printed."
         ),
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Run scientific stack and environment preflight without executing the full notebook.",
+    )
     args = parser.parse_args()
+
+    if args.preflight:
+        configure_skip_notebook_installs()
+        kernel_name = select_kernel_name()
+        sci_ok = probe_kernel_scientific_stack(kernel_name)
+        sys.exit(0 if sci_ok else 1)
 
     if args.check_langsmith:
         loaded = load_langsmith_env()
@@ -615,10 +699,16 @@ def main():
             resume_flag_path.unlink()
         print("OK  Fresh run (resume flag cleared)")
 
+    configure_skip_notebook_installs()
     load_api_key()
     load_langsmith_env()
 
     if not check_nbclient():
+        sys.exit(1)
+
+    kernel_name = select_kernel_name()
+    if not probe_kernel_scientific_stack(kernel_name):
+        print("ERR Scientific stack preflight failed; aborting live notebook execution.")
         sys.exit(1)
 
     nb, cell_errors, executed_nb_path = execute_notebook(resume=args.resume)
