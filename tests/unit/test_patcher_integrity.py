@@ -416,6 +416,29 @@ def test_generated_dependency_cell_contains_skip_contract(generated_notebook):
     ast.parse(src4)
 
 
+@pytest.mark.parametrize("skip_value", ["1", " TRUE ", "yes", "on", "0", "false", ""])
+@pytest.mark.parametrize("use_local_llm", [False, True])
+def test_runtime_export_install_guard_matches_notebook(monkeypatch, skip_value, use_local_llm):
+    marker = "# PATCH: P2-SKIP-INSTALLS"
+    end = "# Optional: Use pre-release versions"
+    notebook_source = apply_notebook_install_guard_patch(_source_dependency_cell())
+    export_source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(encoding="utf-8")
+    notebook_guard = notebook_source.split(marker, 1)[1].split(end, 1)[0].strip()
+    export_guard = export_source.split(marker, 1)[1].split(end, 1)[0].strip()
+    assert export_guard == notebook_guard
+
+    monkeypatch.setenv("IDD_SKIP_NOTEBOOK_INSTALLS", skip_value)
+    check_call = MagicMock()
+    exec(export_guard, {
+        "os": os,
+        "sys": sys,
+        "subprocess": SimpleNamespace(check_call=check_call),
+        "use_local_llm": use_local_llm,
+    })
+    expected_calls = 0 if skip_value.strip().lower() in {"1", "true", "yes", "on"} else 1 + use_local_llm
+    assert check_call.call_count == expected_calls
+
+
 def test_runner_exports_skip_notebook_installs_to_child_process(monkeypatch):
     import run_notebook_live
 
@@ -482,6 +505,7 @@ def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_av
     (tmp_path / "current_run_thread_id.txt").write_text("thread-1", encoding="utf-8")
     (tmp_path / "checkpoints.sqlite").touch()
     monkeypatch.setattr(run_notebook_live, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("IDD_SKIP_NOTEBOOK_INSTALLS", raising=False)
     monkeypatch.setattr(sys, "argv", ["run_notebook_live.py", "--resume"])
     monkeypatch.setattr(run_notebook_live, "load_api_key", lambda: "")
     monkeypatch.setattr(run_notebook_live, "load_langsmith_env", lambda: {})
@@ -495,6 +519,40 @@ def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_av
     assert not (tmp_path / "_idd_resume.flag").exists()
 
 
+@pytest.mark.parametrize("skip_value", [None, "1", " TRUE ", "yes", "on", "0", "false", ""])
+def test_live_runner_preflight_respects_install_override(monkeypatch, tmp_path, skip_value):
+    import run_notebook_live
+
+    if skip_value is None:
+        monkeypatch.delenv("IDD_SKIP_NOTEBOOK_INSTALLS", raising=False)
+    else:
+        monkeypatch.setenv("IDD_SKIP_NOTEBOOK_INSTALLS", skip_value)
+    monkeypatch.setattr(run_notebook_live, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["run_notebook_live.py"])
+    monkeypatch.setattr(run_notebook_live, "load_api_key", lambda: "")
+    monkeypatch.setattr(run_notebook_live, "load_langsmith_env", lambda: {})
+    monkeypatch.setattr(run_notebook_live, "check_nbclient", lambda: True)
+    monkeypatch.setattr(run_notebook_live, "select_kernel_name", lambda: "python3")
+    probe = MagicMock(return_value=False)
+    execute = MagicMock(return_value=({}, [], None))
+    monkeypatch.setattr(run_notebook_live, "probe_kernel_scientific_stack", probe)
+    monkeypatch.setattr(run_notebook_live, "execute_notebook", execute)
+    monkeypatch.setattr(run_notebook_live, "extract_output_paths_from_notebook", lambda _: [])
+    monkeypatch.setattr(run_notebook_live, "scan_artifacts", lambda: {})
+    monkeypatch.setattr(run_notebook_live, "print_artifact_summary", lambda *_: True)
+
+    installs_skipped = skip_value is None or skip_value.strip().lower() in {"1", "true", "yes", "on"}
+    with pytest.raises(SystemExit) as exc:
+        run_notebook_live.main()
+    assert exc.value.code == (1 if installs_skipped else 0)
+    if installs_skipped:
+        probe.assert_called_once_with("python3")
+        execute.assert_not_called()
+    else:
+        probe.assert_not_called()
+        execute.assert_called_once_with(resume=False)
+
+
 def _source_dataframe_registry_cell():
     nb = json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8"))
     for cell in nb["cells"]:
@@ -502,6 +560,32 @@ def _source_dataframe_registry_cell():
         if "class DataFrameRegistry:" in src:
             return src
     raise ValueError("DataFrameRegistry cell not found in source notebook")
+
+
+@pytest.mark.parametrize("registry_count", [0, 2])
+def test_patcher_rejects_missing_or_duplicate_registry_cells(monkeypatch, tmp_path, registry_count):
+    import _patch_notebook
+
+    notebook = json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8"))
+    registry_cells = [
+        cell for cell in notebook["cells"]
+        if cell.get("cell_type") == "code"
+        and "class DataFrameRegistry:" in _patch_notebook.join_source(cell["source"])
+    ]
+    assert len(registry_cells) == 1
+    if registry_count == 0:
+        notebook["cells"].remove(registry_cells[0])
+    else:
+        notebook["cells"].append(registry_cells[0])
+    input_path = tmp_path / "input.ipynb"
+    output_path = tmp_path / "output.ipynb"
+    input_path.write_text(json.dumps(notebook), encoding="utf-8")
+    monkeypatch.setattr(_patch_notebook, "INPUT_NB", input_path)
+    monkeypatch.setattr(_patch_notebook, "OUTPUT_NB", output_path)
+
+    with pytest.raises(RequiredPatchError, match=f"expected 1 DataFrameRegistry target cell, found {registry_count}"):
+        _patch_notebook.main()
+    assert not output_path.exists()
 
 
 def test_apply_dataframe_registry_path_binding_patch_complete_and_idempotent():

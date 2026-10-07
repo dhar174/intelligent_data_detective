@@ -701,7 +701,7 @@ def main():
             resume_flag_path.unlink()
         print("OK  Fresh run (resume flag cleared)")
 
-    configure_skip_notebook_installs()
+    skip_notebook_installs = configure_skip_notebook_installs()
     load_api_key()
     load_langsmith_env()
 
@@ -711,7 +711,10 @@ def main():
         sys.exit(1)
 
     kernel_name = select_kernel_name()
-    if not probe_kernel_scientific_stack(kernel_name):
+    if (
+        skip_notebook_installs.strip().lower() in {"1", "true", "yes", "on"}
+        and not probe_kernel_scientific_stack(kernel_name)
+    ):
         print("ERR Scientific stack preflight failed; aborting live notebook execution.")
         if resume_flag_path.exists():
             resume_flag_path.unlink()

@@ -68,12 +68,68 @@ else:
     # Read the OpenAI API key from the process environment.
     oai_key = os.environ.get('OPENAI_API_KEY')
 
-if use_local_llm:
-    !pip install -U langchain_huggingface sentence_transformers
+# PATCH: P2-SKIP-INSTALLS
+_skip_notebook_installs = (
+    os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS", "")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
 
-# Install or upgrade the required packages directly from within the notebook using pip.
-# WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.
-!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite
+if _skip_notebook_installs:
+    print(
+        "Skipping in-notebook dependency installation; "
+        "using the pre-provisioned runtime environment."
+    )
+else:
+    if use_local_llm:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-U",
+                "langchain_huggingface",
+                "sentence_transformers",
+            ]
+        )
+
+    # Install or upgrade the required packages directly from within the notebook using pip.
+    # WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.
+    subprocess.check_call(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-U",
+            "langmem",
+            "langchain-community",
+            "tavily-python",
+            "scikit-learn",
+            "xhtml2pdf",
+            "pypdf",
+            "pymupdf",
+            "pillow",
+            "markdown",
+            "bleach",
+            "joblib",
+            "langchain",
+            "langchain-core",
+            "langchain-openai",
+            "langchain_experimental",
+            "langgraph",
+            "chromadb",
+            "pydantic",
+            "python-dotenv",
+            "tiktoken",
+            "openpyxl",
+            "scipy",
+            "openai",
+            "langgraph-checkpoint-sqlite",
+        ]
+    )
 
 
 

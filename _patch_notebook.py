@@ -695,22 +695,21 @@ def main():
     print("✅ Cell idx 4: applied headless install suppression guard (P2-SKIP-INSTALLS)")
 
     # --- Patch DataFrameRegistry (cell idx 19): fix unbound 'path' for new df_id (P3-DF-REG-PATH) ---
-    df_reg_patched = False
-    for idx, cell in enumerate(cells):
-        if cell.get("cell_type") != "code":
-            continue
-        src = join_source(cell["source"])
-        if "class DataFrameRegistry:" not in src:
-            continue
-        cell["source"] = apply_dataframe_registry_path_binding_patch(src)
-        if cell.get("cell_type") == "code":
-            cell["outputs"] = []
-            cell["execution_count"] = None
-        df_reg_patched = True
-        print(f"✅ Cell idx {idx}: fixed DataFrameRegistry path binding (P3-DF-REG-PATH)")
-        break
-    if not df_reg_patched:
-        raise RequiredPatchError("P3-DF-REG-PATH: DataFrameRegistry target cell not found")
+    df_reg_cells = [
+        (idx, cell)
+        for idx, cell in enumerate(cells)
+        if cell.get("cell_type") == "code"
+        and "class DataFrameRegistry:" in join_source(cell["source"])
+    ]
+    if len(df_reg_cells) != 1:
+        raise RequiredPatchError(
+            f"P3-DF-REG-PATH: expected 1 DataFrameRegistry target cell, found {len(df_reg_cells)}"
+        )
+    idx, cell = df_reg_cells[0]
+    cell["source"] = apply_dataframe_registry_path_binding_patch(join_source(cell["source"]))
+    cell["outputs"] = []
+    cell["execution_count"] = None
+    print(f"✅ Cell idx {idx}: fixed DataFrameRegistry path binding (P3-DF-REG-PATH)")
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]
