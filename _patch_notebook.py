@@ -497,17 +497,10 @@ def apply_notebook_install_guard_patch(source: str) -> str:
     )
 
     is_patched = guard_marker in source
-    has_skip_flag = "IDD_SKIP_NOTEBOOK_INSTALLS" in source and "_skip_notebook_installs" in source
-    has_skip_print = "Skipping in-notebook dependency installation;" in source
     has_active_pip = any(re.match(r"^\s*!pip\b", line) for line in source.splitlines())
     has_partial = ("IDD_SKIP_NOTEBOOK_INSTALLS" in source or "_skip_notebook_installs" in source or "Skipping in-notebook dependency installation;" in source)
 
-    if is_patched:
-        if not (has_skip_flag and has_skip_print and not has_active_pip):
-            raise RequiredPatchError("P2-SKIP-INSTALLS: incomplete guard or corrupted postcondition in already patched source")
-        return source
-
-    if has_partial:
+    if has_partial and not is_patched:
         raise RequiredPatchError("P2-SKIP-INSTALLS: partial install skip guard detected without patch marker")
 
     anchor_original = (
@@ -524,18 +517,6 @@ def apply_notebook_install_guard_patch(source: str) -> str:
         "# WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.\n"
         "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown bleach joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite"
     )
-
-    matched_anchor = None
-    if source.count(anchor_original) == 1 and source.count(anchor_with_bleach) == 0:
-        matched_anchor = anchor_original
-    elif source.count(anchor_with_bleach) == 1 and source.count(anchor_original) == 0:
-        matched_anchor = anchor_with_bleach
-    elif source.count(anchor_original) > 1 or source.count(anchor_with_bleach) > 1:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: multiple install anchors found in source")
-    else:
-        if has_active_pip:
-            raise RequiredPatchError("P2-SKIP-INSTALLS: unexpected or malformed pip install anchor in source")
-        raise RequiredPatchError("P2-SKIP-INSTALLS: required install anchor not found")
 
     replacement_block = (
         f"{guard_marker}\n"
@@ -591,6 +572,23 @@ def apply_notebook_install_guard_patch(source: str) -> str:
         "    )"
     )
 
+    if is_patched:
+        if source.count(guard_marker) != 1 or source.count(replacement_block) != 1 or has_active_pip:
+            raise RequiredPatchError("P2-SKIP-INSTALLS: incomplete guard or corrupted postcondition in already patched source")
+        return source
+
+    matched_anchor = None
+    if source.count(anchor_original) == 1 and source.count(anchor_with_bleach) == 0:
+        matched_anchor = anchor_original
+    elif source.count(anchor_with_bleach) == 1 and source.count(anchor_original) == 0:
+        matched_anchor = anchor_with_bleach
+    elif source.count(anchor_original) > 1 or source.count(anchor_with_bleach) > 1:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: multiple install anchors found in source")
+    else:
+        if has_active_pip:
+            raise RequiredPatchError("P2-SKIP-INSTALLS: unexpected or malformed pip install anchor in source")
+        raise RequiredPatchError("P2-SKIP-INSTALLS: required install anchor not found")
+
     patched = source.replace(matched_anchor, replacement_block, 1)
 
     if patched.count(guard_marker) != 1:
@@ -645,7 +643,12 @@ def apply_dataframe_registry_path_binding_patch(source: str) -> str:
     path_norm_count = source.count("path = self._norm_path(raw_path)")
 
     if is_patched:
-        if path_norm_count < 2:
+        if (
+            source.count(guard_marker) != 1
+            or source.count(anchor_new) != 1
+            or source.count(anchor_old) != 0
+            or path_norm_count != 2
+        ):
             raise RequiredPatchError("P3-DF-REG-PATH: corrupted patch marker without path binding")
         return source
 

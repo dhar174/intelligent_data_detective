@@ -704,11 +704,15 @@ def main():
     load_langsmith_env()
 
     if not check_nbclient():
+        if resume_flag_path.exists():
+            resume_flag_path.unlink()
         sys.exit(1)
 
     kernel_name = select_kernel_name()
     if not probe_kernel_scientific_stack(kernel_name):
         print("ERR Scientific stack preflight failed; aborting live notebook execution.")
+        if resume_flag_path.exists():
+            resume_flag_path.unlink()
         sys.exit(1)
 
     nb, cell_errors, executed_nb_path = execute_notebook(resume=args.resume)

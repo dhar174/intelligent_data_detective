@@ -373,6 +373,8 @@ def test_apply_notebook_install_guard_patch_complete_and_idempotent():
         "partial_guard_flag",
         "partial_guard_env",
         "corrupted_postcondition",
+        "inverted_guard",
+        "duplicate_marker",
         "multiple_anchors",
     ],
 )
@@ -387,6 +389,12 @@ def test_apply_notebook_install_guard_patch_rejects_missing_or_partial_structure
     elif damage == "corrupted_postcondition":
         patched = apply_notebook_install_guard_patch(original)
         source = patched.replace("Skipping in-notebook dependency installation;", "hello")
+    elif damage == "inverted_guard":
+        source = apply_notebook_install_guard_patch(original).replace(
+            "if _skip_notebook_installs:", "if not _skip_notebook_installs:", 1
+        )
+    elif damage == "duplicate_marker":
+        source = apply_notebook_install_guard_patch(original) + "\n# PATCH: P2-SKIP-INSTALLS"
     else:  # multiple_anchors
         source = original + "\n" + original
     with pytest.raises(RequiredPatchError, match="P2-SKIP-INSTALLS"):
@@ -407,35 +415,43 @@ def test_generated_dependency_cell_contains_skip_contract(generated_notebook):
     ast.parse(src4)
 
 
-def test_runner_exports_skip_notebook_installs_to_kernel():
+def test_runner_exports_skip_notebook_installs_to_child_process(monkeypatch):
     import run_notebook_live
-    import nbformat
-    from nbclient import NotebookClient
 
-    # Ensure configure_skip_notebook_installs sets the contract variable
+    monkeypatch.delenv("IDD_SKIP_NOTEBOOK_INSTALLS", raising=False)
     skip_val = run_notebook_live.configure_skip_notebook_installs()
-    assert skip_val in {"1", "true", "yes", "on"}
+    assert skip_val == "1"
     assert os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS") == skip_val
 
-    # Inexpensive executable helper test proving kernel environment inheritance
-    kernel_name = run_notebook_live.select_kernel_name()
-    nb = nbformat.v4.new_notebook()
-    code = (
-        "import os\n"
-        "print('KERNEL_ENV_SKIP=' + str(os.environ.get('IDD_SKIP_NOTEBOOK_INSTALLS', 'MISSING')))\n"
+    child_val = subprocess.check_output(
+        [
+            sys.executable,
+            "-c",
+            "import os; print(os.environ.get('IDD_SKIP_NOTEBOOK_INSTALLS', 'MISSING'))",
+        ],
+        text=True,
     )
-    nb.cells.append(nbformat.v4.new_code_cell(code))
-    client = NotebookClient(
-        nb,
-        timeout=30,
-        kernel_name=kernel_name,
-        allow_errors=False,
-    )
-    client.execute()
-    output_text = "".join(
-        out.get("text", "") for out in nb.cells[0].get("outputs", [])
-    )
-    assert "KERNEL_ENV_SKIP=1" in output_text or f"KERNEL_ENV_SKIP={skip_val}" in output_text
+    assert child_val.strip() == skip_val
+
+
+@pytest.mark.parametrize("nbclient_available", [False, True])
+def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_available):
+    import run_notebook_live
+
+    (tmp_path / "current_run_thread_id.txt").write_text("thread-1", encoding="utf-8")
+    (tmp_path / "checkpoints.sqlite").touch()
+    monkeypatch.setattr(run_notebook_live, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["run_notebook_live.py", "--resume"])
+    monkeypatch.setattr(run_notebook_live, "load_api_key", lambda: "")
+    monkeypatch.setattr(run_notebook_live, "load_langsmith_env", lambda: {})
+    monkeypatch.setattr(run_notebook_live, "check_nbclient", lambda: nbclient_available)
+    monkeypatch.setattr(run_notebook_live, "select_kernel_name", lambda: "python3")
+    monkeypatch.setattr(run_notebook_live, "probe_kernel_scientific_stack", lambda _: False)
+
+    with pytest.raises(SystemExit) as exc:
+        run_notebook_live.main()
+    assert exc.value.code == 1
+    assert not (tmp_path / "_idd_resume.flag").exists()
 
 
 def _source_dataframe_registry_cell():
@@ -465,6 +481,9 @@ def test_apply_dataframe_registry_path_binding_patch_complete_and_idempotent():
         "missing_anchor",
         "multiple_anchors",
         "corrupted_postcondition",
+        "duplicate_marker",
+        "extra_binding",
+        "changed_condition",
     ],
 )
 def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_structure(damage):
@@ -473,9 +492,16 @@ def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_
         source = "class DataFrameRegistry:\n    pass\n"
     elif damage == "multiple_anchors":
         source = original + "\n" + original
-    else:  # corrupted_postcondition
+    else:
         patched = apply_dataframe_registry_path_binding_patch(original)
-        source = patched.replace("path = self._norm_path(raw_path)  # PATCH: P3-DF-REG-PATH", "# PATCH: P3-DF-REG-PATH")
+        if damage == "corrupted_postcondition":
+            source = patched.replace("path = self._norm_path(raw_path)  # PATCH: P3-DF-REG-PATH", "# PATCH: P3-DF-REG-PATH")
+        elif damage == "duplicate_marker":
+            source = patched + "\n# PATCH: P3-DF-REG-PATH"
+        elif damage == "extra_binding":
+            source = patched + "\npath = self._norm_path(raw_path)"
+        else:
+            source = patched.replace("if df is None and not path.exists():", "if df is not None and not path.exists():", 1)
     with pytest.raises(RequiredPatchError, match="P3-DF-REG-PATH"):
         apply_dataframe_registry_path_binding_patch(source)
 
