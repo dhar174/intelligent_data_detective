@@ -1,3 +1,8 @@
+---
+trigger: always_on
+description: "Non-negotiable architectural invariants, notebook generation rules, state reducers, Pydantic contracts, and DataFrameRegistry conventions."
+---
+
 # Code Architecture & Invariants Rules
 
 This document defines the non-negotiable architectural invariants and code conventions for `intelligent_data_detective`. All agents and contributors must strictly adhere to these rules.

@@ -1,3 +1,8 @@
+---
+trigger: model_decision
+description: "Multi-agent team coordination protocols, subagent dispatch matrix, 5-stage orchestration lifecycle, and one-writer discipline for IDD engineering tasks."
+---
+
 # Multi-Agent Team Coordination & Orchestration Rules
 
 ## 1. Primary Coordinator Persona & Mission

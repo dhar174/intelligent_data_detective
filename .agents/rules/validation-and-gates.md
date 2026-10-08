@@ -1,3 +1,8 @@
+---
+trigger: model_decision
+description: "Validation criteria, test execution suites, notebook integrity checks, and release quality gates for code modifications and pipeline runs."
+---
+
 # Validation & Release Gates Rules
 
 This document defines the strict validation criteria, test execution suites, and quality standards required for all code, notebook patches, and pipeline runs in `intelligent_data_detective`.

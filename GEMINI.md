@@ -56,11 +56,11 @@ Every non-trivial engineering task MUST proceed through the following 5 phases:
 
 ## 4. Modular Repository Rules
 
-Detailed engineering guidelines and operational contracts are modularized under [`.agent/rules/`](.agent/rules/) (and mirrored via [`.agents/rules/`](.agents/rules/)):
+Detailed engineering guidelines and operational contracts are modularized under [`.agents/rules/`](.agents/rules/):
 
-- **[`team-coordination.md`](.agent/rules/team-coordination.md)**: Multi-agent team coordination protocols, dispatch matrices, and communication contracts.
-- **[`code-architecture.md`](.agent/rules/code-architecture.md)**: Architectural invariants (Notebook generation via `_patch_notebook.py`, 99-cell stability, State reducers, `DataFrameRegistry` LRU caching, W9-SR-DROP, `_resolve_artifact_path()`).
-- **[`validation-and-gates.md`](.agent/rules/validation-and-gates.md)**: Authoritative twin gates (`validate_run.py` 12/12, `validate_artifact_quality.py` 9/9), no-key test suites, and anti-Potemkin detection.
+- **[`team-coordination.md`](.agents/rules/team-coordination.md)**: Multi-agent team coordination protocols, dispatch matrices, and communication contracts.
+- **[`code-architecture.md`](.agents/rules/code-architecture.md)**: Architectural invariants (Notebook generation via `_patch_notebook.py`, 99-cell stability, State reducers, `DataFrameRegistry` LRU caching, W9-SR-DROP, `_resolve_artifact_path()`).
+- **[`validation-and-gates.md`](.agents/rules/validation-and-gates.md)**: Authoritative twin gates (`validate_run.py` 12/12, `validate_artifact_quality.py` 9/9), no-key test suites, and anti-Potemkin detection.
 
 ---
 
