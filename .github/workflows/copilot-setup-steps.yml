@@ -45,6 +45,8 @@ jobs:
             "test_memory_lifecycle.py"
             "test_prompt_formatting.py"
             "test_prompt_template_fixes.py"
+            "validate_notebook_integrity.py"
+            "test_validate_notebook_integrity.py"
             "test_validate_run.py"
             "validate_run.py"
             "validate_artifact_quality.py"
@@ -58,23 +60,7 @@ jobs:
 
       - name: Validate notebook file
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          notebook_paths = [
-              Path("IntelligentDataDetective_beta_v5.ipynb"),
-              Path("IntelligentDataDetective_beta_v5_patched.ipynb"),
-          ]
-          for notebook_path in notebook_paths:
-              notebook = json.loads(notebook_path.read_text())
-              cells = notebook.get("cells", [])
-              if not isinstance(cells, list) or not cells:
-                  raise SystemExit(
-                      f"Notebook validation failed for {notebook_path}: no cells found"
-                  )
-              print(f"Notebook smoke check passed for {notebook_path}: {len(cells)} cells found.")
-          PY
+          python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb -v
 
       - name: Install validation dependencies
         run: |
@@ -147,6 +133,7 @@ jobs:
             test_memory_categorization.py \
             test_memory_integration.py \
             test_memory_lifecycle.py \
+            test_validate_notebook_integrity.py \
             -v
 
       - name: Run prompt template regression tests
@@ -174,7 +161,9 @@ jobs:
             test_intelligent_data_detective.py \
             test_error_handling_framework.py \
             test_prompt_formatting.py \
-            test_prompt_template_fixes.py
+            test_prompt_template_fixes.py \
+            validate_notebook_integrity.py \
+            test_validate_notebook_integrity.py
 
       - name: Run flake8 on root regression test files
         run: |
@@ -190,6 +179,8 @@ jobs:
           validate_run.py
           validate_artifact_quality.py
           test_validate_run.py
+          validate_notebook_integrity.py
+          test_validate_notebook_integrity.py
           --max-line-length=120
           --extend-ignore=E203,W503
 

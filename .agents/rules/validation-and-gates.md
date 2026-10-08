@@ -11,34 +11,43 @@ This document defines the strict validation criteria, test execution suites, and
 
 ## 1. Offline Verification Suites (No API Keys Required)
 
-Before submitting or committing any code modifications, all applicable offline test suites must execute cleanly.
+Before submitting or committing any code modifications, all applicable offline test suites must execute cleanly. These suites align with current repository CI (`.github/workflows/copilot-setup-steps.yml`):
 
-### Core Pipeline Unit Suite
+### Validator, Unit & Integration Suites
 ```powershell
-python -m pytest test_intelligent_data_detective.py -v
+python -m pytest test_validate_run.py tests/unit tests/integration -q
 ```
-- **Standard**: 22 / 22 PASS.
-- Validates DataFrame registry caching, reducer mechanics, tool error handlers, prompt formatters, and Pydantic schemas.
+- Historical baseline context: ~451 passed, 9 skipped.
+- Validates agent messages, artifact path safety, BaseNoExtrasModel contracts, tool error handlers, patcher integrity, reducers, DataFrameRegistry caching, and supervisor routing.
 
-### Validator Unit Suite
+### Core Pipeline & Memory Enhancement Suites
 ```powershell
-python -m pytest test_validate_run.py -q
+python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
 ```
-- **Standard**: 8 / 8 PASS.
-- Validates the rule logic of `validate_run.py` against known passing and failing synthetic log traces.
+- Historical baseline context: 77 passed (22 core + 55 memory).
+- Validates DataFrame registry caching, reducer mechanics, tool error handlers, prompt formatters, Pydantic schemas, memory namespace TTLs, eviction policies, and semantic retrieval scoring.
+
+### Prompt Template Formatting Suites
+```powershell
+python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
+```
+- Historical baseline context: 17 passed.
+- Validates prompt bracket escaping, validator logic, and prompt template rendering.
+
+### Notebook Integrity Suite
+```powershell
+python -m pytest test_validate_notebook_integrity.py -v
+```
+- Historical baseline context: 14 passed.
+- Validates fail-closed notebook integrity checks across cell counts, AST compilation, and diagnostic reporting.
 
 ### Error Handling Framework Suite
 ```powershell
-python -m pytest test_error_handling_framework.py -v
+python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
 ```
-- **Standard**: 15 / 16 PASS (1 known edge-case failure acceptable per repository baseline).
-- Validates decorator failure boundaries, retry policies, and fallback mechanics.
-
-### Memory Lifecycle & Categorization Suite
-```powershell
-python -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py test_adaptive_retrieval.py -v
-```
-- Validates memory namespace TTLs, eviction policies, and semantic retrieval scoring.
+- **CI Parity Policy**: All tests in this suite are strictly blocking, with exactly ONE isolated exception permitted under current CI:
+  - `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures`
+  This test is isolated in CI as a non-blocking step (`continue-on-error: true`). Any other test failure in `test_error_handling_framework.py` is strictly blocking. Do not accept generic partial pass counts (e.g. "15/16 is acceptable").
 
 ---
 
@@ -50,8 +59,8 @@ When modifying `_patch_notebook.py`:
 # 1. Regenerate patched notebook
 python _patch_notebook.py
 
-# 2. Verify cell count invariant (99 cells)
-python -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(f'{len(cells)} cells OK')"
+# 2. Fail-closed notebook structure and AST compilation gate (exact 99 cells)
+python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
 
 # 3. Static graph reachability and syntax check
 python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb

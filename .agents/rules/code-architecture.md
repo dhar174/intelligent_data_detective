@@ -21,7 +21,8 @@ This document defines the non-negotiable architectural invariants and code conve
    - After updating `_patch_notebook.py`, regenerate and verify:
      ```powershell
      python _patch_notebook.py
-     python -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(f'{len(cells)} cells OK')"
+     python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
+     python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
      ```
 3. **Cell Structure Preservation**:
    - Never delete or reorder notebook cells. The 99-cell structure is an architectural invariant.
