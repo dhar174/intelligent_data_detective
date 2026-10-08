@@ -59,10 +59,14 @@ python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipy
 
 ### Exact Invariants Checked by `validate_notebook_integrity.py`
 1. **File Existence & JSON Validity**: Fails nonzero (exit 1) if the target notebook file does not exist or contains invalid JSON.
-2. **Top-Level Structure**: Fails nonzero (exit 1) if the `cells` key is missing or not a JSON list.
+2. **Top-Level & Cell Structure**: Fails nonzero (exit 1) if the `cells` key is missing or not a JSON list, if any cell lacks or has an unknown `cell_type` (must be `code`, `markdown`, or `raw`), or if `source` is missing, not a string/list, or contains non-string elements.
 3. **Exact Cell Count Invariant (99 cells)**: Enforces that the notebook contains exactly 99 cells (default for W14 baseline). Fails nonzero (exit 1) on 0, 98, 100, or any mismatch.
 4. **Code Cell AST Compilation**: Compiles every code cell with Python's `ast.PyCF_ONLY_AST` (`compile(..., mode='exec')`). Fails nonzero (exit 1) if any code cell has a Python syntax error.
-5. **Safe Magic Handling**: Accounts for IPython line magics (`%...`), cell magics (`%%...`), shell commands (`!...`), and help operators (`?...`, `... ?`) by replacing them with comments of identical line count and structure. This preserves line numbers and column offsets in compiler diagnostics.
+5. **Safe Magic & Shell Handling**:
+   - **Non-Python cell magics** (e.g. `%%bash`, `%%html`, `%%sh`): Handled as whole-cell constructs on the leading line; the entire cell is commented out line-by-line, preserving line counts so foreign syntax is not compiled as Python.
+   - **Python-body cell magics** (e.g. `%%time`, `%%timeit`, `%%capture`, `%%prun`): Only the leading directive line is commented out, preserving line counts while compiling the Python body with AST.
+   - **Mid-cell `%%` placement**: Unstripped so invalid mid-cell directives trigger `SyntaxError`.
+   - **Line magics & shell escapes** (`%...`, `!...`, `?...`, `... ?`): Commented out line-by-line, preserving line counts for compiler diagnostics.
 6. **Actionable Diagnostics**: When a failure occurs, outputs:
    - Cell index (e.g. `Cell 4`)
    - Cell ID if present (e.g. `(id: RCmRvBsV-i4t)`)

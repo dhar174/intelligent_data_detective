@@ -1,7 +1,7 @@
 """
 test_validate_notebook_integrity.py — Regression test suite for validate_notebook_integrity.py.
 
-Covers the full matrix required by Issue #152:
+Covers the full matrix required by Issue #152 and PR reviews:
 1. Valid 99-cell notebook -> PASS (exit 0)
 2. 0-cell notebook -> FAIL (exit 1)
 3. 98-cell notebook -> FAIL (exit 1)
@@ -12,10 +12,15 @@ Covers the full matrix required by Issue #152:
 8. 99-cell notebook with invalid Python in a code cell -> FAIL (exit 1)
 9. Source notebook (98 cells) vs patched notebook (99 cells) distinction
 10. Useful diagnostic identifies the failing cell index, id, line, and syntax error
-11. Supported notebook magics (%matplotlib inline, !pip show) pass
-12. Syntax errors alongside magics fail with actionable diagnostic
-13. Nonexistent file fails with exit 1
-14. Real committed IntelligentDataDetective_beta_v5_patched.ipynb passes
+11. Supported notebook line magics (%matplotlib inline, !pip show, ?help) pass
+12. Non-Python cell magics (%%bash, %%html) handled as whole-cell constructs -> PASS
+13. Leading Python-body cell magics (%%time) pass, while invalid bodies FAIL
+14. Mid-cell %% magic placement rejected as invalid syntax -> FAIL
+15. Missing or unknown cell_type values rejected fail-closed -> FAIL
+16. Malformed 'source' field (missing, non-string elements, wrong type) -> FAIL
+17. Syntax errors alongside magics fail with actionable diagnostic
+18. Nonexistent file fails with exit 1
+19. Real committed IntelligentDataDetective_beta_v5_patched.ipynb passes
 """
 
 from __future__ import annotations
@@ -249,12 +254,11 @@ def test_actionable_diagnostics_content(tmp_path: Path):
 
 
 def test_supported_notebook_magics_accepted(tmp_path: Path):
-    """Test 11: Valid Python code containing IPython line magics, shell commands, and cell magics compiles."""
+    """Test 11: Valid Python code containing IPython line magics, shell commands, and help syntax compiles."""
     code_with_magics = (
         "%matplotlib inline\n"
         "import matplotlib.pyplot as plt\n"
         "!pip show langchain_experimental\n"
-        "%%time\n"
         "total = sum(range(100))\n"
         "?plt.plot\n"
         "plt.title('Sample')\n"
@@ -279,8 +283,128 @@ def test_supported_notebook_magics_accepted(tmp_path: Path):
     assert diagnostics == []
 
 
+def test_non_python_cell_magic_whole_cell_handled(tmp_path: Path):
+    """Test 12: Non-Python cell magics (%%bash, %%html) are handled as whole-cell constructs and pass."""
+    bash_cell = "%%bash\necho 'Hello from bash'\nexit 0\n"
+    html_cell = "%%html\n<div class='custom'>\n  <p>Header</p>\n</div>\n"
+    nb_data = _create_synthetic_notebook(
+        cell_count=99,
+        code_cells=[(3, bash_cell), (7, html_cell)],
+    )
+    nb_file = tmp_path / "cell_magics.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+    sanitized_bash = sanitize_cell_source(bash_cell)
+    assert all(
+        line.startswith("# [cell-magic bash]:") for line in sanitized_bash.splitlines()
+    )
+
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+    assert diagnostics == []
+
+
+def test_python_body_cell_magic_handled(tmp_path: Path):
+    """Test 13: Leading Python-body cell magics (%%time) pass, while invalid Python bodies fail."""
+    valid_time_cell = "%%time\nx = sum(range(1000))\nprint(x)\n"
+    invalid_time_cell = "%%time\ndef broken(:\n    pass\n"
+
+    # Valid case passes
+    nb_data_valid = _create_synthetic_notebook(
+        cell_count=99,
+        code_cells=[(10, valid_time_cell)],
+    )
+    nb_file_valid = tmp_path / "time_valid.ipynb"
+    nb_file_valid.write_text(json.dumps(nb_data_valid), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_valid, expected_cells=99)
+    assert is_valid is True
+    assert diagnostics == []
+
+    # Invalid Python body under %%time fails AST compilation
+    nb_data_invalid = _create_synthetic_notebook(
+        cell_count=99,
+        code_cells=[(10, invalid_time_cell)],
+        cell_ids={10: "bad_time_cell"},
+    )
+    nb_file_invalid = tmp_path / "time_invalid.ipynb"
+    nb_file_invalid.write_text(json.dumps(nb_data_invalid), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_invalid, expected_cells=99)
+    assert is_valid is False
+    assert any(
+        "Cell 10 (id: bad_time_cell)" in msg and "SyntaxError" in msg
+        for msg in diagnostics
+    )
+
+
+def test_invalid_mid_cell_magic_rejected(tmp_path: Path):
+    """Test 14: Mid-cell %% magic placement is rejected by AST compiler as invalid syntax."""
+    mid_cell_magic = "x = 1\n%%bash\necho hello\n"
+    nb_data = _create_synthetic_notebook(
+        cell_count=99,
+        code_cells=[(4, mid_cell_magic)],
+        cell_ids={4: "mid_magic_cell"},
+    )
+    nb_file = tmp_path / "mid_cell_magic.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is False
+    assert any(
+        "Cell 4 (id: mid_magic_cell)" in msg and "SyntaxError" in msg
+        for msg in diagnostics
+    )
+
+
+def test_missing_or_unknown_cell_type_rejected(tmp_path: Path):
+    """Test 15: Missing or unknown cell_type values are rejected fail-closed."""
+    # Missing cell_type
+    nb_data_missing = _create_synthetic_notebook(cell_count=99)
+    del nb_data_missing["cells"][20]["cell_type"]
+    nb_file_missing = tmp_path / "missing_type.ipynb"
+    nb_file_missing.write_text(json.dumps(nb_data_missing), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_missing, expected_cells=99)
+    assert is_valid is False
+    assert any("invalid or missing 'cell_type'" in msg for msg in diagnostics)
+
+    # Unknown cell_type
+    nb_data_unknown = _create_synthetic_notebook(cell_count=99)
+    nb_data_unknown["cells"][20]["cell_type"] = "cod"
+    nb_file_unknown = tmp_path / "unknown_type.ipynb"
+    nb_file_unknown.write_text(json.dumps(nb_data_unknown), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_unknown, expected_cells=99)
+    assert is_valid is False
+    assert any("invalid or missing 'cell_type'" in msg for msg in diagnostics)
+
+
+def test_malformed_source_field_rejected(tmp_path: Path):
+    """Test 16: Malformed 'source' field (missing, non-string list element, wrong type) is rejected."""
+    # Missing source
+    nb_data_no_source = _create_synthetic_notebook(cell_count=99)
+    del nb_data_no_source["cells"][5]["source"]
+    nb_file_no_src = tmp_path / "no_source.ipynb"
+    nb_file_no_src.write_text(json.dumps(nb_data_no_source), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_no_src, expected_cells=99)
+    assert is_valid is False
+    assert any("missing required 'source' field" in msg for msg in diagnostics)
+
+    # Non-string element in source list
+    nb_data_bad_elem = _create_synthetic_notebook(cell_count=99)
+    nb_data_bad_elem["cells"][5]["source"] = ["print('hi')\n", 12345]
+    nb_file_bad_elem = tmp_path / "bad_elem.ipynb"
+    nb_file_bad_elem.write_text(json.dumps(nb_data_bad_elem), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file_bad_elem, expected_cells=99)
+    assert is_valid is False
+    assert any("contains non-string elements" in msg for msg in diagnostics)
+
+
 def test_syntax_error_with_magics_rejected(tmp_path: Path):
-    """Test 12: Real syntax errors are NOT swallowed even when preceded or followed by magics."""
+    """Test 17: Real syntax errors are NOT swallowed even when preceded or followed by magics."""
     code_with_bad_python_and_magics = (
         "%matplotlib inline\n"
         "!pip show langchain\n"
@@ -304,7 +428,7 @@ def test_syntax_error_with_magics_rejected(tmp_path: Path):
 
 
 def test_nonexistent_file():
-    """Test 13: Nonexistent file fails with clean error and exit 1."""
+    """Test 18: Nonexistent file fails with clean error and exit 1."""
     is_valid, diagnostics = validate_notebook("non_existent_file_12345.ipynb")
     assert is_valid is False
     assert any("Notebook file not found" in msg for msg in diagnostics)
@@ -314,7 +438,7 @@ def test_nonexistent_file():
 
 
 def test_current_committed_patched_notebook():
-    """Test 14: The repository's current committed patched notebook passes 99-cell integrity."""
+    """Test 19: The repository's current committed patched notebook passes 99-cell integrity."""
     committed_path = Path("IntelligentDataDetective_beta_v5_patched.ipynb")
     assert committed_path.exists(), "Committed patched notebook must exist"
 

@@ -32,6 +32,8 @@ from typing import Sequence
 
 DEFAULT_NOTEBOOK = "IntelligentDataDetective_beta_v5_patched.ipynb"
 DEFAULT_EXPECTED_CELLS = 99
+SUPPORTED_CELL_TYPES = {"code", "markdown", "raw"}
+PYTHON_BODY_CELL_MAGICS = {"time", "timeit", "capture", "prun"}
 
 
 def sanitize_cell_source(source: str) -> str:
@@ -39,16 +41,63 @@ def sanitize_cell_source(source: str) -> str:
     Transform IPython/notebook-specific syntax into valid Python
     while preserving line numbers and structure for accurate compiler diagnostics.
 
-    Replaces line magics (%...), cell magics (%%...), shell escapes (!...),
-    and help queries (?...) with comment lines of the same length/line structure.
+    Cell magic rules (%%...):
+    - A cell magic is only syntactically valid on the first non-blank, non-comment line of a cell.
+    - If a cell begins with a non-Python cell magic (e.g., %%bash, %%sh, %%html, %%javascript,
+      %%latex, %%writefile, %%svg, %%cmd), the entire cell is treated as a whole-cell construct
+      and commented out, preserving line counts so non-Python code is not compiled.
+    - If a cell begins with a Python-body cell magic (e.g., %%time, %%timeit, %%capture, %%prun),
+      only the leading directive line is commented out, allowing the Python body to compile.
+    - Mid-cell '%%' directives are invalid in IPython; they are left intact so that Python's
+      AST compiler flags the invalid syntax.
+
+    Line magic rules (%... / !... / ?...):
+    - Single '%' line magics (e.g., %matplotlib inline) and '!' shell escapes are commented
+      out line-by-line.
+    - Dynamic help queries (?obj or obj?) are commented out line-by-line.
     """
     lines = source.splitlines(keepends=True)
-    clean_lines: list[str] = []
+    if not lines:
+        return ""
 
-    for line in lines:
+    first_non_blank_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip():
+            first_non_blank_idx = idx
+            break
+
+    magic_token = ""
+    # Check for leading whole-cell magic (%%...)
+    if first_non_blank_idx is not None:
+        first_line_stripped = lines[first_non_blank_idx].strip()
+        if first_line_stripped.startswith("%%"):
+            magic_parts = first_line_stripped[2:].split()
+            magic_token = magic_parts[0] if magic_parts else ""
+            # If the magic body is not executed by Python, comment out the whole cell
+            if magic_token and magic_token not in PYTHON_BODY_CELL_MAGICS:
+                clean_lines: list[str] = []
+                for line in lines:
+                    content = line.rstrip("\r\n")
+                    clean_lines.append(f"# [cell-magic {magic_token}]: {content}\n")
+                return "".join(clean_lines)
+
+    clean_lines = []
+    for idx, line in enumerate(lines):
         stripped = line.strip()
-        # Handle line magics (%...), cell magics (%%...), and shell escapes (!...)
-        if stripped.startswith(("%", "!")):
+        # Leading Python-body cell magic (e.g. %%time)
+        if (
+            idx == first_non_blank_idx
+            and stripped.startswith("%%")
+            and magic_token in PYTHON_BODY_CELL_MAGICS
+        ):
+            leading_whitespace_len = len(line) - len(line.lstrip())
+            indent = line[:leading_whitespace_len]
+            content = line[leading_whitespace_len:].rstrip("\r\n")
+            clean_lines.append(f"{indent}# [cell-magic]: {content}\n")
+        # Line magics (single %, not %%) and shell escapes (!)
+        elif (
+            stripped.startswith("%") and not stripped.startswith("%%")
+        ) or stripped.startswith("!"):
             leading_whitespace_len = len(line) - len(line.lstrip())
             indent = line[:leading_whitespace_len]
             content = line[leading_whitespace_len:].rstrip("\r\n")
@@ -60,6 +109,7 @@ def sanitize_cell_source(source: str) -> str:
             content = line[leading_whitespace_len:].rstrip("\r\n")
             clean_lines.append(f"{indent}# [IPython help]: {content}\n")
         else:
+            # Ordinary Python line (mid-cell %% or bare %% remains intact and will trigger SyntaxError)
             clean_lines.append(line)
 
     return "".join(clean_lines)
@@ -131,24 +181,46 @@ def validate_notebook(
             )
             continue
 
+        cell_id = cell.get("id", f"idx_{idx}")
         cell_type = cell.get("cell_type")
-        if cell_type != "code":
+
+        # Reject missing or unknown cell_type
+        if cell_type not in SUPPORTED_CELL_TYPES:
+            syntax_errors.append(
+                f"Cell {idx} (id: {cell_id}) has invalid or missing 'cell_type': {cell_type!r}. "
+                f"Expected one of: 'code', 'markdown', 'raw'."
+            )
             continue
 
-        code_cells_checked += 1
-        cell_id = cell.get("id", f"idx_{idx}")
-        source_field = cell.get("source", [])
+        # Validate source field structure
+        source_field = cell.get("source")
+        if source_field is None:
+            syntax_errors.append(
+                f"Cell {idx} (id: {cell_id}) is missing required 'source' field."
+            )
+            continue
 
         if isinstance(source_field, list):
+            if not all(isinstance(line, str) for line in source_field):
+                syntax_errors.append(
+                    f"Cell {idx} (id: {cell_id}) 'source' list contains non-string elements."
+                )
+                continue
             source_text = "".join(source_field)
         elif isinstance(source_field, str):
             source_text = source_field
         else:
             syntax_errors.append(
-                f"Cell {idx} (id: {cell_id}) has invalid source type: {type(source_field).__name__}"
+                f"Cell {idx} (id: {cell_id}) has invalid 'source' type: {type(source_field).__name__}. "
+                f"Expected str or list of str."
             )
             continue
 
+        # Non-code cells are structurally validated above; only code cells require AST compilation
+        if cell_type != "code":
+            continue
+
+        code_cells_checked += 1
         sanitized = sanitize_cell_source(source_text)
 
         try:
