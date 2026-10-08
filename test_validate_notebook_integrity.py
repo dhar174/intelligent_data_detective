@@ -19,8 +19,9 @@ Covers the full matrix required by Issue #152 and PR reviews:
 15. Missing or unknown cell_type values rejected fail-closed -> FAIL
 16. Malformed 'source' field (missing, non-string elements, wrong type) -> FAIL
 17. Syntax errors alongside magics fail with actionable diagnostic
-18. Nonexistent file fails with exit 1
-19. Real committed IntelligentDataDetective_beta_v5_patched.ipynb passes
+18. Multiline string literals ending in ? or containing ?/%/! preserved -> PASS
+19. Nonexistent file fails with exit 1
+20. Real committed IntelligentDataDetective_beta_v5_patched.ipynb passes
 """
 
 from __future__ import annotations
@@ -220,14 +221,15 @@ def test_source_vs_patched_notebook_validation(tmp_path: Path):
     src_path.write_text(json.dumps(source_nb), encoding="utf-8")
     patched_path.write_text(json.dumps(patched_corrupt), encoding="utf-8")
 
-    # When targeting the patched notebook with standard 99 expected cells, it must FAIL
+    # Source notebook passes its own 98-cell structural contract
+    is_valid_src, diagnostics_src = validate_notebook(src_path, expected_cells=98)
+    assert is_valid_src is True
+    assert diagnostics_src == []
+
+    # But validating the corrupt patched notebook against 99 expected cells FAILS
     is_valid, diagnostics = validate_notebook(patched_path, expected_cells=99)
     assert is_valid is False
     assert any("Cell 12" in msg and "SyntaxError" in msg for msg in diagnostics)
-
-    # Validating source for 99 also fails
-    is_valid_src, _ = validate_notebook(src_path, expected_cells=99)
-    assert is_valid_src is False
 
 
 def test_actionable_diagnostics_content(tmp_path: Path):
@@ -427,8 +429,36 @@ def test_syntax_error_with_magics_rejected(tmp_path: Path):
     )
 
 
+def test_multiline_string_with_question_marks_accepted(tmp_path: Path):
+    """Test 18: Python multiline string literals ending in ? or containing ?/%/! are preserved without corruption."""
+    code_with_strings = (
+        'message = """Why?\nBecause."""\n'
+        'sql_query = """\n'
+        "SELECT * FROM users\n"
+        "WHERE active = ?\n"
+        '"""\n'
+        'prompt = """\n'
+        "%not_a_magic\n"
+        "!not_a_shell\n"
+        "Why?\n"
+        '"""\n'
+        'regular_str = "Is this fine?"\n'
+        "x = 100\n"
+    )
+    nb_data = _create_synthetic_notebook(
+        cell_count=99,
+        code_cells=[(15, code_with_strings)],
+    )
+    nb_file = tmp_path / "string_literals.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+    assert diagnostics == []
+
+
 def test_nonexistent_file():
-    """Test 18: Nonexistent file fails with clean error and exit 1."""
+    """Test 19: Nonexistent file fails with clean error and exit 1."""
     is_valid, diagnostics = validate_notebook("non_existent_file_12345.ipynb")
     assert is_valid is False
     assert any("Notebook file not found" in msg for msg in diagnostics)
@@ -438,7 +468,7 @@ def test_nonexistent_file():
 
 
 def test_current_committed_patched_notebook():
-    """Test 19: The repository's current committed patched notebook passes 99-cell integrity."""
+    """Test 20: The repository's current committed patched notebook passes 99-cell integrity."""
     committed_path = Path("IntelligentDataDetective_beta_v5_patched.ipynb")
     assert committed_path.exists(), "Committed patched notebook must exist"
 

@@ -38,7 +38,7 @@ python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 ```powershell
 python -m pytest test_validate_notebook_integrity.py -v
 ```
-- Historical baseline context: 14 passed.
+- Historical baseline context: 20 passed.
 - Validates fail-closed notebook integrity checks across cell counts, AST compilation, and diagnostic reporting.
 
 ### Error Handling Framework Suite

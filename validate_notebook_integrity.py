@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -34,6 +35,50 @@ DEFAULT_NOTEBOOK = "IntelligentDataDetective_beta_v5_patched.ipynb"
 DEFAULT_EXPECTED_CELLS = 99
 SUPPORTED_CELL_TYPES = {"code", "markdown", "raw"}
 PYTHON_BODY_CELL_MAGICS = {"time", "timeit", "capture", "prun"}
+IPYTHON_HELP_PATTERN = re.compile(
+    r"^(\?{1,2}\s*[a-zA-Z_][a-zA-Z0-9_\.]*|[a-zA-Z_][a-zA-Z0-9_\.]*\s*\?{1,2}|\?{1,2})$"
+)
+
+
+def _update_multiline_string_state(line: str, in_multiline: str | None) -> str | None:
+    """Track whether scanning enters or exits triple-quoted strings (''' or \"\"\")."""
+    idx = 0
+    while idx < len(line):
+        if in_multiline is not None:
+            close_idx = line.find(in_multiline, idx)
+            if close_idx == -1:
+                return in_multiline
+            num_backslashes = 0
+            check_pos = close_idx - 1
+            while check_pos >= 0 and line[check_pos] == "\\":
+                num_backslashes += 1
+                check_pos -= 1
+            if num_backslashes % 2 == 0:
+                in_multiline = None
+                idx = close_idx + 3
+            else:
+                idx = close_idx + 1
+        else:
+            if line[idx] == "#":
+                break
+            if line[idx : idx + 3] in ('"""', "'''"):
+                delim = line[idx : idx + 3]
+                in_multiline = delim
+                idx += 3
+            elif line[idx] in ('"', "'"):
+                quote = line[idx]
+                idx += 1
+                while idx < len(line):
+                    if line[idx] == "\\":
+                        idx += 2
+                    elif line[idx] == quote:
+                        idx += 1
+                        break
+                    else:
+                        idx += 1
+            else:
+                idx += 1
+    return in_multiline
 
 
 def sanitize_cell_source(source: str) -> str:
@@ -81,9 +126,18 @@ def sanitize_cell_source(source: str) -> str:
                     clean_lines.append(f"# [cell-magic {magic_token}]: {content}\n")
                 return "".join(clean_lines)
 
+    in_multiline: str | None = None
     clean_lines = []
     for idx, line in enumerate(lines):
         stripped = line.strip()
+        was_in_multiline = in_multiline
+        in_multiline = _update_multiline_string_state(line, in_multiline)
+
+        # Lines inside multiline string literals must never be rewritten as magics
+        if was_in_multiline is not None:
+            clean_lines.append(line)
+            continue
+
         # Leading Python-body cell magic (e.g. %%time)
         if (
             idx == first_non_blank_idx
@@ -102,8 +156,8 @@ def sanitize_cell_source(source: str) -> str:
             indent = line[:leading_whitespace_len]
             content = line[leading_whitespace_len:].rstrip("\r\n")
             clean_lines.append(f"{indent}# [IPython magic/shell]: {content}\n")
-        # Handle IPython dynamic object inspection (?obj or obj?)
-        elif stripped.startswith("?") or stripped.endswith("?"):
+        # Standalone IPython dynamic object inspection (?obj, obj?, ??obj, obj??, ?)
+        elif IPYTHON_HELP_PATTERN.match(stripped):
             leading_whitespace_len = len(line) - len(line.lstrip())
             indent = line[:leading_whitespace_len]
             content = line[leading_whitespace_len:].rstrip("\r\n")

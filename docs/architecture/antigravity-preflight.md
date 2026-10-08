@@ -66,7 +66,7 @@ python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipy
    - **Non-Python cell magics** (e.g. `%%bash`, `%%html`, `%%sh`): Handled as whole-cell constructs on the leading line; the entire cell is commented out line-by-line, preserving line counts so foreign syntax is not compiled as Python.
    - **Python-body cell magics** (e.g. `%%time`, `%%timeit`, `%%capture`, `%%prun`): Only the leading directive line is commented out, preserving line counts while compiling the Python body with AST.
    - **Mid-cell `%%` placement**: Unstripped so invalid mid-cell directives trigger `SyntaxError`.
-   - **Line magics & shell escapes** (`%...`, `!...`, `?...`, `... ?`): Commented out line-by-line, preserving line counts for compiler diagnostics.
+   - **Standalone Help Queries & Line Magics**: Standalone IPython help queries (`?obj`, `obj?`, `??obj`, `obj??`, `?`) and line magics/shell escapes (`%...`, `!...`) are commented out line-by-line while strictly protecting Python string literals (including multiline triple-quoted strings containing question marks or `%`/`!` characters) from transformation.
 6. **Actionable Diagnostics**: When a failure occurs, outputs:
    - Cell index (e.g. `Cell 4`)
    - Cell ID if present (e.g. `(id: RCmRvBsV-i4t)`)
@@ -137,8 +137,8 @@ python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 ```powershell
 python -m pytest test_validate_notebook_integrity.py -v
 ```
-- **Standard**: All 14 tests must PASS.
-- **Scope**: Validates rejection of 0-cell, 98-cell, 100-cell, malformed JSON, missing cells, bad cell types, code syntax errors, diagnostics, and acceptance of valid magics and the committed 99-cell patched notebook.
+- **Standard**: All 20 tests must PASS.
+- **Scope**: Validates rejection of 0-cell, 98-cell, 100-cell, malformed JSON, missing cells, bad cell types, code syntax errors, diagnostics, preservation of string literals, and acceptance of valid magics and the committed 99-cell patched notebook.
 
 ### 5. Error Handling Framework Suite & CI Exception Policy
 ```powershell

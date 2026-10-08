@@ -52,7 +52,7 @@ The repository maintains an authoritative set of offline test suites that execut
 
 4. **Notebook Integrity Suite**:
    - Validates fail-closed notebook structure, exact 99-cell invariant, AST syntax compilation, and diagnostic reporting.
-   - Baseline reference: 14 passed.
+   - Baseline reference: 20 passed.
    ```powershell
    python -m pytest test_validate_notebook_integrity.py -v
    ```
