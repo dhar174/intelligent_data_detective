@@ -73,10 +73,10 @@ def _parse_and_strip_timeit_options(rest: str) -> tuple[str, str | None]:
     Parse and validate %timeit / %%timeit options and return (remaining_code, error_diagnostic).
 
     Supported IPython timeit options:
-    - '-n <N>' / '-n<N>': positive integer loop count
+    - '-n <N>' / '-n<N>': non-negative integer loop count (zero auto-selects)
     - '-r <R>' / '-r<R>': positive integer repeat count
     - '-p <P>' / '-p<P>': non-negative integer precision digits
-    - '-t', '-c', '-o', '-q', '--quiet': boolean flags (or combinations of flags like '-qo')
+    - '-t', '-c', '-o', '-q': boolean flags (or combinations of flags like '-qo')
 
     Returns:
         (remaining_code, None) if options are valid.
@@ -86,9 +86,7 @@ def _parse_and_strip_timeit_options(rest: str) -> tuple[str, str | None]:
     idx = 0
     while idx < len(tokens):
         t = tokens[idx]
-        if t == "--quiet":
-            idx += 1
-        elif t.startswith("--"):
+        if t.startswith("--"):
             return "", f"unrecognized option '{t}'"
         elif t in ("-n", "-r", "-p"):
             if idx + 1 >= len(tokens):
@@ -98,13 +96,13 @@ def _parse_and_strip_timeit_options(rest: str) -> tuple[str, str | None]:
                 val_int = int(val)
             except ValueError:
                 return "", f"invalid integer for {t}: '{val}'"
-            if t in ("-n", "-r") and val_int <= 0:
-                return "", f"option {t} value must be a positive integer, got {val_int}"
-            if t == "-p" and val_int < 0:
+            if (t == "-r" and val_int <= 0) or (t in ("-n", "-p") and val_int < 0):
+                constraint = "positive" if t == "-r" else "non-negative"
                 return (
                     "",
-                    f"option -p value must be a non-negative integer, got {val_int}",
+                    f"option {t} value must be a {constraint} integer, got {val_int}",
                 )
+
             idx += 2
         elif t.startswith(("-n", "-r", "-p")) and len(t) > 2:
             opt = t[:2]
@@ -113,15 +111,11 @@ def _parse_and_strip_timeit_options(rest: str) -> tuple[str, str | None]:
                 val_int = int(val)
             except ValueError:
                 return "", f"invalid integer for {opt}: '{val}'"
-            if opt in ("-n", "-r") and val_int <= 0:
+            if (opt == "-r" and val_int <= 0) or (opt in ("-n", "-p") and val_int < 0):
+                constraint = "positive" if opt == "-r" else "non-negative"
                 return (
                     "",
-                    f"option {opt} value must be a positive integer, got {val_int}",
-                )
-            if opt == "-p" and val_int < 0:
-                return (
-                    "",
-                    f"option -p value must be a non-negative integer, got {val_int}",
+                    f"option {opt} value must be a {constraint} integer, got {val_int}",
                 )
             idx += 1
         elif t.startswith("-") and len(t) > 1 and t != "-":
