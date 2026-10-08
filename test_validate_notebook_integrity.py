@@ -13,7 +13,7 @@ Covers the full matrix required by Issue #152 and PR reviews:
 9. Source notebook (98 cells) vs patched notebook (99 cells) distinction
 10. Useful diagnostic identifies the failing cell index, id, line, and syntax error
 11. Supported notebook line magics (%matplotlib inline, !pip show, ?help) pass
-12. Non-Python cell magics (%%bash, %%html) handled as whole-cell constructs -> PASS
+12. Non-Python cell magics (%%bash, %%html) excluded from compilation and reported in diagnostics -> PASS
 13. Leading Python-body cell magics (%%time) pass, while invalid bodies FAIL
 14. Mid-cell %% magic placement rejected as invalid syntax -> FAIL
 15. Missing or unknown cell_type values rejected fail-closed -> FAIL
@@ -22,6 +22,16 @@ Covers the full matrix required by Issue #152 and PR reviews:
 18. Multiline string literals ending in ? or containing ?/%/! preserved -> PASS
 19. Nonexistent file fails with exit 1
 20. Real committed IntelligentDataDetective_beta_v5_patched.ipynb passes
+21. (F1) Real code-object compilation rejects module-scope syntax errors
+    (return, break, continue, duplicate args, nonlocal, yield) -> FAIL
+22. (F1) Top-level await is permitted under ast.PyCF_ALLOW_TOP_LEVEL_AWAIT -> PASS
+23. (F1) Static compilation only, zero runtime execution side-effects -> PASS
+24. (F3) %%timeit header setup code compiled (passes when valid, fails when broken)
+25. (F3) %time, %timeit, %prun line magics compile Python payloads (passes when valid, fails when broken)
+26. (F3) Unknown or unsupported %%magic rejected with nonzero diagnostic -> FAIL
+27. (F4) Standalone !shell and %magic within suites preserve indentation; broken python fails
+28. (F4) Shell assignments (var = !cmd) and magic assignments (var = %magic) preserved; invalid assignments fail
+29. (F4) Multiline modulo expressions in parens preserved intact; invalid expressions fail
 """
 
 from __future__ import annotations
@@ -274,9 +284,9 @@ def test_supported_notebook_magics_accepted(tmp_path: Path):
 
     assert DEFAULT_EXPECTED_CELLS == 99
     sanitized = sanitize_cell_source(code_with_magics)
-    assert "# [IPython magic/shell]: %matplotlib inline" in sanitized
-    assert "# [IPython magic/shell]: !pip show langchain_experimental" in sanitized
-    assert "# [IPython help]: ?plt.plot" in sanitized
+    assert "# [IPython magic]: %matplotlib inline" in sanitized.code
+    assert "# [IPython shell]: !pip show langchain_experimental" in sanitized.code
+    assert "# [IPython help]: ?plt.plot" in sanitized.code
 
     is_valid, diagnostics = validate_notebook(
         nb_file, expected_cells=DEFAULT_EXPECTED_CELLS
@@ -286,7 +296,7 @@ def test_supported_notebook_magics_accepted(tmp_path: Path):
 
 
 def test_non_python_cell_magic_whole_cell_handled(tmp_path: Path):
-    """Test 12: Non-Python cell magics (%%bash, %%html) are handled as whole-cell constructs and pass."""
+    """Test 12: Non-Python cell magics (%%bash, %%html) are excluded from compilation and reported."""
     bash_cell = "%%bash\necho 'Hello from bash'\nexit 0\n"
     html_cell = "%%html\n<div class='custom'>\n  <p>Header</p>\n</div>\n"
     nb_data = _create_synthetic_notebook(
@@ -298,12 +308,20 @@ def test_non_python_cell_magic_whole_cell_handled(tmp_path: Path):
 
     sanitized_bash = sanitize_cell_source(bash_cell)
     assert all(
-        line.startswith("# [cell-magic bash]:") for line in sanitized_bash.splitlines()
+        line.startswith("# [cell-magic bash]:")
+        for line in sanitized_bash.code.splitlines()
     )
 
     is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
     assert is_valid is True
-    assert diagnostics == []
+    assert len(diagnostics) == 2
+    assert any("%%bash" in d for d in diagnostics)
+    assert any("%%html" in d for d in diagnostics)
+
+    # In verbose mode, reports exclusion counts
+    is_valid_v, diag_v = validate_notebook(nb_file, expected_cells=99, verbose=True)
+    assert is_valid_v is True
+    assert any("2 code cells excluded from Python compilation" in d for d in diag_v)
 
 
 def test_python_body_cell_magic_handled(tmp_path: Path):
@@ -479,3 +497,201 @@ def test_current_committed_patched_notebook():
 
     exit_code = main([str(committed_path), "-q"])
     assert exit_code == 0
+
+
+def test_f1_module_level_syntax_errors_rejected(tmp_path: Path):
+    """
+    Test 21 (F1): Real code-object compilation rejects Python syntax errors that pass AST-only checks:
+    - return outside function
+    - break outside loop
+    - continue outside loop
+    - duplicate parameter names in function definition
+    - nonlocal outside enclosing function
+    - yield outside function
+    """
+    cases = [
+        ("return 42\n", "return"),
+        ("break\n", "break"),
+        ("continue\n", "continue"),
+        ("def duplicate_args(a, a):\n    pass\n", "duplicate argument"),
+        ("nonlocal x\n", "nonlocal"),
+        ("yield 1\n", "yield"),
+    ]
+    for idx, (invalid_code, err_keyword) in enumerate(cases):
+        nb_data = _create_synthetic_notebook(99, code_cells=[(0, invalid_code)])
+        nb_file = tmp_path / f"invalid_f1_{idx}.ipynb"
+        nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+        is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+        assert is_valid is False, f"Failed to reject: {invalid_code}"
+        assert any(
+            "syntax compilation failed" in d and err_keyword in d.lower()
+            for d in diagnostics
+        ), f"Diagnostic missing {err_keyword} in {diagnostics}"
+
+
+def test_f1_top_level_await_allowed(tmp_path: Path):
+    """Test 22 (F1): Top-level await is permitted under ast.PyCF_ALLOW_TOP_LEVEL_AWAIT."""
+    code = (
+        "import asyncio\n"
+        "async def get_val():\n"
+        "    return 42\n"
+        "result = await get_val()\n"
+    )
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "top_level_await.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+    assert diagnostics == []
+
+
+def test_f1_no_runtime_execution(tmp_path: Path):
+    """Test 23 (F1): Proves compilation pass performs static compilation only and never executes code."""
+    marker_file = tmp_path / "side_effect_marker.txt"
+    code = (
+        f"import pathlib\n"
+        f"pathlib.Path({str(marker_file)!r}).write_text('executed')\n"
+        f"raise RuntimeError('Runtime execution must not occur!')\n"
+    )
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "no_exec.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+    assert not marker_file.exists(), "Side effect file was created during validation!"
+
+
+def test_f3_timeit_setup_code_valid_and_broken(tmp_path: Path):
+    """Test 24 (F3): %%timeit compiles setup code in header; passes when valid, fails when broken."""
+    # Positive case: valid setup code and flags
+    valid_timeit = "%%timeit -n 100 -r 5 x = 1\ny = x + 1\n"
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, valid_timeit)])
+    nb_file = tmp_path / "valid_timeit.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+
+    # Negative case: syntactically broken setup code
+    broken_timeit = "%%timeit x = (\npass\n"
+    nb_data_bad = _create_synthetic_notebook(99, code_cells=[(0, broken_timeit)])
+    nb_file_bad = tmp_path / "broken_timeit.ipynb"
+    nb_file_bad.write_text(json.dumps(nb_data_bad), encoding="utf-8")
+    is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
+    assert is_valid_bad is False
+    assert any("syntax compilation failed" in d for d in diagnostics_bad)
+
+
+def test_f3_python_bearing_line_magics(tmp_path: Path):
+    """Test 25 (F3): %time, %timeit, %prun compile Python payloads; pass when valid, fail when broken."""
+    # Positive
+    valid_magics = (
+        "%time sum(range(100))\n"
+        "%timeit -n 50 -r 3 sum(range(10))\n"
+        "res = %time sum(range(10))\n"
+    )
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, valid_magics)])
+    nb_file = tmp_path / "valid_line_magics.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, _ = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+
+    # Negative: broken expression in %time
+    broken_line_magic = "%time def broken(:\n    pass\n"
+    nb_data_bad = _create_synthetic_notebook(99, code_cells=[(0, broken_line_magic)])
+    nb_file_bad = tmp_path / "broken_line_magic.ipynb"
+    nb_file_bad.write_text(json.dumps(nb_data_bad), encoding="utf-8")
+    is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
+    assert is_valid_bad is False
+    assert any("syntax compilation failed" in d for d in diagnostics_bad)
+
+
+def test_f3_unsupported_cell_magic_rejected(tmp_path: Path):
+    """Test 26 (F3): Unknown / unsupported cell magic rejected with nonzero diagnostic."""
+    code = "%%unsupported_custom_magic\nx = 1\n"
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "unsupported_magic.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is False
+    assert any(
+        "unsupported cell magic" in d and "unsupported_custom_magic" in d
+        for d in diagnostics
+    )
+    exit_code = main([str(nb_file), "-q"])
+    assert exit_code == 1
+
+
+def test_f4_control_flow_indentation_preserved(tmp_path: Path):
+    """Test 27 (F4): Standalone !shell and %magic within suites preserve indentation; broken python fails."""
+    # Positive
+    code = "if True:\n" "    !echo ok\n" "    %pwd\n" "    x = 1\n"
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "control_flow_indent.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+
+    # Negative companion: bad indentation following magic
+    bad_indent = "if True:\n" "    !echo ok\n" "   x = 1\n"
+    nb_data_bad = _create_synthetic_notebook(99, code_cells=[(0, bad_indent)])
+    nb_file_bad = tmp_path / "bad_indent.ipynb"
+    nb_file_bad.write_text(json.dumps(nb_data_bad), encoding="utf-8")
+    is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
+    assert is_valid_bad is False
+    assert any("indent" in d.lower() for d in diagnostics_bad)
+
+    # Negative companion: missing colon
+    missing_colon = "if True\n" "    !echo ok\n"
+    nb_data_colon = _create_synthetic_notebook(99, code_cells=[(0, missing_colon)])
+    nb_file_colon = tmp_path / "missing_colon.ipynb"
+    nb_file_colon.write_text(json.dumps(nb_data_colon), encoding="utf-8")
+    is_valid_colon, diagnostics_colon = validate_notebook(
+        nb_file_colon, expected_cells=99
+    )
+    assert is_valid_colon is False
+    assert any("syntax compilation failed" in d for d in diagnostics_colon)
+
+
+def test_f4_assignments_transformed(tmp_path: Path):
+    """Test 28 (F4): Shell assignments (var = !cmd) and magic assignments (var = %magic) preserved."""
+    code = (
+        "files = !echo file1 file2\n"
+        "current_dir = %pwd\n"
+        "assert isinstance(files, list)\n"
+    )
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "assignments.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+
+    # Negative companion: invalid assignment target
+    bad_target = "123 = !echo ok\n"
+    nb_data_bad = _create_synthetic_notebook(99, code_cells=[(0, bad_target)])
+    nb_file_bad = tmp_path / "bad_target.ipynb"
+    nb_file_bad.write_text(json.dumps(nb_data_bad), encoding="utf-8")
+    is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
+    assert is_valid_bad is False
+    assert any("syntax compilation failed" in d for d in diagnostics_bad)
+
+
+def test_f4_multiline_modulo_not_mangled(tmp_path: Path):
+    """Test 29 (F4): Multiline modulo arithmetic in parens preserved intact without magic rewriting."""
+    code = "x = 10\n" "y = 3\n" "val = (\n" "    x\n" "    % y\n" ")\n"
+    nb_data = _create_synthetic_notebook(99, code_cells=[(0, code)])
+    nb_file = tmp_path / "modulo_parens.ipynb"
+    nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+    is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+    assert is_valid is True
+
+    # Negative companion: malformed expression inside parens
+    bad_modulo = "val = (\n" "    x\n" "    % (\n" ")\n"
+    nb_data_bad = _create_synthetic_notebook(99, code_cells=[(0, bad_modulo)])
+    nb_file_bad = tmp_path / "bad_modulo.ipynb"
+    nb_file_bad.write_text(json.dumps(nb_data_bad), encoding="utf-8")
+    is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
+    assert is_valid_bad is False
+    assert any("syntax compilation failed" in d for d in diagnostics_bad)

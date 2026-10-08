@@ -17,8 +17,8 @@ Before submitting or committing any code modifications, all applicable offline t
 ```powershell
 python -m pytest test_validate_run.py tests/unit tests/integration -q
 ```
-- Historical baseline context: ~451 passed, 9 skipped.
-- Validates agent messages, artifact path safety, BaseNoExtrasModel contracts, tool error handlers, patcher integrity, reducers, DataFrameRegistry caching, and supervisor routing.
+- Historical baseline context: 463 passed, 9 skipped (includes `tests/unit/test_graph_validation_safety.py` 12 tests).
+- Validates agent messages, artifact path safety, BaseNoExtrasModel contracts, tool error handlers, patcher integrity, reducers, DataFrameRegistry caching, supervisor routing, and graph harness installation suppression safety.
 
 ### Core Pipeline & Memory Enhancement Suites
 ```powershell
@@ -38,8 +38,8 @@ python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 ```powershell
 python -m pytest test_validate_notebook_integrity.py -v
 ```
-- Historical baseline context: 20 passed.
-- Validates fail-closed notebook integrity checks across cell counts, AST compilation, and diagnostic reporting.
+- Historical baseline context: 29 passed.
+- Validates fail-closed notebook integrity checks across cell counts, real code-object compilation (ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), safe Python-bearing and non-Python cell magics handling, and diagnostic reporting.
 
 ### Error Handling Framework Suite
 ```powershell
@@ -59,10 +59,10 @@ When modifying `_patch_notebook.py`:
 # 1. Regenerate patched notebook
 python _patch_notebook.py
 
-# 2. Fail-closed notebook structure and AST compilation gate (exact 99 cells)
+# 2. Fail-closed notebook structure and code-object compilation gate (exact 99 cells)
 python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
 
-# 3. Static graph reachability and syntax check
+# 3. Static graph reachability and syntax check (guarded against installer execution)
 python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
 ```
 - **Standard**: 99 cells OK, 15 graph nodes, 0 unreachable nodes, 0 dead ends, 0 compilation errors.

@@ -7,9 +7,12 @@ Enforces:
 1. File existence and valid JSON syntax.
 2. Presence and list type of the top-level 'cells' field.
 3. Exact cell count match against expected count (default: 99 for W14 completion baseline).
-4. Real Python AST/syntax compilation of every code cell.
+4. Real Python code-object compilation of every code cell with allow-top-level-await semantics.
 5. Safe transformation of supported IPython notebook magics/shell escapes
-   while preserving line counts and line numbers for actionable diagnostics.
+   while preserving statement structure, indentation, and line numbers for actionable diagnostics.
+6. Validation of Python-bearing magic payloads (%%timeit setup code and bodies, %time, %timeit, %prun).
+7. Safe exclusion and explicit diagnostic reporting of recognized non-Python cell magics (%%bash, %%html, etc.).
+8. Rejection of unknown or unsupported cell magics with nonzero diagnostics.
 
 Exits with:
   0: Notebook passes complete integrity gate.
@@ -29,15 +32,57 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import NamedTuple, Sequence
 
 DEFAULT_NOTEBOOK = "IntelligentDataDetective_beta_v5_patched.ipynb"
 DEFAULT_EXPECTED_CELLS = 99
 SUPPORTED_CELL_TYPES = {"code", "markdown", "raw"}
-PYTHON_BODY_CELL_MAGICS = {"time", "timeit", "capture", "prun"}
+
+SUPPORTED_PYTHON_CELL_MAGICS = {"time", "timeit", "capture", "prun", "python"}
+RECOGNIZED_NON_PYTHON_CELL_MAGICS = {
+    "bash",
+    "sh",
+    "html",
+    "javascript",
+    "js",
+    "latex",
+    "writefile",
+    "svg",
+    "cmd",
+    "ruby",
+    "perl",
+}
+PYTHON_LINE_MAGICS = {"time", "timeit", "prun"}
+
 IPYTHON_HELP_PATTERN = re.compile(
     r"^(\?{1,2}\s*[a-zA-Z_][a-zA-Z0-9_\.]*|[a-zA-Z_][a-zA-Z0-9_\.]*\s*\?{1,2}|\?{1,2})$"
 )
+LINE_MAGIC_RE = re.compile(r"^%([a-zA-Z_][a-zA-Z0-9_]*)(?:\s+(.*))?$")
+SHELL_ASSIGN_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_,\s\(\)\[\]\.]*)\s*=\s*!(.*)$")
+MAGIC_ASSIGN_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_,\s\(\)\[\]\.]*)\s*=\s*(%.*)$")
+
+
+class SanitizeResult(NamedTuple):
+    code: str
+    excluded_reason: str | None = None
+    unsupported_error: str | None = None
+
+
+def _strip_timeit_options(rest: str) -> str:
+    """Strip known options (-n N, -r R, -t, -c, -p P, -o, -q, etc.) from %timeit / %%timeit."""
+    tokens = rest.split()
+    idx = 0
+    while idx < len(tokens):
+        t = tokens[idx]
+        if t in ("-n", "-r", "-p") and idx + 1 < len(tokens):
+            idx += 2
+        elif t.startswith("--") or (
+            t.startswith("-") and len(t) > 1 and t[1].isalpha()
+        ):
+            idx += 1
+        else:
+            break
+    return " ".join(tokens[idx:])
 
 
 def _update_multiline_string_state(line: str, in_multiline: str | None) -> str | None:
@@ -81,30 +126,70 @@ def _update_multiline_string_state(line: str, in_multiline: str | None) -> str |
     return in_multiline
 
 
-def sanitize_cell_source(source: str) -> str:
+def _count_open_parens(line: str, curr_depth: int) -> int:
+    """Count unclosed parentheses/brackets/braces outside comments and string literals."""
+    idx = 0
+    depth = curr_depth
+    while idx < len(line):
+        ch = line[idx]
+        if ch == "#":
+            break
+        elif ch in ('"', "'"):
+            quote = ch
+            is_triple = line[idx : idx + 3] in ('"""', "'''")
+            if is_triple:
+                delim = line[idx : idx + 3]
+                close_idx = line.find(delim, idx + 3)
+                if close_idx == -1:
+                    break
+                idx = close_idx + 3
+            else:
+                idx += 1
+                while idx < len(line):
+                    if line[idx] == "\\":
+                        idx += 2
+                    elif line[idx] == quote:
+                        idx += 1
+                        break
+                    else:
+                        idx += 1
+        else:
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+            idx += 1
+    return depth
+
+
+def sanitize_cell_source(source: str) -> SanitizeResult:
     """
     Transform IPython/notebook-specific syntax into valid Python
-    while preserving line numbers and structure for accurate compiler diagnostics.
+    while preserving line numbers, statement structure, and indentation
+    for accurate compiler diagnostics.
 
     Cell magic rules (%%...):
-    - A cell magic is only syntactically valid on the first non-blank, non-comment line of a cell.
-    - If a cell begins with a non-Python cell magic (e.g., %%bash, %%sh, %%html, %%javascript,
-      %%latex, %%writefile, %%svg, %%cmd), the entire cell is treated as a whole-cell construct
-      and commented out, preserving line counts so non-Python code is not compiled.
-    - If a cell begins with a Python-body cell magic (e.g., %%time, %%timeit, %%capture, %%prun),
-      only the leading directive line is commented out, allowing the Python body to compile.
-    - Mid-cell '%%' directives are invalid in IPython; they are left intact so that Python's
-      AST compiler flags the invalid syntax.
+    - A cell magic is only syntactically valid on the first non-blank line of a cell.
+    - If a cell begins with a recognized non-Python cell magic (e.g., %%bash, %%sh, %%html),
+      it is safely excluded from Python compilation and reported in diagnostics.
+    - If a cell begins with a supported Python-body cell magic (e.g., %%time, %%timeit, %%python),
+      its body is compiled. For %%timeit, any setup code in the header is compiled.
+    - If a cell begins with an unknown or unsupported %% directive, an error diagnostic is generated.
+    - Mid-cell '%%' directives are left intact so that Python flags the invalid syntax.
 
     Line magic rules (%... / !... / ?...):
-    - Single '%' line magics (e.g., %matplotlib inline) and '!' shell escapes are commented
-      out line-by-line.
-    - Dynamic help queries (?obj or obj?) are commented out line-by-line.
+    - Standalone '!' and non-Python '%' line magics are replaced with 'pass' at the same
+      indentation to preserve block structure.
+    - Line magics evaluating Python expressions (%time, %timeit, %prun) compile their payload.
+    - Shell assignments (var = !cmd) transform to var = [].
+    - Magic assignments (var = %magic) transform to var = None or var = (expr).
+    - Multi-line expressions with continued '%' (e.g. modulo in parens) are preserved intact.
     """
     lines = source.splitlines(keepends=True)
     if not lines:
-        return ""
+        return SanitizeResult("", None, None)
 
+    # In IPython, cell magics (%%...) are only valid on the first non-blank line of a cell
     first_non_blank_idx: int | None = None
     for idx, line in enumerate(lines):
         if line.strip():
@@ -112,24 +197,43 @@ def sanitize_cell_source(source: str) -> str:
             break
 
     magic_token = ""
-    # Check for leading whole-cell magic (%%...)
     if first_non_blank_idx is not None:
         first_line_stripped = lines[first_non_blank_idx].strip()
         if first_line_stripped.startswith("%%"):
             magic_parts = first_line_stripped[2:].split()
             magic_token = magic_parts[0] if magic_parts else ""
-            # If the magic body is not executed by Python, comment out the whole cell
-            if magic_token and magic_token not in PYTHON_BODY_CELL_MAGICS:
-                clean_lines: list[str] = []
+            if not magic_token:
+                # Bare %% without a magic name is invalid in IPython
+                pass
+            elif magic_token in RECOGNIZED_NON_PYTHON_CELL_MAGICS:
+                clean_lines = []
                 for line in lines:
                     content = line.rstrip("\r\n")
                     clean_lines.append(f"# [cell-magic {magic_token}]: {content}\n")
-                return "".join(clean_lines)
+                return SanitizeResult(
+                    "".join(clean_lines),
+                    f"recognized non-Python cell magic '%%{magic_token}'",
+                    None,
+                )
+            elif magic_token in SUPPORTED_PYTHON_CELL_MAGICS:
+                pass
+            else:
+                return SanitizeResult(
+                    source,
+                    None,
+                    f"unsupported cell magic '%%{magic_token}'. "
+                    f"Supported Python magics: {sorted(SUPPORTED_PYTHON_CELL_MAGICS)}; "
+                    f"recognized non-Python magics: {sorted(RECOGNIZED_NON_PYTHON_CELL_MAGICS)}.",
+                )
 
     in_multiline: str | None = None
+    paren_depth = 0
     clean_lines = []
+
     for idx, line in enumerate(lines):
         stripped = line.strip()
+        leading_ws_len = len(line) - len(line.lstrip())
+        indent = line[:leading_ws_len]
         was_in_multiline = in_multiline
         in_multiline = _update_multiline_string_state(line, in_multiline)
 
@@ -138,35 +242,97 @@ def sanitize_cell_source(source: str) -> str:
             clean_lines.append(line)
             continue
 
-        # Leading Python-body cell magic (e.g. %%time)
-        if (
-            idx == first_non_blank_idx
-            and stripped.startswith("%%")
-            and magic_token in PYTHON_BODY_CELL_MAGICS
-        ):
-            leading_whitespace_len = len(line) - len(line.lstrip())
-            indent = line[:leading_whitespace_len]
-            content = line[leading_whitespace_len:].rstrip("\r\n")
-            clean_lines.append(f"{indent}# [cell-magic]: {content}\n")
-        # Line magics (single %, not %%) and shell escapes (!)
-        elif (
-            stripped.startswith("%") and not stripped.startswith("%%")
-        ) or stripped.startswith("!"):
-            leading_whitespace_len = len(line) - len(line.lstrip())
-            indent = line[:leading_whitespace_len]
-            content = line[leading_whitespace_len:].rstrip("\r\n")
-            clean_lines.append(f"{indent}# [IPython magic/shell]: {content}\n")
-        # Standalone IPython dynamic object inspection (?obj, obj?, ??obj, obj??, ?)
-        elif IPYTHON_HELP_PATTERN.match(stripped):
-            leading_whitespace_len = len(line) - len(line.lstrip())
-            indent = line[:leading_whitespace_len]
-            content = line[leading_whitespace_len:].rstrip("\r\n")
-            clean_lines.append(f"{indent}# [IPython help]: {content}\n")
-        else:
-            # Ordinary Python line (mid-cell %% or bare %% remains intact and will trigger SyntaxError)
-            clean_lines.append(line)
+        # Leading cell magic on first non-blank line
+        if idx == first_non_blank_idx and stripped.startswith("%%"):
+            if magic_token == "timeit":
+                header_rest = stripped[len("%%timeit") :].strip()
+                setup_code = _strip_timeit_options(header_rest).strip()
+                if setup_code:
+                    clean_lines.append(f"{indent}{setup_code}\n")
+                else:
+                    clean_lines.append(f"{indent}pass  # [cell-magic %%timeit]\n")
+            elif magic_token in SUPPORTED_PYTHON_CELL_MAGICS:
+                clean_lines.append(f"{indent}pass  # [cell-magic %%{magic_token}]\n")
+            else:
+                # Bare %% or mid-cell %% remains intact and will trigger SyntaxError
+                clean_lines.append(line)
+            continue
 
-    return "".join(clean_lines)
+        # Check if line is within open parentheses (e.g. multiline expressions like modulo arithmetic)
+        curr_paren_depth = paren_depth
+        paren_depth = _count_open_parens(line, paren_depth)
+        if curr_paren_depth > 0:
+            clean_lines.append(line)
+            continue
+
+        # Check for shell assignment: target = !cmd
+        shell_m = SHELL_ASSIGN_RE.match(stripped)
+        if shell_m:
+            target, cmd = shell_m.groups()
+            clean_lines.append(f"{indent}{target} = []  # [IPython shell]: !{cmd}\n")
+            continue
+
+        # Check for magic assignment: target = %magic
+        magic_assign_m = MAGIC_ASSIGN_RE.match(stripped)
+        if magic_assign_m:
+            target, magic_call = magic_assign_m.groups()
+            lm_m = LINE_MAGIC_RE.match(magic_call.strip())
+            if lm_m:
+                lm_token, lm_rest = lm_m.groups()
+                lm_rest = (lm_rest or "").strip()
+                if lm_token in PYTHON_LINE_MAGICS:
+                    if lm_token == "timeit":
+                        py_code = _strip_timeit_options(lm_rest).strip()
+                    else:
+                        py_code = lm_rest
+                    if py_code:
+                        clean_lines.append(
+                            f"{indent}{target} = ({py_code})  # [IPython %{lm_token}]\n"
+                        )
+                    else:
+                        clean_lines.append(
+                            f"{indent}{target} = None  # [IPython %{lm_token}]\n"
+                        )
+                else:
+                    clean_lines.append(
+                        f"{indent}{target} = None  # [IPython magic]: {magic_call}\n"
+                    )
+            else:
+                clean_lines.append(f"{indent}{target} = None\n")
+            continue
+
+        # Standalone shell escape: !cmd
+        if stripped.startswith("!"):
+            clean_lines.append(f"{indent}pass  # [IPython shell]: {stripped}\n")
+            continue
+
+        # Standalone line magic: %magic ...
+        lm_m = LINE_MAGIC_RE.match(stripped)
+        if lm_m:
+            lm_token, lm_rest = lm_m.groups()
+            lm_rest = (lm_rest or "").strip()
+            if lm_token in PYTHON_LINE_MAGICS:
+                if lm_token == "timeit":
+                    py_code = _strip_timeit_options(lm_rest).strip()
+                else:
+                    py_code = lm_rest
+                if py_code:
+                    clean_lines.append(f"{indent}{py_code}  # [IPython %{lm_token}]\n")
+                else:
+                    clean_lines.append(f"{indent}pass  # [IPython %{lm_token}]\n")
+            else:
+                clean_lines.append(f"{indent}pass  # [IPython magic]: {stripped}\n")
+            continue
+
+        # Standalone help query: ?obj, obj?, etc.
+        if IPYTHON_HELP_PATTERN.match(stripped):
+            clean_lines.append(f"{indent}pass  # [IPython help]: {stripped}\n")
+            continue
+
+        # Ordinary Python line
+        clean_lines.append(line)
+
+    return SanitizeResult("".join(clean_lines), None, None)
 
 
 def validate_notebook(
@@ -175,7 +341,7 @@ def validate_notebook(
     verbose: bool = False,
 ) -> tuple[bool, list[str]]:
     """
-    Validate notebook structure and compile all code cells.
+    Validate notebook structure and compile all code cells into Python code objects.
 
     Returns:
         (is_valid, list_of_error_and_diagnostic_messages)
@@ -226,6 +392,8 @@ def validate_notebook(
         return False, diagnostics
 
     code_cells_checked = 0
+    code_cells_compiled = 0
+    excluded_cells: list[tuple[int, str, str]] = []
     syntax_errors: list[str] = []
 
     for idx, cell in enumerate(cells):
@@ -270,19 +438,33 @@ def validate_notebook(
             )
             continue
 
-        # Non-code cells are structurally validated above; only code cells require AST compilation
+        # Non-code cells are structurally validated above; only code cells require compilation
         if cell_type != "code":
             continue
 
         code_cells_checked += 1
         sanitized = sanitize_cell_source(source_text)
 
+        if sanitized.unsupported_error:
+            syntax_errors.append(
+                f"Cell {idx} (id: {cell_id}) {sanitized.unsupported_error}"
+            )
+            continue
+
+        if sanitized.excluded_reason:
+            excluded_cells.append((idx, cell_id, sanitized.excluded_reason))
+            diagnostics.append(
+                f"Cell {idx} (id: {cell_id}) excluded from Python compilation: {sanitized.excluded_reason}"
+            )
+            continue
+
+        code_cells_compiled += 1
         try:
             compile(
-                sanitized,
+                sanitized.code,
                 filename=f"{path.name}:cell_{idx}",
                 mode="exec",
-                flags=ast.PyCF_ONLY_AST,
+                flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
             )
         except SyntaxError as err:
             err_line_text = (err.text or "").strip()
@@ -303,9 +485,15 @@ def validate_notebook(
         return False, diagnostics
 
     if verbose:
-        diagnostics.append(
-            f"Successfully validated {actual_cell_count} cells ({code_cells_checked} code cells compiled cleanly)."
+        excluded_info = ""
+        if excluded_cells:
+            plural = "s" if len(excluded_cells) > 1 else ""
+            excluded_info = f", {len(excluded_cells)} code cell{plural} excluded from Python compilation"
+        summary_msg = (
+            f"Successfully validated {actual_cell_count} cells "
+            f"({code_cells_compiled} code cells compiled cleanly{excluded_info})."
         )
+        diagnostics.append(summary_msg)
 
     return True, diagnostics
 

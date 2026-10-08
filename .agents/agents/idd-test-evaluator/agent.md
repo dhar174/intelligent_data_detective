@@ -30,8 +30,8 @@ You specialize in automated software verification, pytest harnesses, edge-case g
 The repository maintains an authoritative set of offline test suites that execute fast and require ZERO API keys. These commands align directly with current CI (`.github/workflows/copilot-setup-steps.yml`):
 
 1. **Validator, Unit & Integration Suites (`tests/unit`, `tests/integration`, `test_validate_run.py`)**:
-   - Covers: agent messages, artifact paths, BaseNoExtrasModel contracts, tool error handling, model configs, patcher integrity, reducers, DataFrameRegistry, and supervisor routing edge cases.
-   - Baseline reference: ~451 passed, 9 skipped (historical context).
+   - Covers: agent messages, artifact paths, BaseNoExtrasModel contracts, tool error handling, model configs, patcher integrity, reducers, DataFrameRegistry, supervisor routing edge cases, and graph harness installation suppression safety.
+   - Baseline reference: 463 passed, 9 skipped (historical context; includes `tests/unit/test_graph_validation_safety.py` 12 tests).
    ```powershell
    python -m pytest test_validate_run.py tests/unit tests/integration -q
    ```
@@ -51,8 +51,8 @@ The repository maintains an authoritative set of offline test suites that execut
    ```
 
 4. **Notebook Integrity Suite**:
-   - Validates fail-closed notebook structure, exact 99-cell invariant, AST syntax compilation, and diagnostic reporting.
-   - Baseline reference: 20 passed.
+   - Validates fail-closed notebook structure, exact 99-cell invariant, real code-object compilation (`ast.PyCF_ALLOW_TOP_LEVEL_AWAIT`), safe Python-bearing and non-Python cell magics handling, and diagnostic reporting.
+   - Baseline reference: 29 passed.
    ```powershell
    python -m pytest test_validate_notebook_integrity.py -v
    ```
