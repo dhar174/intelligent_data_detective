@@ -32,6 +32,10 @@ Covers the full matrix required by Issue #152 and PR reviews:
 27. (F4) Standalone !shell and %magic within suites preserve indentation; broken python fails
 28. (F4) Shell assignments (var = !cmd) and magic assignments (var = %magic) preserved; invalid assignments fail
 29. (F4) Multiline modulo expressions in parens preserved intact; invalid expressions fail
+30. (F5) %timeit and %%timeit valid options (short, attached, flags) compile correctly -> PASS
+31. (F5) %timeit and %%timeit invalid options (missing args, non-int, unknown flags) fail with diagnostic -> FAIL
+32. (F6) Multiline strings with closing parens on boundary lines correctly restore paren depth for line magics -> PASS
+33. (F6) Multiline strings with unclosed parens or syntax errors fail compilation -> FAIL
 """
 
 from __future__ import annotations
@@ -695,3 +699,116 @@ def test_f4_multiline_modulo_not_mangled(tmp_path: Path):
     is_valid_bad, diagnostics_bad = validate_notebook(nb_file_bad, expected_cells=99)
     assert is_valid_bad is False
     assert any("syntax compilation failed" in d for d in diagnostics_bad)
+
+
+def test_f5_timeit_options_valid(tmp_path: Path):
+    """Test 30 (F5): %timeit and %%timeit valid options (short, attached, flags) compile correctly."""
+    valid_snippets = [
+        "%%timeit -n 100 -r 5\nx = 1\n",
+        "%%timeit -n100 -r5\nx = 1\n",
+        "%%timeit -n 50 -r 3 -p 4 -t\nx = 1\n",
+        "%%timeit -q -o\nx = 1\n",
+        "%%timeit --quiet\nx = 1\n",
+        "%%timeit -n 10 -r 2 a = 10\nb = a + 1\n",
+        "%timeit -n 100 -r 5 sum([1, 2, 3])\n",
+        "%timeit -n10 -r3 len('hello')\n",
+        "res = %timeit -o -n 10 [i for i in range(10)]\n",
+        "%timeit -t -c -q -o 42\n",
+        "%%timeit -p 0\nx = 1\n",
+    ]
+    for i, snippet in enumerate(valid_snippets):
+        nb_data = _create_synthetic_notebook(99, code_cells=[(0, snippet)])
+        nb_file = tmp_path / f"valid_timeit_{i}.ipynb"
+        nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+        is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+        assert is_valid is True, f"Snippet {i} failed validation: {diagnostics}"
+
+
+def test_f5_timeit_options_invalid(tmp_path: Path):
+    """Test 31 (F5): %timeit and %%timeit invalid options (missing args, non-int, unknown flags) fail with diagnostic."""
+    invalid_cases = [
+        ("%%timeit -n banana\nx = 1\n", "banana"),
+        ("%%timeit -n\nx = 1\n", "option -n requires an argument"),
+        ("%%timeit -r nope\nx = 1\n", "nope"),
+        ("%%timeit -r\nx = 1\n", "option -r requires an argument"),
+        ("%%timeit --not-a-real-option\nx = 1\n", "unrecognized option"),
+        ("%%timeit -nbanana\nx = 1\n", "banana"),
+        ("%%timeit -rnope\nx = 1\n", "nope"),
+        ("%%timeit -p -1\nx = 1\n", "non-negative integer"),
+        ("%%timeit -p nope\nx = 1\n", "nope"),
+        ("%%timeit -p\nx = 1\n", "option -p requires an argument"),
+        ("%%timeit -n 0\nx = 1\n", "positive integer"),
+        ("%%timeit -r 0\nx = 1\n", "positive integer"),
+        ("%%timeit -n0\nx = 1\n", "positive integer"),
+        ("%%timeit -r0\nx = 1\n", "positive integer"),
+        ("%%timeit -x\nx = 1\n", "unrecognized option"),
+        ("%timeit -r nope x + 1\n", "nope"),
+        ("%timeit -n\n", "option -n requires an argument"),
+        ("%timeit --bogus x = 1\n", "unrecognized option"),
+        ("res = %timeit --unknown_flag x\n", "unrecognized option"),
+    ]
+    for i, (snippet, expected_diag) in enumerate(invalid_cases):
+        nb_data = _create_synthetic_notebook(99, code_cells=[(0, snippet)])
+        nb_file = tmp_path / f"invalid_timeit_{i}.ipynb"
+        nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+        is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+        assert (
+            is_valid is False
+        ), f"Snippet {i} should have failed validation: {snippet}"
+        assert any(
+            expected_diag in d for d in diagnostics
+        ), f"Snippet {i} diagnostics missing expected text '{expected_diag}': {diagnostics}"
+        exit_code = main([str(nb_file), "-q"])
+        assert exit_code == 1, f"Snippet {i} exit code was not 1"
+
+
+def test_f6_multiline_string_paren_tracking_valid(tmp_path: Path):
+    """Test 32 (F6): Multiline strings with closing parens on boundary lines correctly restore paren depth for line magics."""
+    valid_snippets = [
+        # Quoted from review: valid python followed by line magic
+        'x = ("""alpha\nbeta""")\n%pwd\n',
+        # Nested delimiters with multiline string
+        'data = [("""first\nsecond"""), 42]\n%matplotlib inline\n',
+        # Misleading delimiters inside multiline string
+        'text = """((( [[[\n))) ]]]\n%not_a_real_magic"""\n%pwd\n',
+        # Multiline string followed by ordinary Python
+        'message = ("""first\nsecond""")\nresult = len(message)\n',
+        # Single-quote triple delimiters
+        "val = ('''start\nmiddle\nend''')\n%pwd\n",
+        # Multiple triple-quoted strings with parens
+        's = ("""one\ntwo""") + ("""three\nfour""")\n%pwd\n',
+    ]
+    for i, snippet in enumerate(valid_snippets):
+        nb_data = _create_synthetic_notebook(99, code_cells=[(0, snippet)])
+        nb_file = tmp_path / f"valid_f6_{i}.ipynb"
+        nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+        is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+        assert is_valid is True, f"Snippet {i} failed validation: {diagnostics}"
+
+
+def test_f6_multiline_string_paren_tracking_invalid(tmp_path: Path):
+    """Test 33 (F6): Multiline strings with unclosed parens or syntax errors fail compilation."""
+    invalid_cases = [
+        # Unclosed paren across multiline string
+        ('x = ("""alpha\nbeta"""\n%pwd\n', "syntax compilation failed"),
+        # Valid multiline string followed by malformed Python
+        (
+            'x = ("""alpha\nbeta""")\ndef broken(:\n    pass\n',
+            "syntax compilation failed",
+        ),
+        # Unclosed bracket enclosing multiline string
+        ('data = [("""first\nsecond""), 42\n', "syntax compilation failed"),
+    ]
+    for i, (snippet, expected_diag) in enumerate(invalid_cases):
+        nb_data = _create_synthetic_notebook(99, code_cells=[(0, snippet)])
+        nb_file = tmp_path / f"invalid_f6_{i}.ipynb"
+        nb_file.write_text(json.dumps(nb_data), encoding="utf-8")
+        is_valid, diagnostics = validate_notebook(nb_file, expected_cells=99)
+        assert (
+            is_valid is False
+        ), f"Snippet {i} should have failed validation: {snippet}"
+        assert any(
+            expected_diag in d for d in diagnostics
+        ), f"Snippet {i} diagnostics missing expected text '{expected_diag}': {diagnostics}"
+        exit_code = main([str(nb_file), "-q"])
+        assert exit_code == 1, f"Snippet {i} exit code was not 1"

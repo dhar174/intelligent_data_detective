@@ -62,15 +62,15 @@ python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipy
 3. **Exact Cell Count Invariant (99 cells)**: Enforces that the notebook contains exactly 99 cells (default for W14 baseline). Fails nonzero (exit 1) on 0, 98, 100, or any mismatch.
 4. **Code Cell Code-Object Compilation**: Compiles every code cell with real code-object compilation semantics (`compile(..., mode='exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)`). Rejects module-level `return 42`, `break`, `continue`, duplicate function formal parameters, `nonlocal`, and `yield` that falsely pass AST-only parsing. Preserves valid top-level `await` without executing runtime code.
 5. **Safe Magic, Payload & Statement Structure Handling**:
-   - **Python-bearing cell magics** (`%%python`, `%%time`, `%%timeit`, `%%capture`, `%%prun`): Leading directive is handled while validating underlying Python code. For `%%timeit`, header setup code is parsed and compiled while stripping timeit options (`-n`, `-r`, `-t`, `-c`, `-p`, `-o`, `-q`). Broken setup code (e.g. `%%timeit x = (`) fails compilation.
+   - **Python-bearing cell magics** (`%%python`, `%%time`, `%%timeit`, `%%capture`, `%%prun`): Leading directive is handled while validating underlying Python code. For `%%timeit` and `%timeit`, options are strictly parsed and validated (`-n <N>`, `-r <R>`, `-p <P>` with positive/non-negative integers, and `-t`, `-c`, `-o`, `-q`, `--quiet` flags in space-separated or attached forms). Invalid options (e.g. `-n banana`, missing arguments, non-integer values, unrecognized flags) fail validation with actionable diagnostics. Remaining Python setup and statement bodies are preserved and compiled. Broken setup code (e.g. `%%timeit x = (`) fails compilation.
    - **Recognized non-Python cell magics** (`%%bash`, `%%sh`, `%%html`, `%%javascript`, `%%js`, `%%latex`, `%%writefile`, `%%svg`, `%%cmd`, `%%ruby`, `%%perl`): Entire cell is safely excluded from Python compilation, explicitly reported in validation diagnostics, and not counted as compiled Python code cells in accounting.
    - **Unknown / unsupported cell magics**: Fail validation with nonzero exit code and an actionable diagnostic identifying the unsupported magic.
-   - **Python-bearing line magics** (`%time`, `%timeit`, `%prun`): Validate Python expression payloads. Broken expressions fail compilation.
+   - **Python-bearing line magics** (`%time`, `%timeit`, `%prun`): Validate Python expression payloads and options. Broken expressions or invalid options fail compilation.
    - **Statement and block structure preservation**: Standalone shell commands (`!cmd`) and line magics (`%pwd`) inside control-flow blocks (`if True:\n    !echo ok`) transform to `pass` at identical indentation, preventing `IndentationError` while preserving block syntax.
    - **Shell and magic assignments**: Assignments (`files = !echo ok`, `res = %pwd`) transform to valid Python (`files = []`, `res = None` or evaluated expressions) without loss of statement structure.
    - **Multiline modulo expressions**: Multi-line expressions with continuation lines starting with `%` (e.g. modulo arithmetic inside parentheses) are preserved intact and not misidentified as line magics.
    - **Mid-cell `%%` placement**: Left intact so invalid mid-cell directives trigger `SyntaxError`.
-   - **Multiline string literals**: String literals containing `?`, `%`, or `!` are preserved intact.
+   - **Multiline string literals & delimiter tracking**: Unified delimiter tracking ensures characters inside multiline strings and comments do not alter open delimiter depth, and trailing delimiters/expressions on boundary lines (e.g. `x = ("""alpha\nbeta""")\n%pwd`) correctly restore delimiter depth so subsequent line magics and Python code compile cleanly without false rejections. String literals containing `?`, `%`, or `!` are preserved intact.
 6. **Actionable Diagnostics**: When a failure occurs, outputs:
    - Cell index (e.g. `Cell 4`)
    - Cell ID if present (e.g. `(id: RCmRvBsV-i4t)`)
@@ -141,8 +141,8 @@ python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 ```powershell
 python -m pytest test_validate_notebook_integrity.py -v
 ```
-- **Standard**: All 29 tests must PASS.
-- **Scope**: Validates 99-cell exact match, 0/98/100 cell rejection, malformed JSON, missing cells, bad cell types, real code-object compilation errors (return, break, continue, duplicate args, nonlocal, yield), top-level await, zero runtime side effects, %%timeit setup parsing and broken setup rejection, %time/%timeit/%prun expressions, unsupported cell magics, control-flow block indentation preservation, shell/magic assignments, and multiline modulo expressions.
+- **Standard**: All 33 tests must PASS.
+- **Scope**: Validates 99-cell exact match, 0/98/100 cell rejection, malformed JSON, missing cells, bad cell types, real code-object compilation errors (return, break, continue, duplicate args, nonlocal, yield), top-level await, zero runtime side effects, %%timeit setup parsing and broken setup rejection, %time/%timeit/%prun expressions, unsupported cell magics, control-flow block indentation preservation, shell/magic assignments, multiline modulo expressions, %%timeit and %timeit option validation (F5), and multiline string delimiter boundary and open delimiter restoration (F6).
 
 ### 5. Error Handling Framework Suite & CI Exception Policy
 ```powershell

@@ -68,31 +68,103 @@ class SanitizeResult(NamedTuple):
     unsupported_error: str | None = None
 
 
-def _strip_timeit_options(rest: str) -> str:
-    """Strip known options (-n N, -r R, -t, -c, -p P, -o, -q, etc.) from %timeit / %%timeit."""
+def _parse_and_strip_timeit_options(rest: str) -> tuple[str, str | None]:
+    """
+    Parse and validate %timeit / %%timeit options and return (remaining_code, error_diagnostic).
+
+    Supported IPython timeit options:
+    - '-n <N>' / '-n<N>': positive integer loop count
+    - '-r <R>' / '-r<R>': positive integer repeat count
+    - '-p <P>' / '-p<P>': non-negative integer precision digits
+    - '-t', '-c', '-o', '-q', '--quiet': boolean flags (or combinations of flags like '-qo')
+
+    Returns:
+        (remaining_code, None) if options are valid.
+        ("", error_message) if an option is invalid, unrecognised, or has a bad argument.
+    """
     tokens = rest.split()
     idx = 0
     while idx < len(tokens):
         t = tokens[idx]
-        if t in ("-n", "-r", "-p") and idx + 1 < len(tokens):
-            idx += 2
-        elif t.startswith("--") or (
-            t.startswith("-") and len(t) > 1 and t[1].isalpha()
-        ):
+        if t == "--quiet":
             idx += 1
+        elif t.startswith("--"):
+            return "", f"unrecognized option '{t}'"
+        elif t in ("-n", "-r", "-p"):
+            if idx + 1 >= len(tokens):
+                return "", f"option {t} requires an argument"
+            val = tokens[idx + 1]
+            try:
+                val_int = int(val)
+            except ValueError:
+                return "", f"invalid integer for {t}: '{val}'"
+            if t in ("-n", "-r") and val_int <= 0:
+                return "", f"option {t} value must be a positive integer, got {val_int}"
+            if t == "-p" and val_int < 0:
+                return (
+                    "",
+                    f"option -p value must be a non-negative integer, got {val_int}",
+                )
+            idx += 2
+        elif t.startswith(("-n", "-r", "-p")) and len(t) > 2:
+            opt = t[:2]
+            val = t[2:]
+            try:
+                val_int = int(val)
+            except ValueError:
+                return "", f"invalid integer for {opt}: '{val}'"
+            if opt in ("-n", "-r") and val_int <= 0:
+                return (
+                    "",
+                    f"option {opt} value must be a positive integer, got {val_int}",
+                )
+            if opt == "-p" and val_int < 0:
+                return (
+                    "",
+                    f"option -p value must be a non-negative integer, got {val_int}",
+                )
+            idx += 1
+        elif t.startswith("-") and len(t) > 1 and t != "-":
+            flag_chars = t[1:]
+            if all(ch in ("t", "c", "o", "q") for ch in flag_chars):
+                idx += 1
+            else:
+                return "", f"unrecognized option '{t}'"
         else:
             break
-    return " ".join(tokens[idx:])
+
+    pos = 0
+    for tok in tokens[:idx]:
+        tok_idx = rest.find(tok, pos)
+        if tok_idx != -1:
+            pos = tok_idx + len(tok)
+    remaining_code = rest[pos:].lstrip()
+    return remaining_code, None
 
 
-def _update_multiline_string_state(line: str, in_multiline: str | None) -> str | None:
-    """Track whether scanning enters or exits triple-quoted strings (''' or \"\"\")."""
+def _strip_timeit_options(rest: str) -> str:
+    """Strip known options from %timeit / %%timeit (backward compatibility wrapper)."""
+    code, _ = _parse_and_strip_timeit_options(rest)
+    return code
+
+
+def _scan_line(
+    line: str, in_multiline: str | None, curr_depth: int
+) -> tuple[str | None, int]:
+    """
+    Scan a line updating both multiline string state and unclosed delimiter depth.
+    Characters inside strings (single or multiline) and comments do not affect delimiter depth.
+    When a multiline string ends, trailing content on the same line is scanned for delimiters.
+    """
     idx = 0
-    while idx < len(line):
+    depth = curr_depth
+    n = len(line)
+
+    while idx < n:
         if in_multiline is not None:
             close_idx = line.find(in_multiline, idx)
             if close_idx == -1:
-                return in_multiline
+                return in_multiline, depth
             num_backslashes = 0
             check_pos = close_idx - 1
             while check_pos >= 0 and line[check_pos] == "\\":
@@ -104,16 +176,16 @@ def _update_multiline_string_state(line: str, in_multiline: str | None) -> str |
             else:
                 idx = close_idx + 1
         else:
-            if line[idx] == "#":
+            ch = line[idx]
+            if ch == "#":
                 break
-            if line[idx : idx + 3] in ('"""', "'''"):
-                delim = line[idx : idx + 3]
-                in_multiline = delim
+            elif line[idx : idx + 3] in ('"""', "'''"):
+                in_multiline = line[idx : idx + 3]
                 idx += 3
-            elif line[idx] in ('"', "'"):
-                quote = line[idx]
+            elif ch in ('"', "'"):
+                quote = ch
                 idx += 1
-                while idx < len(line):
+                while idx < n:
                     if line[idx] == "\\":
                         idx += 2
                     elif line[idx] == quote:
@@ -121,45 +193,26 @@ def _update_multiline_string_state(line: str, in_multiline: str | None) -> str |
                         break
                     else:
                         idx += 1
+            elif ch in "([{":
+                depth += 1
+                idx += 1
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+                idx += 1
             else:
                 idx += 1
-    return in_multiline
+
+    return in_multiline, depth
+
+
+def _update_multiline_string_state(line: str, in_multiline: str | None) -> str | None:
+    """Track whether scanning enters or exits triple-quoted strings (''' or \"\"\")."""
+    return _scan_line(line, in_multiline, 0)[0]
 
 
 def _count_open_parens(line: str, curr_depth: int) -> int:
     """Count unclosed parentheses/brackets/braces outside comments and string literals."""
-    idx = 0
-    depth = curr_depth
-    while idx < len(line):
-        ch = line[idx]
-        if ch == "#":
-            break
-        elif ch in ('"', "'"):
-            quote = ch
-            is_triple = line[idx : idx + 3] in ('"""', "'''")
-            if is_triple:
-                delim = line[idx : idx + 3]
-                close_idx = line.find(delim, idx + 3)
-                if close_idx == -1:
-                    break
-                idx = close_idx + 3
-            else:
-                idx += 1
-                while idx < len(line):
-                    if line[idx] == "\\":
-                        idx += 2
-                    elif line[idx] == quote:
-                        idx += 1
-                        break
-                    else:
-                        idx += 1
-        else:
-            if ch in "([{":
-                depth += 1
-            elif ch in ")]}":
-                depth = max(0, depth - 1)
-            idx += 1
-    return depth
+    return _scan_line(line, None, curr_depth)[1]
 
 
 def sanitize_cell_source(source: str) -> SanitizeResult:
@@ -235,10 +288,11 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
         leading_ws_len = len(line) - len(line.lstrip())
         indent = line[:leading_ws_len]
         was_in_multiline = in_multiline
-        in_multiline = _update_multiline_string_state(line, in_multiline)
+        curr_paren_depth = paren_depth
 
-        # Lines inside multiline string literals must never be rewritten as magics
+        # If this line started inside a multiline string literal, it cannot be a magic
         if was_in_multiline is not None:
+            in_multiline, paren_depth = _scan_line(line, in_multiline, paren_depth)
             clean_lines.append(line)
             continue
 
@@ -246,9 +300,19 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
         if idx == first_non_blank_idx and stripped.startswith("%%"):
             if magic_token == "timeit":
                 header_rest = stripped[len("%%timeit") :].strip()
-                setup_code = _strip_timeit_options(header_rest).strip()
+                setup_code, opt_err = _parse_and_strip_timeit_options(header_rest)
+                if opt_err:
+                    return SanitizeResult(
+                        source,
+                        None,
+                        f"invalid %%timeit options '{header_rest}': {opt_err}",
+                    )
+                setup_code = setup_code.strip()
                 if setup_code:
                     clean_lines.append(f"{indent}{setup_code}\n")
+                    in_multiline, paren_depth = _scan_line(
+                        setup_code, in_multiline, paren_depth
+                    )
                 else:
                     clean_lines.append(f"{indent}pass  # [cell-magic %%timeit]\n")
             elif magic_token in SUPPORTED_PYTHON_CELL_MAGICS:
@@ -259,9 +323,8 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
             continue
 
         # Check if line is within open parentheses (e.g. multiline expressions like modulo arithmetic)
-        curr_paren_depth = paren_depth
-        paren_depth = _count_open_parens(line, paren_depth)
         if curr_paren_depth > 0:
+            in_multiline, paren_depth = _scan_line(line, in_multiline, paren_depth)
             clean_lines.append(line)
             continue
 
@@ -282,7 +345,14 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
                 lm_rest = (lm_rest or "").strip()
                 if lm_token in PYTHON_LINE_MAGICS:
                     if lm_token == "timeit":
-                        py_code = _strip_timeit_options(lm_rest).strip()
+                        py_code, opt_err = _parse_and_strip_timeit_options(lm_rest)
+                        if opt_err:
+                            return SanitizeResult(
+                                source,
+                                None,
+                                f"invalid %timeit options '{lm_rest}': {opt_err}",
+                            )
+                        py_code = py_code.strip()
                     else:
                         py_code = lm_rest
                     if py_code:
@@ -313,7 +383,14 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
             lm_rest = (lm_rest or "").strip()
             if lm_token in PYTHON_LINE_MAGICS:
                 if lm_token == "timeit":
-                    py_code = _strip_timeit_options(lm_rest).strip()
+                    py_code, opt_err = _parse_and_strip_timeit_options(lm_rest)
+                    if opt_err:
+                        return SanitizeResult(
+                            source,
+                            None,
+                            f"invalid %timeit options '{lm_rest}': {opt_err}",
+                        )
+                    py_code = py_code.strip()
                 else:
                     py_code = lm_rest
                 if py_code:
@@ -330,6 +407,7 @@ def sanitize_cell_source(source: str) -> SanitizeResult:
             continue
 
         # Ordinary Python line
+        in_multiline, paren_depth = _scan_line(line, in_multiline, paren_depth)
         clean_lines.append(line)
 
     return SanitizeResult("".join(clean_lines), None, None)
