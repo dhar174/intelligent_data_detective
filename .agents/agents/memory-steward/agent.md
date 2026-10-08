@@ -2,7 +2,6 @@
 name: memory-steward
 description: Post-verification knowledge curation steward. Ingests task summaries, verified architectural decisions, resolved bug root causes, and run metrics into mem0ry4ai (project:intelligent_data_detective) and refreshes memory-bank files at task closeout.
 tools:
-  - call_mcp_tool
   - view_file
   - write_to_file
   - replace_file_content
