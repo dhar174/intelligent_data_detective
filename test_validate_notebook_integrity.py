@@ -725,7 +725,10 @@ def test_f5_timeit_options_valid(tmp_path: Path):
 
 
 def test_f5_timeit_options_invalid(tmp_path: Path):
-    """Test 31 (F5): %timeit and %%timeit invalid options (missing args, non-int, unknown flags) fail with diagnostic."""
+    """Test 31 (F5): %timeit and %%timeit invalid options fail with diagnostic.
+
+    Covers missing args, non-integer values, negative values, and unknown flags.
+    """
     invalid_cases = [
         ("%%timeit -n banana\nx = 1\n", "banana"),
         ("%%timeit -n\nx = 1\n", "option -n requires an argument"),
@@ -763,7 +766,10 @@ def test_f5_timeit_options_invalid(tmp_path: Path):
 
 
 def test_f6_multiline_string_paren_tracking_valid(tmp_path: Path):
-    """Test 32 (F6): Multiline strings with closing parens on boundary lines correctly restore paren depth for line magics."""
+    """Test 32 (F6): Multiline strings restore paren depth for line magics.
+
+    Covers multiline strings with closing parens on boundary lines followed by magics.
+    """
     valid_snippets = [
         # Quoted from review: valid python followed by line magic
         'x = ("""alpha\nbeta""")\n%pwd\n',
