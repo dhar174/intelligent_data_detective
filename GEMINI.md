@@ -46,9 +46,14 @@ Every non-trivial engineering task MUST proceed through the following 5 phases:
 2. **Stage 2: Architectural Planning**: Formulate requirements and create an `implementation_plan.md` artifact if changes touch graph wiring, state schemas, or patcher logic.
 3. **Stage 3: Specialist Delegation**: Dispatch domain subagents via `invoke_subagent` (parallel or sequential based on dependencies). Synthesize findings into surgical edits.
 4. **Stage 4: Quality & Regression Gate**:
-   - Run no-key test suite: `python -m pytest test_intelligent_data_detective.py -v`
-   - Run validator unit suite: `python -m pytest test_validate_run.py -q`
-   - For notebook edits: regenerate via `python _patch_notebook.py` and verify 99-cell structure.
+   - Run no-key test suites matching current CI:
+     `python -m pytest test_validate_run.py tests/unit tests/integration -q`
+     `python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v`
+     `python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v`
+     `python -m pytest test_validate_notebook_integrity.py -v`
+     `python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures`
+     *(Note: under current CI, only `test_integration_with_different_function_signatures` is an isolated non-blocking step; all other tests remain strictly blocking)*.
+   - For notebook edits: regenerate via `python _patch_notebook.py`, verify via `python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb` and `python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb`.
    - For keyed runs: invoke `pipeline-proof-validator` to enforce `validate_run.py` (12/12) and `validate_artifact_quality.py` (9/9).
 5. **Stage 5: Knowledge Closeout**: Spawn `memory-steward` to preserve durable knowledge into `mem0ry4ai` and update `memory-bank/`.
 
@@ -56,11 +61,11 @@ Every non-trivial engineering task MUST proceed through the following 5 phases:
 
 ## 4. Modular Repository Rules
 
-Detailed engineering guidelines and operational contracts are modularized under [`.agent/rules/`](.agent/rules/) (and mirrored via [`.agents/rules/`](.agents/rules/)):
+Detailed engineering guidelines and operational contracts are modularized under [`.agents/rules/`](.agents/rules/):
 
-- **[`team-coordination.md`](.agent/rules/team-coordination.md)**: Multi-agent team coordination protocols, dispatch matrices, and communication contracts.
-- **[`code-architecture.md`](.agent/rules/code-architecture.md)**: Architectural invariants (Notebook generation via `_patch_notebook.py`, 99-cell stability, State reducers, `DataFrameRegistry` LRU caching, W9-SR-DROP, `_resolve_artifact_path()`).
-- **[`validation-and-gates.md`](.agent/rules/validation-and-gates.md)**: Authoritative twin gates (`validate_run.py` 12/12, `validate_artifact_quality.py` 9/9), no-key test suites, and anti-Potemkin detection.
+- **[`team-coordination.md`](.agents/rules/team-coordination.md)**: Multi-agent team coordination protocols, dispatch matrices, and communication contracts.
+- **[`code-architecture.md`](.agents/rules/code-architecture.md)**: Architectural invariants (Notebook generation via `_patch_notebook.py`, 99-cell stability, State reducers, `DataFrameRegistry` LRU caching, W9-SR-DROP, `_resolve_artifact_path()`).
+- **[`validation-and-gates.md`](.agents/rules/validation-and-gates.md)**: Authoritative twin gates (`validate_run.py` 12/12, `validate_artifact_quality.py` 9/9), no-key test suites, and anti-Potemkin detection.
 
 ---
 

@@ -1,3 +1,8 @@
+---
+trigger: model_decision
+description: "Multi-agent team coordination protocols, subagent dispatch matrix, 5-stage orchestration lifecycle, and one-writer discipline for IDD engineering tasks."
+---
+
 # Multi-Agent Team Coordination & Orchestration Rules
 
 ## 1. Primary Coordinator Persona & Mission
@@ -51,16 +56,20 @@ Every non-trivial engineering task MUST proceed through the following 5 phases:
 - Provide each subagent with an explicit prompt, exact target files, and clear acceptance criteria.
 
 ### Phase 4: Mandatory Quality & Regression Gate
-- Run offline verification suite:
+- Run offline verification suites matching current CI:
   ```powershell
-  python -m pytest test_intelligent_data_detective.py -v
-  python -m pytest test_validate_run.py -q
-  python -m pytest test_error_handling_framework.py -v
+  python -m pytest test_validate_run.py tests/unit tests/integration -q
+  python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
+  python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
+  python -m pytest test_validate_notebook_integrity.py -v
+  python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
   ```
-- Verify notebook compilation after regeneration:
+  Note: Under current CI, only `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures` is an isolated non-blocking step; all other tests remain strictly blocking.
+- Verify notebook integrity after regeneration:
   ```powershell
   python _patch_notebook.py
-  python -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(f'{len(cells)} cells OK')"
+  python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
+  python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
   ```
 - For keyed runs, invoke `pipeline-proof-validator` to enforce `validate_run.py` (12/12) and `validate_artifact_quality.py` (9/9).
 - Reject any silent metric regressions, recovery fallbacks, or hollow Potemkin artifacts.

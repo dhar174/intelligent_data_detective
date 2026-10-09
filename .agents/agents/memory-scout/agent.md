@@ -6,7 +6,6 @@ description: >-
   to retrieve past decisions, known failure modes (BR-7, BR-8, W9-SR-DROP, W14H fan-in,
   W13 loop bugs), active issues, and baselines.
 tools:
-  - call_mcp_tool
   - view_file
   - list_dir
   - grep_search

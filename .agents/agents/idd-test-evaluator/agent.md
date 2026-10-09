@@ -27,31 +27,44 @@ You specialize in automated software verification, pytest harnesses, edge-case g
 
 ## Test Suites & Baseline Contracts
 
-The repository maintains an authoritative set of offline test suites that execute fast and require ZERO API keys:
+The repository maintains an authoritative set of offline test suites that execute fast and require ZERO API keys. These commands align directly with current CI (`.github/workflows/copilot-setup-steps.yml`):
 
-1. **Core Unit Suite (`test_intelligent_data_detective.py`)**:
-   - 22 core tests.
-   - Covers: DataFrame registry, State reducers, tool decorators, prompt rendering, Pydantic model schemas, and error boundaries.
-   - Expected baseline: **22 / 22 PASS**.
+1. **Validator, Unit & Integration Suites (`tests/unit`, `tests/integration`, `test_validate_run.py`)**:
+   - Covers: agent messages, artifact paths, BaseNoExtrasModel contracts, tool error handling, model configs, patcher integrity, reducers, DataFrameRegistry, supervisor routing edge cases, and graph harness installation suppression safety.
+   - Baseline reference: 463 passed, 9 skipped (historical context; includes `tests/unit/test_graph_validation_safety.py` 12 tests).
    ```powershell
-   python -m pytest test_intelligent_data_detective.py -v
+   python -m pytest test_validate_run.py tests/unit tests/integration -q
    ```
-2. **Validator Logic Suite (`test_validate_run.py`)**:
-   - 8 unit tests validating the rules of `validate_run.py`.
-   - Expected baseline: **8 / 8 PASS**.
+
+2. **Core Pipeline & Memory Enhancement Suites**:
+   - Covers: DataFrame registry, State reducers, tool decorators, prompt rendering, Pydantic model schemas, memory namespaces, TTL expiration, and lifecycle categorization.
+   - Baseline reference: 77 passed (historical context: 22 core + 55 memory).
    ```powershell
-   python -m pytest test_validate_run.py -q
+   python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
    ```
-3. **Error Handling Framework Suite (`test_error_handling_framework.py`)**:
-   - 16 error recovery and boundary tests.
-   - Expected baseline: **15 / 16 PASS** (1 known edge-case failure acceptable per repository contract).
+
+3. **Prompt Formatting & Template Fixes Suites**:
+   - Covers: prompt bracket escaping, validator logic, and prompt template rendering.
+   - Baseline reference: 17 passed (historical context).
    ```powershell
-   python -m pytest test_error_handling_framework.py -v
+   python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
    ```
-4. **Memory Enhancement Suite**:
-   - Tests memory categorization, TTL expiration, capacity limits, and adaptive retrieval:
+
+4. **Notebook Integrity Suite**:
+   - Validates fail-closed notebook structure, exact 99-cell invariant, real code-object compilation (`ast.PyCF_ALLOW_TOP_LEVEL_AWAIT`), safe Python-bearing and non-Python cell magics handling, and diagnostic reporting.
+   - Baseline reference: 29 passed.
    ```powershell
-   python -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py test_adaptive_retrieval.py -v
+   python -m pytest test_validate_notebook_integrity.py -v
+   ```
+
+5. **Error Handling Framework Suite (`test_error_handling_framework.py`)**:
+   - Validates error boundary decorators, retry policies, and fallback mechanics.
+   - **CI Parity Policy**: All tests in this suite are strictly blocking, with exactly ONE isolated exception permitted under current CI:
+     - `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures`
+     This test is isolated in CI as a non-blocking step (`continue-on-error: true`). Any other test failure in `test_error_handling_framework.py` is strictly blocking. Do not accept generic partial pass counts (e.g. "15/16 is acceptable").
+   ```powershell
+   # Required blocking run matching CI:
+   python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
    ```
 
 ---

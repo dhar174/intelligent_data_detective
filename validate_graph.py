@@ -30,7 +30,36 @@ import sys
 import time
 import traceback
 import types
+from contextlib import contextmanager
 from pathlib import Path
+
+# Ensure UTF-8 output encoding on consoles (e.g. Windows cp1252)
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+@contextmanager
+def _guard_installation_suppression():
+    """Context manager ensuring IDD_SKIP_NOTEBOOK_INSTALLS=1 during validation.
+
+    Overrides any caller environment setting ('', '0', 'false', None) so that
+    in-notebook pip/installer calls are strictly suppressed during validation.
+    Restores caller's prior environment setting on exit or exception.
+    """
+    old_val = os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")
+    os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"] = "1"
+    try:
+        yield
+    finally:
+        if old_val is None:
+            os.environ.pop("IDD_SKIP_NOTEBOOK_INSTALLS", None)
+        else:
+            os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"] = old_val
+
 
 DEFAULT_NOTEBOOK = "IntelligentDataDetective_beta_v5_patched.ipynb"
 COMPILE_SENTINEL = "data_analysis_team_builder.compile("
@@ -45,8 +74,10 @@ RUNTIME_HARD_BUDGET_S = 30.0
 # Cell extraction / filtering
 # --------------------------------------------------------------------------- #
 
+
 def load_notebook(path: Path):
     import nbformat  # local import so --help works without deps
+
     return nbformat.read(str(path), as_version=4)
 
 
@@ -112,6 +143,7 @@ def extract_cells_through_compile(nb, verbose: bool = False):
 # Bug injection (for self-test demonstrations)
 # --------------------------------------------------------------------------- #
 
+
 def _inject_bug(cells, kind: str, verbose: bool = False):
     """Return a new cells list with a synthetic defect for demonstration."""
     new = []
@@ -120,7 +152,7 @@ def _inject_bug(cells, kind: str, verbose: bool = False):
             # Inject an edge to a node that was never added. LangGraph's
             # .compile() raises ValueError on missing node targets.
             bad = (
-                '\n# [validate_graph.py injected bug: missing-node]\n'
+                "\n# [validate_graph.py injected bug: missing-node]\n"
                 f'{BUILDER_VAR}.add_edge("supervisor", "NODE_THAT_DOES_NOT_EXIST")\n'
             )
             src = src.replace(
@@ -155,6 +187,7 @@ PRELUDE = r"""
 # validate_graph.py prelude — stub network / Colab so cells are import-safe.
 # -------------------------------------------------------------------------
 import os as _os, sys as _sys, types as _types
+_os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"] = "1"
 _os.environ.setdefault("OPENAI_API_KEY", "sk-validate-dummy")
 _os.environ.setdefault("TAVILY_API_KEY", "tvly-validate-dummy")
 _os.environ.setdefault("LANGSMITH_API_KEY", "ls-validate-dummy")
@@ -207,47 +240,45 @@ def exec_cells(cells, sandbox: dict, verbose: bool = False, silence: bool = True
     """
     import io
     import contextlib
-    results = []
-    sink = io.StringIO()
-    ctx = (
-        contextlib.redirect_stdout(sink)
-        if silence
-        else contextlib.nullcontext()
-    )
-    ctx2 = (
-        contextlib.redirect_stderr(sink)
-        if silence
-        else contextlib.nullcontext()
-    )
-    with ctx, ctx2:
-        for i, src in cells:
-            if not src.strip():
-                results.append((i, None))
-                continue
-            filename = f"<cell {i}>"
-            try:
-                code = compile(src, filename, "exec")
-            except SyntaxError as e:
-                results.append((i, e))
-                return results
-            try:
-                exec(code, sandbox, sandbox)
-                if verbose:
-                    # Print via real stderr to bypass redirect
-                    print(f"[ok]   cell {i}", file=sys.__stderr__)
-                results.append((i, None))
-            except Exception as e:  # noqa: BLE001
-                results.append((i, e))
-                if COMPILE_SENTINEL in src:
+
+    with _guard_installation_suppression():
+        results = []
+        sink = io.StringIO()
+        ctx = contextlib.redirect_stdout(sink) if silence else contextlib.nullcontext()
+        ctx2 = contextlib.redirect_stderr(sink) if silence else contextlib.nullcontext()
+        with ctx, ctx2:
+            for i, src in cells:
+                if not src.strip():
+                    results.append((i, None))
+                    continue
+                filename = f"<cell {i}>"
+                try:
+                    code = compile(src, filename, "exec")
+                except SyntaxError as e:
+                    results.append((i, e))
                     return results
-                if verbose:
-                    print(f"[warn] cell {i}: {type(e).__name__}: {e}", file=sys.__stderr__)
-    return results
+                try:
+                    exec(code, sandbox, sandbox)
+                    if verbose:
+                        # Print via real stderr to bypass redirect
+                        print(f"[ok]   cell {i}", file=sys.__stderr__)
+                    results.append((i, None))
+                except Exception as e:  # noqa: BLE001
+                    results.append((i, e))
+                    if COMPILE_SENTINEL in src:
+                        return results
+                    if verbose:
+                        print(
+                            f"[warn] cell {i}: {type(e).__name__}: {e}",
+                            file=sys.__stderr__,
+                        )
+        return results
 
 
 # --------------------------------------------------------------------------- #
 # Post-compile inspection
 # --------------------------------------------------------------------------- #
+
 
 def inspect_state(sandbox: dict):
     State = sandbox.get("State")
@@ -260,6 +291,7 @@ def inspect_state(sandbox: dict):
     # typing.get_type_hints(..., include_extras=True) with the sandbox as
     # globalns so Annotated[...] wrappers are preserved.
     import typing
+
     try:
         hints = typing.get_type_hints(State, globalns=sandbox, include_extras=True)
     except Exception:
@@ -304,14 +336,8 @@ def inspect_graph(compiled):
         if tgt in incoming:
             incoming[tgt].append(e)
 
-    unreachable = [
-        n for n in real_nodes
-        if not incoming.get(n)
-    ]
-    dead_ends = [
-        n for n in real_nodes
-        if not outgoing.get(n)
-    ]
+    unreachable = [n for n in real_nodes if not incoming.get(n)]
+    dead_ends = [n for n in real_nodes if not outgoing.get(n)]
 
     return {
         "nodes": real_nodes,
@@ -327,6 +353,7 @@ def inspect_graph(compiled):
 # Main
 # --------------------------------------------------------------------------- #
 
+
 def _print_header(title: str):
     print()
     print("=" * 72)
@@ -334,8 +361,10 @@ def _print_header(title: str):
     print("=" * 72)
 
 
-def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def _main_impl() -> int:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--notebook", default=DEFAULT_NOTEBOOK)
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument(
@@ -374,12 +403,12 @@ def main() -> int:
     results = exec_cells(cells, sandbox, verbose=args.verbose)
 
     # Did the compile cell succeed?
-    compile_result = next(
-        (err for (i, err) in results if i == compile_idx), "missing"
-    )
+    compile_result = next((err for (i, err) in results if i == compile_idx), "missing")
 
     # Collect non-fatal warnings for summary
-    cell_warnings = [(i, err) for (i, err) in results if err is not None and i != compile_idx]
+    cell_warnings = [
+        (i, err) for (i, err) in results if err is not None and i != compile_idx
+    ]
 
     if compile_result == "missing":
         print("❌ Compile cell never executed (earlier cell aborted).")
@@ -389,7 +418,7 @@ def main() -> int:
             print(f"\nFirst failure at cell {i}: {type(err).__name__}: {err}")
             # Dump the cell source for debugging
             _print_header(f"cell {i} source")
-            for (ci, src) in cells:
+            for ci, src in cells:
                 if ci == i:
                     print(src)
                     break
@@ -404,7 +433,7 @@ def main() -> int:
         print("❌ Graph compile FAILED.")
         print(f"   {type(err).__name__}: {err}")
         _print_header(f"compile cell (#{compile_idx}) source")
-        for (ci, src) in cells:
+        for ci, src in cells:
             if ci == compile_idx:
                 print(src)
                 break
@@ -440,7 +469,9 @@ def main() -> int:
         print(f"nodes ({len(graph_info['nodes'])}):")
         for n in sorted(graph_info["nodes"]):
             print(f"  - {n}")
-        print(f"edges: {graph_info['edge_count']}  (conditional: {graph_info['conditional_edge_count']})")
+        print(
+            f"edges: {graph_info['edge_count']}  (conditional: {graph_info['conditional_edge_count']})"
+        )
 
         if graph_info["unreachable"]:
             print("\n⚠  unreachable nodes (no incoming edge):")
@@ -472,7 +503,8 @@ def main() -> int:
         # viz_*, report_*) without reducers are candidates for InvalidUpdateError.
         SUSPECT_PATTERNS = ("messages", "sections", "tasks", "results", "written_")
         suspect = [
-            f for f in state_info["plain_fields"]
+            f
+            for f in state_info["plain_fields"]
             if any(p in f for p in SUSPECT_PATTERNS)
         ]
         if suspect:
@@ -483,16 +515,25 @@ def main() -> int:
 
     if cell_warnings:
         _print_header("Non-fatal pre-compile warnings")
-        for (i, err) in cell_warnings:
+        for i, err in cell_warnings:
             print(f"  cell {i}: {type(err).__name__}: {str(err)[:160]}")
 
     if elapsed > RUNTIME_HARD_BUDGET_S:
-        print(f"\n❌ runtime {elapsed:.2f}s exceeded hard budget {RUNTIME_HARD_BUDGET_S}s")
+        print(
+            f"\n❌ runtime {elapsed:.2f}s exceeded hard budget {RUNTIME_HARD_BUDGET_S}s"
+        )
         return 1
     if elapsed > RUNTIME_SOFT_BUDGET_S:
-        print(f"\n⚠  runtime {elapsed:.2f}s exceeded soft budget {RUNTIME_SOFT_BUDGET_S}s")
+        print(
+            f"\n⚠  runtime {elapsed:.2f}s exceeded soft budget {RUNTIME_SOFT_BUDGET_S}s"
+        )
 
     return 0
+
+
+def main() -> int:
+    with _guard_installation_suppression():
+        return _main_impl()
 
 
 if __name__ == "__main__":
