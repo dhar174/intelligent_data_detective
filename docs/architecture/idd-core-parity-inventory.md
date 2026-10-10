@@ -140,7 +140,7 @@ Every overlapping symbol across the 5 representations has been audited for locat
 
 ## 4. Empirical Drift Reproduction Evidence
 
-All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`](../tools/diagnostics/reproduce_drift.py) under Python 3.12.2 without network or API key dependencies:
+All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`](../../tools/diagnostics/reproduce_drift.py) under Python 3.12.2 without network or API key dependencies:
 
 ### Claim 1: Plan Counter Sharing & Concurrency
 - **Locators**: `idd_core.py:613–642` (`Plan._counter: ClassVar[itertools.count]`) vs `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 16:L235–265` (`Plan._next = itertools.count(1).__next__`).
@@ -180,15 +180,15 @@ All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`
 - **Locators**: `idd_core.py:695–702` vs `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 16:L328–335`.
 - **Command**: `python tools/diagnostics/reproduce_drift.py --claim 5`
 - **Expected**: When validation context `{"plan": plan}` is provided, steps outside the plan are rejected. Without context, validation permits unconstrained completed steps.
-- **Observed**: Without context: unplanned step 3 was accepted in both implementations. With context `{"plan": plan_with_step_1}`: step 3 was rejected with `ValidationError: Completed step (3, 'c', 'c') is not present in the supplied Plan` in both implementations.
-- **Classification**: **OBSERVED INVARIANT** (Evidence: DYNAMIC, Defect: NO).
+- **Observed**: Dynamic test on `idd_core`: without context accepted=True; with context rejecting unplanned step 3=True. Static inspection of notebook Cell 16: implements identical `info.context` subset check (`get("plan")`).
+- **Classification**: **OBSERVED INVARIANT** (Evidence: BOTH, Defect: NO).
 - **Analysis**: Validation context subset enforcement is an intentional, healthy contract: subset checking is conditional on the context Plan being provided.
 
 ### Claim 6: Structured Tool Error Schema Divergence
 - **Locators**: `idd_core.py:1169–1215` vs `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 32:L7–25`.
 - **Command**: `python tools/diagnostics/reproduce_drift.py --claim 6`
 - **Expected**: Tool errors must return standardized dictionary: `{"status": "error", "operation": str, "reason": str, "action": str}` with sanitized internal exceptions.
-- **Observed**: `idd_core` returns raw string `str: "Error: Column or key ''missing_col'' not found"`. Notebook Cell 32 defines structured dictionary `{"status": "error", "operation": ..., "reason": ..., "action": ...}` and `_tool_failure` sanitizes unexpected exceptions while logging details.
+- **Observed**: Dynamic test on `idd_core`: returns raw string `str: "Error: Column or key ''missing_col'' not found"`. Static inspection of notebook Cell 32: defines structured dictionary `{"status": "error", "operation": ..., "reason": ..., "action": ...}` and `_tool_failure` exception sanitization.
 - **Classification**: **REPRODUCED** (Evidence: BOTH, Defect: YES).
 - **Analysis**: Fracture between test suite and production runtime. `tests/unit/test_handle_tool_errors.py` explicitly tests string returns, while `tests/unit/test_tool_error_handling.py` and production notebook tools rely on the structured dictionary schema.
 
@@ -228,17 +228,17 @@ All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`
 - **Locators**: `tests/integration/test_graph_compile.py:15–51` vs `tests/integration/test_routing.py:16–72`.
 - **Command**: `python tools/diagnostics/reproduce_drift.py --claim 11`
 - **Expected**: Integration tests should execute meaningful assertions without live API keys against actual 15-node production topology and Router contracts.
-- **Observed**: `test_graph_compile` skips 4 tests on missing `OPENAI_API_KEY` fixture (`True`) and asserts legacy node `report_generator` (`True`). `test_routing` skips 3 tests looking for lowercase `core.options` (`True`) and `AgentMembers.next` (`True`).
-- **Classification**: **REPRODUCED** (Evidence: STATIC, Defect: YES).
+- **Observed**: Static inspection: `test_graph_compile` skips 4 tests on missing `OPENAI_API_KEY` fixture (`True`) and asserts legacy node `report_generator` (`True`). `test_routing` skips 3 tests looking for lowercase `core.options` (`True`) and `AgentMembers.next` (`True`).
+- **Classification**: **STATIC EVIDENCE ONLY** (Evidence: STATIC, Defect: YES).
 - **Analysis**: The 7 integration tests skip due to a combination of: (1) requiring `OPENAI_API_KEY` fixture in graph tests, (2) expecting legacy node `report_generator` instead of 15-node topology, and (3) expecting router field `next` on member model `AgentMembers`.
 
 ### Claim 12: Integer Column Label Regression (#147) & delete_rows Collision Verification
-- **Locators**: `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 32:L269–335` vs `_patch_notebook.py:13500–13575`.
+- **Locators**: `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 32:L269–355` vs `_patch_notebook.py:13495–13575`.
 - **Command**: `python tools/diagnostics/reproduce_drift.py --claim 12`
-- **Expected**: `delete_rows` must query integer column labels without `UndefinedVariableError` and resolve collisions when both integer `0` and string `'0'` coexist.
-- **Observed**: Case 1 (integer `0` alone, query `` `0` >= 20 ``): succeeded, dropped rows 1 and 2. Case 2 (collision integer `0` vs string `'0'`, query `` `0` >= 200 ``): succeeded, string column preserved and query evaluated without error.
+- **Expected**: `delete_rows` must query integer column labels without `UndefinedVariableError`, resolve integer/string collisions, and properly execute in-place, non-in-place, and error-handling paths.
+- **Observed**: Extracted actual production `delete_rows` tool and `_build_query_view` directly from Notebook Cell 32 into a controlled harness with an in-memory registry. Case A (integer 0 alone query `` `0` >= 20 ``): passed, 2 rows deleted. Case B (int/str collision): passed, string column '0' queried and 2 rows deleted without error. Case C (in-place mutation): passed, 2 rows deleted and registry updated. Case D (non-in-place operation): passed, returned JSON and registry source untouched. Case E (invalid query): passed, returned structured error dictionary and source untouched. All 5 cases passed.
 - **Classification**: **OBSERVED INVARIANT** (Evidence: DYNAMIC, Defect: NO for tool implementation).
-- **Analysis**: Tool-level `delete_rows` is verified working under PR #149's `_build_query_view` projection. However, Issue #147 must remain open administratively until live multi-agent proof confirms full pipeline integration.
+- **Analysis**: Actual production `delete_rows` tool and `_build_query_view` extracted directly from notebook Cell 32 are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified without a live run; Issue #147 must remain open administratively until live pipeline validation.
 
 ---
 
@@ -252,14 +252,14 @@ All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`
 | **Claim 2** | Plan-version overwrite | **REPRODUCED** | YES | DYNAMIC | Caller-supplied `plan_version` is overwritten because `_ver_assigned` defaults to `False`. |
 | **Claim 3** | Completed-step sorting split-brain | **REPRODUCED** | YES | DYNAMIC | `idd_core` returns sorted `dedup_list`; notebook Cell 16 crashes on unsorted input. |
 | **Claim 4** | Duplicate numeric step IDs | **REPRODUCED** | YES | DYNAMIC | `idd_core` rejects duplicate numeric step numbers; notebook Cell 16 allows them if names differ. |
-| **Claim 5** | Validation context subset check | **OBSERVED INVARIANT** | NO | DYNAMIC | Subset enforcement is intentionally conditional on context Plan being passed. |
+| **Claim 5** | Validation context subset check | **OBSERVED INVARIANT** | NO | BOTH | Subset enforcement is intentionally conditional on context Plan being passed. |
 | **Claim 6** | Structured tool error schema | **REPRODUCED** | YES | BOTH | `idd_core` returns plain strings; notebook Cell 32 returns structured dicts with sanitization. |
 | **Claim 7** | Signature-unaware `df_id` check | **REPRODUCED** | YES | DYNAMIC | Blind `args[0]` inspection breaks tools where `df_id` is 2nd argument or non-df_id functions. |
 | **Claim 8** | Registry reload vs validate_exists | **REPRODUCED** | YES | DYNAMIC | `validate_dataframe_exists` fails on evicted `.pkl`/`.json` by hardcoding `pd.read_csv`. |
 | **Claim 9** | Artifact-root containment | **REPRODUCED** | YES | BOTH | `idd_core` uses single root; notebook Cell 57 enforces PR #149 multi-root containment. |
 | **Claim 10** | LLM adapter identity | **OBSERVED INVARIANT** | NO | STATIC | `MyChatOpenai` is active production contract in Cell 10 and `idd_core`, mandated by `AGENTS.md`. |
-| **Claim 11** | Skipped integration tests | **REPRODUCED** | YES | STATIC | 7 tests skip due to `OPENAI_API_KEY` fixture, legacy `report_generator` node, and router schema. |
-| **Claim 12** | Integer column queries (#147) | **OBSERVED INVARIANT** | NO | DYNAMIC | Tool-level `delete_rows` verified working under PR #149; full pipeline integration unverified. |
+| **Claim 11** | Skipped integration tests | **STATIC EVIDENCE ONLY** | YES | STATIC | 7 tests skip due to `OPENAI_API_KEY` fixture, legacy `report_generator` node, and router schema. |
+| **Claim 12** | Integer column queries (#147) | **OBSERVED INVARIANT** | NO | DYNAMIC | Actual production `delete_rows` tool verified working across 5 cases; full pipeline integration unverified. |
 
 ### 5.2 Disproven & Superseded Claims from Historical Reviews
 1. **`Section` content constraint (`min_length=100`)**: DISPROVEN. Neither `idd_core.py:732` nor notebook Cell 19:L224 enforces `min_length=100`. Both define `content: str = Field(..., description="Content of the section")`.

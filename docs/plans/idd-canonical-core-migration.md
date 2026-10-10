@@ -123,30 +123,39 @@ REPO ROOT
 
 #### 6. `idd_core.py` (Compatibility Façade)
 - **Scope**: Backward-compatibility façade re-exporting all symbols from root modules.
-- **Dynamic Registry Synchronization**:
+- **Dynamic Registry Read Delegation & Migration Contract**:
   ```python
   """idd_core.py - Compatibility façade."""
   import idd_registry
   from idd_models import *
-  from idd_registry import DataFrameRegistry, get_global_registry, set_global_registry
+  from idd_registry import (
+      DataFrameRegistry,
+      get_global_registry,
+      set_global_registry,
+      override_global_registry,
+  )
   from idd_state import State, keep_first, _reduce_plan_keep_sorted
-  from idd_tools import handle_tool_errors, validate_dataframe_exists, _resolve_artifact_path, _tool_error, _tool_failure
+  from idd_tools import (
+      handle_tool_errors,
+      validate_dataframe_exists,
+      _resolve_artifact_path,
+      _tool_error,
+      _tool_failure,
+  )
   from idd_graph import build_graph, AGENT_MEMBERS, AGENT_OPTIONS
 
-  # Module-level property / descriptor pattern for global_df_registry
+  # Module-level read delegation via PEP 562
   def __getattr__(name: str):
       if name == "global_df_registry":
           return idd_registry.get_global_registry()
       if name == "options":
           return AGENT_OPTIONS
       raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-  def __setattr__(name: str, value):
-      if name == "global_df_registry":
-          idd_registry.set_global_registry(value)
-      else:
-          super().__setattr__(name, value)
   ```
+  > [!IMPORTANT]
+  > **Python PEP 562 Module-Assignment Reality**:
+  > Python permits module-level `__getattr__` for missing attribute reads, but does **not** support assignment interception through an ordinary module-level `__setattr__` function. Assigning `idd_core.global_df_registry = replacement` inserts `global_df_registry` directly into `idd_core.__dict__`, shadowing `__getattr__` without notifying `idd_registry` or updating canonical tools.
+  > Therefore, direct module-attribute reassignment is **explicitly unsupported** for transparent interception. Callers modifying the global registry must migrate to the explicit API: `idd_registry.set_global_registry(...)` or the context-managed override fixture `idd_registry.override_global_registry(...)`.
 
 ---
 
@@ -158,7 +167,7 @@ REPO ROOT
 - `self.cache: OrderedDict[str, pd.DataFrame]`: In-memory LRU cache limited by `self.capacity`.
 - `self.df_id_to_raw_path: Dict[str, str]`: Mapping of `df_id` to filesystem source path.
 - `self.capacity: int`: LRU eviction limit (default 20).
-- `self._lock: threading.RLock`: Thread-safety lock.
+- `self._lock: threading.RLock`: Thread-safety reentrant lock.
 
 ### 3.2 Reset Contract (`clear()`)
 A registry reset must clear transient in-memory state while **never deleting non-owned user data or published report artifacts**:
@@ -171,13 +180,64 @@ def clear(self) -> None:
         self.df_id_to_raw_path.clear()
 ```
 
-### 3.3 Test Isolation & Rebinding Contract
-Existing tests (e.g. `tests/unit/test_handle_tool_errors.py:57`) directly rebind `idd_core.global_df_registry = small_reg`.
-To ensure canonical tools in `idd_tools.py` observe reassignments without breakage:
-1. `idd_tools.py` accesses the registry via `idd_registry.get_global_registry()`.
-2. `idd_registry.set_global_registry(reg)` updates the canonical singleton instance.
-3. `idd_core.py` implements module-level `__getattr__` and `__setattr__` delegating `global_df_registry` directly to `idd_registry.get_global_registry()` and `set_global_registry()`.
-4. `tests/conftest.py`'s `global_registry_reset` fixture updates `idd_registry.set_global_registry(fresh)`, ensuring 100% test isolation across all callers.
+### 3.3 Authoritative Ownership & Override API
+`idd_registry.py` is the single source of truth for registry state. The canonical API provides explicit accessors and context-managed test overrides:
+```python
+# In idd_registry.py:
+_global_registry: DataFrameRegistry = DataFrameRegistry(capacity=20)
+_registry_lock = threading.RLock()
+
+def get_global_registry() -> DataFrameRegistry:
+    """Return the active canonical DataFrameRegistry instance."""
+    with _registry_lock:
+        return _global_registry
+
+def set_global_registry(registry: DataFrameRegistry) -> None:
+    """Explicitly replace the process-global DataFrameRegistry instance."""
+    global _global_registry
+    if not isinstance(registry, DataFrameRegistry):
+        raise TypeError("registry must be an instance of DataFrameRegistry")
+    with _registry_lock:
+        _global_registry = registry
+
+@contextlib.contextmanager
+def override_global_registry(registry: DataFrameRegistry):
+    """Context manager for test isolation, restoring the prior registry in finally."""
+    global _global_registry
+    with _registry_lock:
+        prior = _global_registry
+        _global_registry = registry
+    try:
+        yield registry
+    finally:
+        with _registry_lock:
+            _global_registry = prior
+```
+
+### 3.4 Invariant Guarantees & Caller Migration Analysis
+1. **Dynamic Resolution Invariant**: Canonical tools in `idd_tools.py` obtain the active registry dynamically via `get_global_registry()`. Tools must NEVER capture a stale instance at module import time.
+2. **Caller Migration Contract**:
+   - **Ordinary Reads** (`idd_core.global_df_registry.get_dataframe(...)`): Supported transparently via `idd_core.__getattr__`.
+   - **In-place Mutations** (`global_df_registry.register_dataframe(...)`, `.clear()`): Supported transparently on the active instance.
+   - **Direct Attribute Reassignment in Tests**:
+     - `tests/conftest.py:54` (`core.global_df_registry = fresh`)
+     - `tests/unit/test_handle_tool_errors.py:57` (`idd_core.global_df_registry = small_reg`)
+     - These callers must be explicitly migrated during CP2/CP3 to:
+       ```python
+       with override_global_registry(small_reg):
+           # execute isolated test
+       ```
+     - Direct attribute reassignment (`idd_core.global_df_registry = ...`) is deprecated and explicitly unsupported.
+3. **Rejected Alternative**:
+   A custom module class (`class _FaçadeModule(types.ModuleType): def __setattr__(...)`) was evaluated. While theoretically intercepting assignments, module-subclass monkeypatching introduces severe fragility with module reloaders, static type checkers (mypy/pyright), IDE introspection, linters, and C-extensions. The explicit accessor and context manager API is favored as robust, predictable, and standard.
+4. **Required Future Parity Tests (CP2 Gate)**:
+   - *Test 1 (Initial identity)*: `idd_core.global_df_registry is idd_registry.get_global_registry()`.
+   - *Test 2 (Tool observation)*: `with override_global_registry(mock_reg):` causes tools to immediately observe `mock_reg`.
+   - *Test 3 (Nested overrides)*: Nested override blocks restore outer registry upon inner exit.
+   - *Test 4 (Exception safety)*: Exceptions raised inside override blocks guarantee restoration in `finally`.
+   - *Test 5 (Test isolation)*: Parallel and sequential tests do not leak registry state across test boundaries.
+   - *Test 6 (User data preservation)*: `clear()` evicts LRU entries and registry maps without deleting user files.
+   - *Test 7 (Concurrency lock)*: Thread-safety verified under concurrent registrations.
 
 ---
 
@@ -248,7 +308,7 @@ assert "not found" in result["reason"]
 
 The IDD architecture supports three execution environments while preserving the **strict 99-cell invariant**:
 
-### 6.1 Execution Modes & Module Acquisition
+### 6.1 Execution Modes & Fail-Closed Provenance Contract
 1. **Local Workstation / CI**:
    - Repository root is in `sys.path`. Canonical modules (`idd_models.py`, `idd_registry.py`, etc.) are imported directly.
 2. **Colab with Cloned Repository**:
@@ -261,9 +321,14 @@ The IDD architecture supports three execution environments while preserving the 
          if str(repo_path) not in sys.path:
              sys.path.insert(0, str(repo_path))
      ```
-3. **Standalone Exported Notebook (Limitations)**:
-   - If executed in an isolated environment without cloned repository files, Cell 2 detects missing modules and raises a clear diagnostic instructing the user to clone the repository or install the pinned IDD package.
-   - **No silent downloading of arbitrary moving `main` code** without a verified SHA.
+3. **Colab / Ephemeral Environment Provenance Specification (Pre-CP4 Design)**:
+   - To guarantee version integrity without assuming a pre-existing repository clone, the module acquisition architecture must enforce:
+     a. **Pinned Version Manifest**: A machine-readable manifest (`idd_manifest.json`) specifying expected SHA-256 digests for all canonical files (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`).
+     b. **Cryptographic Verification**: Hashes are verified before modules are added to `sys.path` or imported.
+     c. **Fail-Closed Behavior**: If any canonical module is missing, modified, or has a mismatched digest, Cell 2 raises an explicit error and aborts notebook initialization.
+     d. **No Moving Target**: Silent downloading of unpinned `main` code is strictly prohibited.
+     e. **Distribution Mechanism Decision**: The exact acquisition vehicle (e.g. pinned commit tarball/shallow clone vs GitHub release asset vs pre-built wheel) is an explicit pre-CP4 design decision (marked **REQUIRES DECISION** in ADR).
+   - Preserves the strict 99-cell notebook invariant.
 
 ---
 
@@ -325,7 +390,7 @@ In accordance with user authorization, Issue #144 surfaces must be updated in th
   - Implement `idd_registry.py` with `_read_df`, `clear()`, and accessor functions.
   - Update `idd_core.py` to re-export from `idd_models` and `idd_registry`.
 - **Validation Gate**:
-  - `python -m pytest tests/unit/test_models.py tests/unit/test_dataframe_registry.py -v`
+  - `python -m pytest tests/unit/test_models.py tests/unit/test_registry.py -v` *(Note: `tests/unit/test_dataframe_registry.py` is a proposed future test deliverable in CP2)*
   - Claims 1, 2, 3, 4, 5, 8 verified green in unit test suite.
 - **Rollback Criteria**: Any regression in Pydantic validation or registry caching rolls back Slice 1.
 
@@ -383,10 +448,10 @@ In accordance with user authorization, Issue #144 surfaces must be updated in th
 | Decision Item | Status | Decision & Rationale | Tradeoffs & Alternatives |
 | :--- | :---: | :--- | :--- |
 | **1. Module Architecture** | **PROPOSED** | Root-level Python modules (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`). | Avoids creating a `src/` directory (strictly forbidden by repo rules) and prevents package-nesting import complexities. |
-| **2. Registry Ownership & Overrides** | **PROPOSED** | Canonical singleton managed in `idd_registry.py` with `get_global_registry()` and `set_global_registry(reg)`. `idd_core.py` delegates module attribute access dynamically. | Allows existing tests that reassign `idd_core.global_df_registry` to continue working without breaking canonical tool accessors. |
+| **2. Registry Ownership & Overrides** | **PROPOSED** | Canonical singleton in `idd_registry.py` with explicit accessors (`get_global_registry`, `set_global_registry`) and test context manager (`override_global_registry`). Ordinary reads supported via `idd_core.__getattr__`. | Direct module assignment is unsupported in Python PEP 562. Test callers explicitly migrate to `override_global_registry` context manager rather than brittle module subclassing. |
 | **3. Plan Version Preservation** | **PROPOSED** | Monotonic class counter assigns version by default, but caller-supplied `plan_version` is preserved when explicitly provided. | Enables clean deserialization and state restoration while maintaining globally monotonic auto-versioning for new plans. |
-| **4. Colab Module Distribution** | **PROPOSED** | Explicit repository clone check in Cell 2; diagnostic error if modules are absent. | Rejects silent downloading of unpinned `main` code; guarantees byte-for-byte version consistency between notebook and canonical modules. |
-| **5. Façade Compatibility** | **PROPOSED** | Keep `idd_core.py` as a 100% backwards-compatible re-export façade. | Existing unit tests run without modification; new tests import directly from specific root modules. |
+| **4. Colab Module Distribution** | **REQUIRES DECISION** | Fail-closed manifest and digest verification contract specified for Cell 2. Rejects silent downloading of unpinned `main` code. | Exact module acquisition mechanism (shallow clone vs release asset vs pinned curl) deferred to pre-CP4 decision. |
+| **5. Façade Compatibility** | **PROPOSED** | Keep `idd_core.py` as a 100% backwards-compatible re-export façade for symbols and reads. | Existing unit tests run without modification; direct attribute assignment callers migrate to explicit override context manager. |
 | **6. No-Key Graph Construction** | **PROPOSED** | Dependency-injected `build_graph(llm_factory=None)` supporting stub LLMs for testing. | Enables 100% of graph topology and routing assertions to run without requiring an OpenAI API key. |
 | **7. Administrative Resolution of #147** | **REQUIRES DECISION** | Keep Issue #147 open administratively until live multi-agent proof confirms full pipeline integration. | Tool-level `delete_rows` is verified working under PR #149, but full pipeline verification requires a live run (CP5). |
 

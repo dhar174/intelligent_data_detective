@@ -12,7 +12,12 @@ Identifies:
 - Import statements (import and from ... import)
 - Top-level assignments and reassignments across cells
 - Exact cell indices, cell IDs, and source line numbers
-- Final effective bindings across sequential cell execution
+
+Static Analysis Scope & Limitations:
+- Identifies syntactic definitions and top-level statement ordering across sequential cells.
+- Cannot determine final runtime bindings when assignments occur inside conditional branches,
+  exception handlers, or dynamic expressions.
+- Fail-closed: parse failures are explicitly reported as incomplete scans with non-zero exit code.
 """
 
 from __future__ import annotations
@@ -25,12 +30,15 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 # Import the repository's authoritative notebook sanitizer
 try:
     from validate_notebook_integrity import sanitize_cell_source
 except ImportError:
-    # Fallback to local import if executed from within tools/diagnostics
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(REPO_ROOT))
     from validate_notebook_integrity import sanitize_cell_source
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -275,8 +283,11 @@ def main():
     if args.json:
         out = {
             "notebook": str(nb_path),
+            "status": "incomplete" if parse_errors else "complete",
+            "is_complete": len(parse_errors) == 0,
             "total_symbols": len(all_symbols),
             "parse_errors": parse_errors,
+            "static_scope_note": "AST static analysis inspects syntactic definitions without execution; cannot resolve conditional runtime branches or dynamic bindings.",
             "symbols": [asdict(s) for s in all_symbols],
             "redefinitions": {
                 name: [asdict(s) for s in defs]
@@ -288,14 +299,19 @@ def main():
             out["filtered_symbol"] = args.symbol
             out["filtered_matches"] = [asdict(s) for s in symbol_map.get(args.symbol, [])]
         print(json.dumps(out, indent=2))
-        sys.exit(0)
+        sys.exit(1 if parse_errors else 0)
 
     print(f"AST Scan Report for {nb_path.name}")
+    print(f"Status: {'INCOMPLETE (Parse errors encountered)' if parse_errors else 'COMPLETE'}")
     print(f"Total Symbols Extracted: {len(all_symbols)}")
+    print("Scope Note: AST static analysis inspects syntactic definitions without execution; cannot determine conditional runtime bindings.")
     if parse_errors:
         print(f"Parse Errors ({len(parse_errors)}):")
         for err in parse_errors:
             print(f"  Cell {err['cell_idx']} ({err['cell_id']}): {err['error']}")
+        print("-" * 60)
+        print("Error: AST scan incomplete due to parse errors.", file=sys.stderr)
+        sys.exit(1)
     print("-" * 60)
 
     if args.symbol:
