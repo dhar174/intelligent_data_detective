@@ -146,7 +146,7 @@ All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`
 - **Locators**: `idd_core.py:613–642` (`Plan._counter: ClassVar[itertools.count]`) vs `IntelligentDataDetective_beta_v5_patched.ipynb:Cell 16:L235–265` (`Plan._next = itertools.count(1).__next__`).
 - **Command**: `python tools/diagnostics/reproduce_drift.py --claim 1`
 - **Expected**: Globally monotonic, thread-safe version allocation across Plan instances.
-- **Observed**: Created versions across 5 concurrent threads: `[1, 2, 3, 4, 5]`. All unique: `True`. Thread safety verified with `threading.Lock()`.
+- **Observed**: Sequential monotonic increment verified: `True` (v1 -> v2). Concurrent allocation across 5 threads: all 5 versions unique integers forming a contiguous range. Thread scheduling completion order is decoupled from allocation order.
 - **Classification**: **OBSERVED INVARIANT** (Evidence: DYNAMIC, Defect: NO).
 - **Analysis**: Class-level shared counter is an intentional healthy contract (the intended correction in Issue #140 to the older per-instance counter bug where every plan restarted at version 1). It is not a defect that independent plans share a monotonically increasing counter.
 
@@ -238,7 +238,7 @@ All 12 claims were tested directly using [`tools/diagnostics/reproduce_drift.py`
 - **Expected**: `delete_rows` must query integer column labels without `UndefinedVariableError`, resolve integer/string collisions, and properly execute in-place, non-in-place, and error-handling paths.
 - **Observed**: Extracted actual production `delete_rows` tool and `_build_query_view` directly from Notebook Cell 32 into a controlled harness with an in-memory registry. Case A (integer 0 alone query `` `0` >= 20 ``): passed, 2 rows deleted. Case B (int/str collision): passed, string column '0' queried and 2 rows deleted without error. Case C (in-place mutation): passed, 2 rows deleted and registry updated. Case D (non-in-place operation): passed, returned JSON and registry source untouched. Case E (invalid query): passed, returned structured error dictionary and source untouched. All 5 cases passed.
 - **Classification**: **OBSERVED INVARIANT** (Evidence: DYNAMIC, Defect: NO for tool implementation).
-- **Analysis**: Actual production `delete_rows` tool and `_build_query_view` extracted directly from notebook Cell 32 are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified without a live run; Issue #147 must remain open administratively until live pipeline validation.
+- **Analysis**: Actual production `delete_rows` tool and `_build_query_view` extracted directly from notebook Cell 32 are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified without a live run; Issue #147 must remain open administratively until live pipeline validation. The diagnostic probe branches on observed case flags: historical integer column regression (Case A/B failure) returns `REPRODUCED` (`is_defect=True`), all 5 cases passing returns `OBSERVED INVARIANT` (`is_defect=False`), and unexpected non-integer failures report `BLOCKED`.
 
 ---
 

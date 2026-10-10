@@ -83,11 +83,12 @@ def test_missing_prerequisites_return_blocked(monkeypatch):
     assert "not importable" in res.observed_behavior or "missing" in res.limitations
 
 
-def test_unexpected_outcomes_do_not_silently_succeed(monkeypatch):
-    """Verify that unexpected failures in Claim 12 do not return OBSERVED INVARIANT."""
-    # Monkeypatch the extraction function to return a function that fails Case A
+def test_claim_12_historical_integer_defect_returns_reproduced(monkeypatch):
+    """Verify that if historical integer-column query defect reoccurs (Case A fails), Claim 12 reports REPRODUCED."""
     def broken_delete_rows(df_id, conditions, inplace=True):
-        return "0 rows deleted"  # Fails case A expectation
+        if "0" in conditions and inplace:
+            return "0 rows deleted"  # Fails case A expectation
+        return "2 rows deleted"
 
     monkeypatch.setattr(
         reproduce_drift,
@@ -96,9 +97,67 @@ def test_unexpected_outcomes_do_not_silently_succeed(monkeypatch):
     )
 
     res = probe_claim_12()
-    assert res.classification != "OBSERVED INVARIANT"
-    assert res.classification == "NOT REPRODUCED"
+    assert res.classification == "REPRODUCED"
     assert res.is_defect is True
+    assert "Issue #147" in res.defect_or_contract_explanation
+
+
+def test_claim_12_historical_collision_defect_returns_reproduced(monkeypatch):
+    """Verify that if integer/string column label collision reoccurs (Case B fails), Claim 12 reports REPRODUCED."""
+    def broken_collision_tool(df_id, conditions, inplace=True):
+        if df_id == "df_b":
+            # Simulate column confusion: drops wrong row or returns 0 rows
+            return "0 rows deleted"
+        return "2 rows deleted"
+
+    monkeypatch.setattr(
+        reproduce_drift,
+        "_extract_production_delete_rows_tool",
+        lambda reg: (broken_collision_tool, None),
+    )
+
+    res = probe_claim_12()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "Issue #147" in res.defect_or_contract_explanation
+
+
+def test_claim_12_unexpected_non_integer_failure_returns_blocked(monkeypatch):
+    """Verify that an unexpected non-integer failure (e.g. Case C in-place mutation broken) returns BLOCKED."""
+    import pandas as pd
+
+    def mock_extract(reg):
+        def broken_tool(df_id, conditions, inplace=True):
+            if df_id == "df_a":
+                # Case A passes
+                reg.register_dataframe(pd.DataFrame({0: [10], "name": ["a"]}), "df_a")
+                return "2 rows deleted"
+            if df_id == "df_b":
+                # Case B passes
+                reg.register_dataframe(pd.DataFrame({0: [10], "0": [100], "name": ["a"]}), "df_b")
+                return "2 rows deleted"
+            if df_id == "df_c":
+                # Case C fails: returns 0 rows deleted
+                return "0 rows deleted"
+            if df_id == "df_d":
+                return '{"x": [1, 2]}'
+            if df_id == "df_e":
+                return {"status": "error", "reason": "UndefinedVariableError: invalid_col"}
+            return "2 rows deleted"
+        return (broken_tool, None)
+
+    monkeypatch.setattr(
+        reproduce_drift,
+        "_extract_production_delete_rows_tool",
+        mock_extract,
+    )
+
+    res = probe_claim_12()
+    assert res.classification != "OBSERVED INVARIANT"
+    assert res.classification != "NOT REPRODUCED"
+    assert res.classification == "BLOCKED"
+    assert res.is_defect is True
+    assert "Unexpected failure in non-integer" in res.defect_or_contract_explanation
 
 
 def test_probe_extraction_failure_returns_blocked(monkeypatch):
@@ -122,6 +181,33 @@ def test_claim_12_production_tool_cases_pass():
     assert res.evidence_type == "DYNAMIC"
     assert res.is_defect is False
     assert "All 5 cases passed: True" in res.observed_behavior
+
+
+def test_claim_1_thread_scheduling_order_independence(monkeypatch):
+    """Verify that Claim 1 evaluates uniqueness and contiguous range without thread-order scheduling fragility."""
+    import idd_core
+
+    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
+    # Execute probe_claim_1 directly
+    res = probe_claim_1()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert "Sequential monotonic increment: True" in res.observed_behavior
+    assert "All unique: True" in res.observed_behavior
+    assert "Contiguous range: True" in res.observed_behavior
+
+
+def test_get_git_commit_failure_returns_unknown(monkeypatch):
+    """Verify that git commit discovery failure returns 'unknown' rather than a hardcoded commit SHA."""
+    import subprocess
+
+    def mock_subprocess_run(*args, **kwargs):
+        raise FileNotFoundError("git not found in PATH")
+
+    monkeypatch.setattr(subprocess, "run", mock_subprocess_run)
+    commit = reproduce_drift._get_git_commit()
+    assert commit == "unknown"
+    assert commit != "e4b98fff8713d596b6177b5907e26a2d75c6fc90"
 
 
 def test_successful_run_can_contain_not_reproduced_findings():

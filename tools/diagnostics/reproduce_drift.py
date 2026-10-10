@@ -85,7 +85,7 @@ class ClaimResult:
 
 
 def _get_git_commit() -> str:
-    """Safely obtain the current git commit SHA without failing."""
+    """Safely obtain the current git commit SHA without failing or fabricating provenance."""
     try:
         res = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -98,7 +98,7 @@ def _get_git_commit() -> str:
             return res.stdout.strip()
     except Exception:
         pass
-    return "e4b98fff8713d596b6177b5907e26a2d75c6fc90"
+    return "unknown"
 
 
 def _load_notebook_json() -> dict:
@@ -151,14 +151,27 @@ def probe_claim_1() -> ClaimResult:
         return ClaimResult(1, title, subsystem, "BLOCKED", "STATIC", False, expected, "idd_core not importable", "", locators, "idd_core missing")
 
     base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
+
+    # 1. Sequential monotonicity verification in single thread
+    step_seq = idd_core.PlanStep(step_number=1, step_name="seq", step_description="d", is_step_complete=True, plan_version=1, **base_agent)
+    p_seq1 = idd_core.Plan(plan_title="Seq 1", plan_summary="s", plan_steps=[step_seq], plan_version=1, **base_agent)
+    p_seq2 = idd_core.Plan(plan_title="Seq 2", plan_summary="s", plan_steps=[step_seq], plan_version=1, **base_agent)
+    sequential_monotonic = (p_seq2.plan_version > p_seq1.plan_version)
+
+    # 2. Concurrent allocation & collision avoidance across 5 worker threads
     created_versions: List[int] = []
+    thread_errors: List[str] = []
     lock = threading.Lock()
 
     def make_plan(num: int):
-        step = idd_core.PlanStep(step_number=1, step_name=f"s{num}", step_description="d", is_step_complete=True, plan_version=1, **base_agent)
-        p = idd_core.Plan(plan_title=f"Plan {num}", plan_summary="s", plan_steps=[step], plan_version=1, **base_agent)
-        with lock:
-            created_versions.append(p.plan_version)
+        try:
+            step = idd_core.PlanStep(step_number=1, step_name=f"s{num}", step_description="d", is_step_complete=True, plan_version=1, **base_agent)
+            p = idd_core.Plan(plan_title=f"Plan {num}", plan_summary="s", plan_steps=[step], plan_version=1, **base_agent)
+            with lock:
+                created_versions.append(p.plan_version)
+        except Exception as exc:
+            with lock:
+                thread_errors.append(f"Thread {num}: {exc}")
 
     threads = [threading.Thread(target=make_plan, args=(i,)) for i in range(5)]
     for t in threads:
@@ -166,16 +179,34 @@ def probe_claim_1() -> ClaimResult:
     for t in threads:
         t.join()
 
-    all_unique = len(set(created_versions)) == len(created_versions)
-    strictly_increasing = all_unique and sorted(created_versions) == created_versions
-    observed = f"Created versions across 5 concurrent threads: {created_versions}. All unique: {all_unique}."
+    if thread_errors:
+        return ClaimResult(
+            claim_id=1,
+            title=title,
+            subsystem=subsystem,
+            classification="BLOCKED",
+            evidence_type="DYNAMIC",
+            is_defect=True,
+            expected_behavior=expected,
+            observed_behavior=f"Concurrent thread execution encountered errors: {thread_errors}",
+            defect_or_contract_explanation="Thread execution raised an unexpected exception.",
+            locators=locators,
+        )
 
-    if strictly_increasing and all_unique:
-        classification = "OBSERVED INVARIANT"
-        is_defect = False
-    elif not all_unique:
+    all_unique = (len(set(created_versions)) == len(created_versions) == 5)
+    contiguous_range = (len(created_versions) == 5 and (max(created_versions) - min(created_versions) == 4))
+    observed = (
+        f"Sequential monotonic increment: {sequential_monotonic} (v{p_seq1.plan_version} -> v{p_seq2.plan_version}). "
+        f"Concurrent versions across 5 threads: {created_versions}. "
+        f"All unique: {all_unique}. Contiguous range: {contiguous_range}."
+    )
+
+    if not all_unique:
         classification = "REPRODUCED"  # Defect reproduced if concurrency collision occurs
         is_defect = True
+    elif sequential_monotonic and all_unique and contiguous_range:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
     else:
         classification = "NOT REPRODUCED"
         is_defect = False
@@ -1013,9 +1044,25 @@ def probe_claim_12() -> ClaimResult:
     if all_cases_passed:
         classification = "OBSERVED INVARIANT"
         is_defect = False
-    else:
-        classification = "NOT REPRODUCED"
+        explanation = (
+            "Actual production delete_rows tool and _build_query_view extracted directly from notebook Cell 32 "
+            "are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified "
+            "without a live run; Issue #147 must remain open administratively until live pipeline validation."
+        )
+    elif (not case_a_ok) or (not case_b_ok):
+        classification = "REPRODUCED"
         is_defect = True
+        explanation = (
+            "Historical Issue #147 defect REPRODUCED: Integer column label query or integer/string collision failed "
+            f"in production delete_rows (Case A integer query: {case_a_ok}, Case B collision: {case_b_ok})."
+        )
+    else:
+        classification = "BLOCKED"
+        is_defect = True
+        explanation = (
+            "Unexpected failure in non-integer production delete_rows cases "
+            f"(Case C in-place: {case_c_ok}, Case D non-in-place: {case_d_ok}, Case E error handling: {case_e_ok})."
+        )
 
     return ClaimResult(
         claim_id=12,
@@ -1026,11 +1073,7 @@ def probe_claim_12() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation=(
-            "Actual production delete_rows tool and _build_query_view extracted directly from notebook Cell 32 "
-            "are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified "
-            "without a live run; Issue #147 must remain open administratively until live pipeline validation."
-        ),
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 
@@ -1087,13 +1130,14 @@ def main():
                 )
             )
             has_blocked = True
-
     if args.json:
+        git_commit_sha = _get_git_commit()
         out = {
             "environment": {
                 "python": sys.version,
                 "platform": sys.platform,
-                "git_commit": _get_git_commit(),
+                "git_commit": git_commit_sha,
+                "git_provenance": "verified" if git_commit_sha != "unknown" else "unknown (git discovery unavailable)",
                 "repo_root": str(REPO_ROOT),
                 "pandas": pd.__version__,
                 "pydantic": pydantic.__version__,

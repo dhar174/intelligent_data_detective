@@ -180,64 +180,96 @@ def clear(self) -> None:
         self.df_id_to_raw_path.clear()
 ```
 
-### 3.3 Authoritative Ownership & Override API
-`idd_registry.py` is the single source of truth for registry state. The canonical API provides explicit accessors and context-managed test overrides:
+### 3.3 Authoritative Ownership & Concurrent-Safe Override Architecture
+`idd_registry.py` is the single source of truth for registry state. To provide true concurrent test isolation and prevent thread-interleaving corruption, the canonical API uses `contextvars.ContextVar` for execution-scoped overrides combined with a thread-safe process default:
+
 ```python
 # In idd_registry.py:
-_global_registry: DataFrameRegistry = DataFrameRegistry(capacity=20)
-_registry_lock = threading.RLock()
+import contextlib
+import contextvars
+import threading
+from typing import Optional
+
+_default_registry: DataFrameRegistry = DataFrameRegistry(capacity=20)
+_default_registry_lock = threading.RLock()
+_registry_override: contextvars.ContextVar[Optional[DataFrameRegistry]] = (
+    contextvars.ContextVar("idd_registry_override", default=None)
+)
 
 def get_global_registry() -> DataFrameRegistry:
-    """Return the active canonical DataFrameRegistry instance."""
-    with _registry_lock:
-        return _global_registry
+    """Return the active DataFrameRegistry instance.
+    
+    Resolution order:
+    1. Context-local override if active in the caller's Context (thread or task).
+    2. Otherwise, the process-default registry protected by RLock.
+    """
+    override = _registry_override.get()
+    if override is not None:
+        return override
+    with _default_registry_lock:
+        return _default_registry
 
 def set_global_registry(registry: DataFrameRegistry) -> None:
-    """Explicitly replace the process-global DataFrameRegistry instance."""
-    global _global_registry
+    """Explicitly replace the process-default DataFrameRegistry instance."""
+    global _default_registry
     if not isinstance(registry, DataFrameRegistry):
         raise TypeError("registry must be an instance of DataFrameRegistry")
-    with _registry_lock:
-        _global_registry = registry
+    with _default_registry_lock:
+        _default_registry = registry
 
 @contextlib.contextmanager
 def override_global_registry(registry: DataFrameRegistry):
-    """Context manager for test isolation, restoring the prior registry in finally."""
-    global _global_registry
-    with _registry_lock:
-        prior = _global_registry
-        _global_registry = registry
+    """Context-local manager for test and run isolation.
+    
+    Sets the override in the caller's ContextVar execution context via ContextVar.set(),
+    yielding the registry, and guarantees exact LIFO restoration using ContextVar.reset(token)
+    in finally.
+    
+    Concurrency & Isolation Invariants:
+    - Thread & Task Isolation: Overrides are bound to the caller's execution Context.
+      Concurrent threads or asyncio tasks with independent contexts do NOT observe
+      or interfere with each other's overrides.
+    - Race-Free Restoration: Uses ContextVar token-based reset. Interleaving threads
+      or tasks cannot overwrite or corrupt each other's prior registry pointers.
+    - Zero Process-Default Mutation: An override never modifies _default_registry.
+      The process default remains pristine throughout test execution.
+    - Nested Overrides: Nested override blocks within the same context restore in
+      strict LIFO order via distinct ContextVar tokens.
+    - Child Propagation: Asyncio tasks spawned within an active override inherit a
+      context copy, while new threads default to the process default unless context
+      is copied explicitly via contextvars.copy_context().
+    """
+    if not isinstance(registry, DataFrameRegistry):
+        raise TypeError("registry must be an instance of DataFrameRegistry")
+    token = _registry_override.set(registry)
     try:
         yield registry
     finally:
-        with _registry_lock:
-            _global_registry = prior
+        _registry_override.reset(token)
 ```
 
-### 3.4 Invariant Guarantees & Caller Migration Analysis
+### 3.4 Invariant Guarantees & Atomic CP1 Caller Migration
 1. **Dynamic Resolution Invariant**: Canonical tools in `idd_tools.py` obtain the active registry dynamically via `get_global_registry()`. Tools must NEVER capture a stale instance at module import time.
-2. **Caller Migration Contract**:
-   - **Ordinary Reads** (`idd_core.global_df_registry.get_dataframe(...)`): Supported transparently via `idd_core.__getattr__`.
-   - **In-place Mutations** (`global_df_registry.register_dataframe(...)`, `.clear()`): Supported transparently on the active instance.
-   - **Direct Attribute Reassignment in Tests**:
+2. **Façade Compatibility Contract**:
+   - **Ordinary Reads** (`idd_core.global_df_registry.get_dataframe(...)`): Supported transparently via `idd_core.__getattr__`, which dynamically delegates to `idd_registry.get_global_registry()`.
+   - **In-place Mutations** (`global_df_registry.register_dataframe(...)`, `.clear()`): Supported transparently on whichever registry is active in the caller's context.
+   - **Elimination of Legacy Direct Assignment**:
+     - Direct attribute assignment on the module (`idd_core.global_df_registry = replacement`) is unsupported under PEP 562 because setting an attribute creates a module `__dict__` entry that shadows `__getattr__`, severing tools from test overrides.
+3. **Atomic Caller Migration in CP1 (Slice 1)**:
+   - Rather than postponing caller updates to CP2, all test fixtures and callers performing direct assignment:
      - `tests/conftest.py:54` (`core.global_df_registry = fresh`)
      - `tests/unit/test_handle_tool_errors.py:57` (`idd_core.global_df_registry = small_reg`)
-     - These callers must be explicitly migrated during CP2/CP3 to:
-       ```python
-       with override_global_registry(small_reg):
-           # execute isolated test
-       ```
-     - Direct attribute reassignment (`idd_core.global_df_registry = ...`) is deprecated and explicitly unsupported.
-3. **Rejected Alternative**:
-   A custom module class (`class _FaçadeModule(types.ModuleType): def __setattr__(...)`) was evaluated. While theoretically intercepting assignments, module-subclass monkeypatching introduces severe fragility with module reloaders, static type checkers (mypy/pyright), IDE introspection, linters, and C-extensions. The explicit accessor and context manager API is favored as robust, predictable, and standard.
-4. **Required Future Parity Tests (CP2 Gate)**:
-   - *Test 1 (Initial identity)*: `idd_core.global_df_registry is idd_registry.get_global_registry()`.
-   - *Test 2 (Tool observation)*: `with override_global_registry(mock_reg):` causes tools to immediately observe `mock_reg`.
-   - *Test 3 (Nested overrides)*: Nested override blocks restore outer registry upon inner exit.
-   - *Test 4 (Exception safety)*: Exceptions raised inside override blocks guarantee restoration in `finally`.
-   - *Test 5 (Test isolation)*: Parallel and sequential tests do not leak registry state across test boundaries.
-   - *Test 6 (User data preservation)*: `clear()` evicts LRU entries and registry maps without deleting user files.
-   - *Test 7 (Concurrency lock)*: Thread-safety verified under concurrent registrations.
+     **MUST be migrated atomically in CP1** to `with override_global_registry(...)`.
+   - This ensures that when the `idd_core` façade is introduced in CP1, zero tests rely on module attribute shadowing, and unit tests prove actual façade/canonical identity from day one.
+4. **Required Future Parity Tests (CP1 Gate Deliverables)**:
+   - *Test A (Façade & Canonical Identity)*: `idd_core.global_df_registry is idd_registry.get_global_registry()`.
+   - *Test B (Tool Dynamic Observation)*: Tools calling `get_global_registry()` immediately observe context override.
+   - *Test C (Nested Overrides & Token Reset)*: Nested blocks restore outer context in strict LIFO order.
+   - *Test D (Exception Safety)*: Exceptions raised inside override blocks guarantee context reset in `finally`.
+   - *Test E (Concurrent Thread Isolation)*: Overlapping overrides in concurrent threads do not leak across threads or corrupt the process default.
+   - *Test F (Asyncio Task Isolation)*: Asyncio tasks inherit context copy but mutations do not leak back to parent.
+   - *Test G (Process Default Updates)*: `set_global_registry()` updates process default under lock when no override is active.
+   - *Test H (User Data Preservation)*: `clear()` evicts LRU cache and tracking maps without deleting user files.
 
 ---
 
@@ -387,12 +419,14 @@ In accordance with user authorization, Issue #144 surfaces must be updated in th
   - Fix RC-2 sorting split-brain (`CompletedStepsAndTasks` returning sorted `dedup_list`).
   - Fix Claim 2 (`Plan` preserving caller-supplied `plan_version`).
   - Fix Claim 4 (reject duplicate numeric step numbers in `CompletedStepsAndTasks`).
-  - Implement `idd_registry.py` with `_read_df`, `clear()`, and accessor functions.
-  - Update `idd_core.py` to re-export from `idd_models` and `idd_registry`.
+  - Implement `idd_registry.py` with `_read_df`, `clear()`, `get_global_registry`, `set_global_registry`, and `override_global_registry` (`ContextVar` design).
+  - Update `idd_core.py` to re-export from `idd_models` and `idd_registry` with dynamic `__getattr__` routing.
+  - **Atomic Caller & Fixture Migration**: Atomically migrate all direct-assignment test fixtures (`tests/conftest.py:54` and `tests/unit/test_handle_tool_errors.py:57`) in the same CP1 PR to `with override_global_registry(...)`.
 - **Validation Gate**:
   - `python -m pytest tests/unit/test_models.py tests/unit/test_registry.py -v` *(Note: `tests/unit/test_dataframe_registry.py` is a proposed future test deliverable in CP2)*
+  - Tests A through H verified green (including concurrent thread isolation, nested token reset, and façade/canonical identity).
   - Claims 1, 2, 3, 4, 5, 8 verified green in unit test suite.
-- **Rollback Criteria**: Any regression in Pydantic validation or registry caching rolls back Slice 1.
+- **Rollback Criteria**: Any regression in Pydantic validation, registry caching, or thread isolation rolls back Slice 1.
 
 ### Slice 2: Tools & Error Handling Hardening (CP2)
 - **Scope**:
@@ -448,7 +482,7 @@ In accordance with user authorization, Issue #144 surfaces must be updated in th
 | Decision Item | Status | Decision & Rationale | Tradeoffs & Alternatives |
 | :--- | :---: | :--- | :--- |
 | **1. Module Architecture** | **PROPOSED** | Root-level Python modules (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`). | Avoids creating a `src/` directory (strictly forbidden by repo rules) and prevents package-nesting import complexities. |
-| **2. Registry Ownership & Overrides** | **PROPOSED** | Canonical singleton in `idd_registry.py` with explicit accessors (`get_global_registry`, `set_global_registry`) and test context manager (`override_global_registry`). Ordinary reads supported via `idd_core.__getattr__`. | Direct module assignment is unsupported in Python PEP 562. Test callers explicitly migrate to `override_global_registry` context manager rather than brittle module subclassing. |
+| **2. Registry Ownership & Overrides** | **PROPOSED** | Canonical registry in `idd_registry.py` with `contextvars.ContextVar`-based `override_global_registry` and thread-safe process default (`_default_registry`). Atomic migration of direct-assignment fixtures (`conftest.py`, `test_handle_tool_errors.py`) in CP1. | Process-global pointer swapping fails on concurrent thread interleaving. ContextVar token reset provides true thread and task isolation. Direct module assignment is eliminated in CP1 rather than delayed to CP2. |
 | **3. Plan Version Preservation** | **PROPOSED** | Monotonic class counter assigns version by default, but caller-supplied `plan_version` is preserved when explicitly provided. | Enables clean deserialization and state restoration while maintaining globally monotonic auto-versioning for new plans. |
 | **4. Colab Module Distribution** | **REQUIRES DECISION** | Fail-closed manifest and digest verification contract specified for Cell 2. Rejects silent downloading of unpinned `main` code. | Exact module acquisition mechanism (shallow clone vs release asset vs pinned curl) deferred to pre-CP4 decision. |
 | **5. Façade Compatibility** | **PROPOSED** | Keep `idd_core.py` as a 100% backwards-compatible re-export façade for symbols and reads. | Existing unit tests run without modification; direct attribute assignment callers migrate to explicit override context manager. |
