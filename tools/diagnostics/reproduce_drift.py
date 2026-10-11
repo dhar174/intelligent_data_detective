@@ -274,30 +274,31 @@ def probe_claim_2() -> ClaimResult:
         new_plan_allocated = (v2 > v1 and step_v1 == v1)
 
         # 2. RESTORE Snapshot:
-        # Restoration preserves stored snapshot version (42) and synchronizes steps
+        # Establish controlled baseline: snapshot version must strictly exceed current allocator high-water mark (v2)
+        target_restore_v = v2 + 100
         snapshot = {
-            "plan_title": "Restored 42", "plan_summary": "S_restored",
+            "plan_title": f"Restored {target_restore_v}", "plan_summary": "S_restored",
             "plan_steps": [{"step_number": 1, "step_name": "sr", "step_description": "dr", "is_step_complete": True, "plan_version": 999, **base_agent}],
-            "plan_version": 42, **base_agent
+            "plan_version": target_restore_v, **base_agent
         }
         restored_plan = idd_core.Plan.from_persisted_snapshot(snapshot)
         v_restored = restored_plan.plan_version
         step_v_restored = restored_plan.plan_steps[0].plan_version
-        restore_preserved = (v_restored == 42 and step_v_restored == 42)
+        restore_preserved = (v_restored == target_restore_v and step_v_restored == target_restore_v)
 
         # 3. High-Water Mark Advancement:
-        # Subsequent new plan after restoring 42 must receive version > 42
+        # Subsequent new plan after restoring target_restore_v must receive version > target_restore_v
         new_plan_after_restore = idd_core.Plan(
             plan_title="New Plan After Restore", plan_summary="S_after",
             plan_steps=[], plan_version=1, **base_agent
         )
         v_after = new_plan_after_restore.plan_version
-        high_water_advanced = (v_after > 42)
+        high_water_advanced = (v_after > target_restore_v)
 
         # 4. Idempotence:
         # Revalidating existing plan instance does not allocate another version
         revalidated = idd_core.Plan.model_validate(restored_plan)
-        idempotent_revalidation = (revalidated.plan_version == 42)
+        idempotent_revalidation = (revalidated.plan_version == target_restore_v)
 
         all_lifecycle_ok = (
             new_plan_allocated
@@ -309,7 +310,7 @@ def probe_claim_2() -> ClaimResult:
         observed = (
             f"NEW plans allocate monotonically: v1={v1}, v2={v2} (monotonic: {new_plan_allocated}); "
             f"RESTORE preserved snapshot: v_restored={v_restored}, step_v={step_v_restored} (preserved: {restore_preserved}); "
-            f"High-water mark after restore: v_after={v_after} (>42: {high_water_advanced}); "
+            f"High-water mark after restore: v_after={v_after} (>{target_restore_v}: {high_water_advanced}); "
             f"Revalidation idempotent: {idempotent_revalidation}."
         )
 

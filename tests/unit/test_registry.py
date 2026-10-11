@@ -12,6 +12,7 @@ Tests:
 import threading
 import tempfile
 import time
+from pathlib import Path
 import pytest
 import pandas as pd
 
@@ -502,3 +503,245 @@ class TestDataFrameRegistryStorageIsolation:
         # Verify disk files remain intact
         assert auto_path.exists(), "reg.clear() erroneously deleted auto backing file!"
         assert user_path.exists(), "reg.clear() erroneously deleted user-provided file!"
+
+
+class TestExplicitSourceCopyOnWriteIntegrity:
+    """Verify copy-on-write persistence for explicit-source DataFrames (Issue #156 / PR #157 P1)."""
+
+    def test_explicit_source_is_never_overwritten(self, core, tmp_path):
+        """Test A: Re-registering updated DataFrame with explicit raw_path leaves original source untouched."""
+        src_file = tmp_path / "user_source.csv"
+        df_v1 = pd.DataFrame({"value": [1, 2, 3]})
+        df_v1.to_csv(src_file, index=False)
+        original_bytes = src_file.read_bytes()
+
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(df_v1, "dataset_1", raw_path=str(src_file))
+
+        # Re-register transformed DataFrame under same ID
+        df_v2 = pd.DataFrame({"value": [100, 200, 300]})
+        reg.register_dataframe(df_v2, "dataset_1", raw_path=str(src_file))
+
+        # Source file must remain byte-for-byte unchanged
+        assert src_file.read_bytes() == original_bytes, "Original source file was modified!"
+
+    def test_updated_data_survives_eviction(self, core, tmp_path):
+        """Test B: After LRU eviction, reloading an updated explicit-source DataFrame yields updated data."""
+        src_file = tmp_path / "user_source.csv"
+        df_v1 = pd.DataFrame({"value": [1, 2, 3]})
+        df_v1.to_csv(src_file, index=False)
+        original_bytes = src_file.read_bytes()
+
+        reg = core.DataFrameRegistry(capacity=1)
+        reg.register_dataframe(df_v1, "dataset_1", raw_path=str(src_file))
+
+        df_v2 = pd.DataFrame({"value": [100, 200, 300]})
+        reg.register_dataframe(df_v2, "dataset_1", raw_path=str(src_file))
+
+        # Evict dataset_1 from cache by adding another DataFrame
+        reg.register_dataframe(pd.DataFrame({"x": [9]}), "dataset_2")
+        assert reg.registry["dataset_1"]["df"] is None
+
+        # Reload dataset_1 from disk
+        reloaded = reg.get_dataframe("dataset_1", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["value"]) == [100, 200, 300], f"Reload served stale data: {reloaded}"
+
+        # Source file remains unchanged
+        assert src_file.read_bytes() == original_bytes
+
+    def test_repeated_updates_survive_eviction(self, core, tmp_path):
+        """Test C: Registering versions A, B, and C under the same ID: after eviction, C is returned."""
+        src_file = tmp_path / "source_abc.csv"
+        df_a = pd.DataFrame({"v": [1]})
+        df_a.to_csv(src_file, index=False)
+
+        reg = core.DataFrameRegistry(capacity=1)
+        reg.register_dataframe(df_a, "target_id", raw_path=str(src_file))
+
+        df_b = pd.DataFrame({"v": [2]})
+        reg.register_dataframe(df_b, "target_id", raw_path=str(src_file))
+
+        df_c = pd.DataFrame({"v": [3]})
+        reg.register_dataframe(df_c, "target_id", raw_path=str(src_file))
+
+        # Evict target_id
+        reg.register_dataframe(pd.DataFrame({"other": [0]}), "evictor")
+        assert reg.registry["target_id"]["df"] is None
+
+        reloaded = reg.get_dataframe("target_id", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["v"]) == [3], f"Expected version C (3), got {reloaded}"
+
+    def test_failed_persistence_does_not_corrupt_registry_or_falsely_succeed(self, core, tmp_path, monkeypatch):
+        """Test D: Backing-write failure reports failure and does not leave metadata pointing to stale data."""
+        reg = core.DataFrameRegistry(capacity=1)
+        df_v1 = pd.DataFrame({"val": [10]})
+        reg.register_dataframe(df_v1, "fail_test")
+
+        df_v2 = pd.DataFrame({"val": [20]})
+
+        # Simulate write failure
+        monkeypatch.setattr(reg, "_write_df", lambda df, path: False)
+
+        result = reg.register_dataframe(df_v2, "fail_test")
+        assert result is None, "register_dataframe should return None on failed write"
+
+        # In-memory cached df must still be df_v1, not falsely updated
+        cached = reg.get_dataframe("fail_test")
+        assert list(cached["val"]) == [10]
+
+    def test_existing_auto_path_behavior_preserved(self, core):
+        """Test E: Auto-path re-registration updates backing file and reload serves fresh data."""
+        reg = core.DataFrameRegistry(capacity=1)
+        df1 = pd.DataFrame({"x": [1]})
+        df2 = pd.DataFrame({"x": [2]})
+
+        reg.register_dataframe(df1, "auto_id")
+        reg.register_dataframe(df2, "auto_id")
+
+        reg.register_dataframe(pd.DataFrame({"dummy": [0]}), "other")
+        assert reg.registry["auto_id"]["df"] is None
+
+        reloaded = reg.get_dataframe("auto_id", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["x"]) == [2]
+
+    def test_source_path_compatibility_accessors(self, core, tmp_path):
+        """Test F: Source-path lookup behavior follows the explicitly documented contract."""
+        src_file = tmp_path / "provenance.csv"
+        df1 = pd.DataFrame({"a": [1]})
+        df1.to_csv(src_file, index=False)
+
+        reg = core.DataFrameRegistry(capacity=2)
+        reg.register_dataframe(df1, "prov_df", raw_path=str(src_file))
+
+        # Before update: raw_path and source_path match src_file
+        assert reg.get_raw_path_from_id("prov_df") == str(src_file.resolve())
+        assert reg.get_source_path_from_id("prov_df") == str(src_file.resolve())
+        assert reg.get_id_from_raw_path(str(src_file)) == "prov_df"
+
+        # After update: source_path is preserved, backing path is created in reg.data_dir
+        df2 = pd.DataFrame({"a": [2]})
+        reg.register_dataframe(df2, "prov_df", raw_path=str(src_file))
+
+        assert reg.get_source_path_from_id("prov_df") == str(src_file.resolve())
+        backing_path = reg.get_backing_path_from_id("prov_df")
+        assert backing_path is not None
+        assert Path(backing_path).parent == reg.data_dir.resolve()
+        # Looking up by either source or backing path returns prov_df
+        assert reg.get_id_from_raw_path(str(src_file)) == "prov_df"
+        assert reg.get_id_from_raw_path(backing_path) == "prov_df"
+
+
+class TestDataFrameIdFilesystemContainment:
+    """Verify DataFrame ID decoupling and storage directory containment (Issue #156 / PR #157 P1)."""
+
+    @pytest.mark.parametrize("malicious_id", [
+        "normal_id",
+        "some-uuid-like-value",
+        "../outside",
+        "../../escape",
+        "folder/child",
+        r"..\outside",
+        r"C:\temp\outside",
+        "/absolute/path",
+        "",
+    ])
+    def test_various_ids_never_escape_owned_storage(self, core, malicious_id):
+        """Verify candidate IDs (traversal, absolute, nested, empty) never escape data_dir."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"col": [1, 2, 3]})
+
+        df_id = reg.register_dataframe(df, malicious_id)
+        assert df_id == malicious_id
+
+        backing_path = Path(reg.get_backing_path_from_id(malicious_id))
+        data_dir_resolved = reg.data_dir.resolve()
+
+        # Mandatory containment verification
+        assert backing_path.is_relative_to(data_dir_resolved), (
+            f"Backing path '{backing_path}' escaped data_dir '{data_dir_resolved}' for id '{malicious_id}'"
+        )
+        assert backing_path.exists()
+
+    def test_parent_traversal_does_not_write_in_parent(self, core):
+        """Test A: Parent traversal ../outside does not create files outside owned directory."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"col": [1]})
+        parent_dir = reg.data_dir.parent.resolve()
+        parent_files_before = set(parent_dir.iterdir())
+
+        reg.register_dataframe(df, "../outside")
+
+        parent_files_after = set(parent_dir.iterdir())
+        unexpected_files = parent_files_after - parent_files_before - {reg.data_dir}
+        assert not unexpected_files, f"Unexpected files created in parent dir: {unexpected_files}"
+
+    def test_multiple_traversal_levels_contained(self, core):
+        """Test B: ../../escape does not escape owned directory."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"col": [1]})
+        reg.register_dataframe(df, "../../escape")
+        backing_path = Path(reg.get_backing_path_from_id("../../escape"))
+        assert backing_path.is_relative_to(reg.data_dir.resolve())
+        assert backing_path.exists()
+
+    def test_windows_path_syntax_contained(self, core):
+        """Test C: Windows path syntax (backslashes, colons) is safely contained."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"col": [1]})
+        reg.register_dataframe(df, r"..\win_outside")
+        reg.register_dataframe(df, r"C:\temp\win_abs")
+        for test_id in [r"..\win_outside", r"C:\temp\win_abs"]:
+            path = Path(reg.get_backing_path_from_id(test_id))
+            assert path.is_relative_to(reg.data_dir.resolve())
+            assert path.exists()
+
+    def test_collision_resistance_for_different_ids(self, core):
+        """Test E: Distinct logical IDs never map to the same backing filename."""
+        reg = core.DataFrameRegistry(capacity=10)
+        df = pd.DataFrame({"a": [1]})
+        test_ids = [
+            "outside",
+            "../outside",
+            "../../outside",
+            r"..\outside",
+            "folder/outside",
+            "outside_1",
+            "outside_2",
+            "",
+            "normal_id",
+        ]
+        backing_paths = set()
+        for tid in test_ids:
+            reg.register_dataframe(df, tid)
+            p = reg.get_backing_path_from_id(tid)
+            assert p not in backing_paths, f"Backing path collision detected for id '{tid}': {p}"
+            backing_paths.add(p)
+
+    def test_eviction_and_reload_with_sanitized_id(self, core):
+        """Test F: Safe filename mapping remains consistent across registration, eviction, and reload."""
+        reg = core.DataFrameRegistry(capacity=1)
+        df = pd.DataFrame({"data": [42, 43]})
+        reg.register_dataframe(df, "../special_id")
+
+        # Evict from cache
+        reg.register_dataframe(pd.DataFrame({"x": [0]}), "evictor")
+        assert reg.registry["../special_id"]["df"] is None
+
+        # Reload
+        reloaded = reg.get_dataframe("../special_id", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["data"]) == [42, 43]
+
+    def test_explicit_source_path_distinct_from_auto_filename_policy(self, core, tmp_path):
+        """Test H: Explicit user-supplied source paths remain distinct from auto-generated policy."""
+        reg = core.DataFrameRegistry(capacity=5)
+        user_file = tmp_path / "explicit_user.csv"
+        df = pd.DataFrame({"v": [99]})
+        df.to_csv(user_file, index=False)
+
+        reg.register_dataframe(df, "norm_key", raw_path=str(user_file))
+        assert reg.get_source_path_from_id("norm_key") == str(user_file.resolve())
+        assert not Path(reg.get_source_path_from_id("norm_key")).is_relative_to(reg.data_dir.resolve())

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -71,11 +73,20 @@ class DataFrameRegistry:
        each DataFrameRegistry instance allocates an isolated storage directory
        (WORKING_DIRECTORY / f"idd_registry_{instance_id}") so independent registries
        registering identical df_ids never collide or overwrite each other's backing files.
-    5. Storage Ownership Separation:
-       - Registry-owned backing files: Auto-generated in self.data_dir for in-memory frames.
-       - User-supplied source files: Referenced by explicit raw_path; never modified or relocated.
+    5. Storage Ownership & Copy-on-Write Model:
+       - External source provenance (`source_path`): Original user-supplied file path;
+         NEVER modified or overwritten on DataFrame updates.
+       - Registry-owned backing storage (`reload_path`): Bounded persisted representation
+         in self.data_dir used to restore working DataFrames after cache eviction.
+         When a DataFrame is updated, it is persisted to registry-owned storage,
+         leaving external source files byte-for-byte unchanged.
        - Published artifacts: Output documents/charts created via _resolve_artifact_path().
-    6. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
+    6. Filesystem Security & Containment:
+       - Logical `df_id` strings are decoupled from physical filenames using deterministic
+         cryptographic digests and path sanitation.
+       - Automatically generated backing paths are strictly verified to reside within
+         self.data_dir, preventing path traversal across POSIX and Windows conventions.
+    7. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
        deletes user files or published artifacts from disk.
     """
 
@@ -102,24 +113,61 @@ class DataFrameRegistry:
         """Resolve and expand path."""
         return Path(p).expanduser().resolve() if isinstance(p, (str, Path)) else Path(p)
 
+    def _safe_backing_filename(self, df_id: str) -> str:
+        """Derive a safe, deterministic, collision-resistant filename within owned storage.
+
+        Decouples user-controlled string df_id from physical filenames to prevent path
+        traversal escapes across POSIX and Windows conventions.
+        """
+        digest = hashlib.sha256(df_id.encode("utf-8", errors="replace")).hexdigest()
+        safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", df_id)[:24].strip("_")
+        if safe_prefix:
+            return f"{safe_prefix}_{digest[:16]}.csv"
+        return f"df_{digest[:24]}.csv"
+
+    def _get_owned_backing_path(self, df_id: str) -> Path:
+        """Return and validate a strictly contained backing file path in self.data_dir."""
+        filename = self._safe_backing_filename(df_id)
+        candidate = (self.data_dir / filename).resolve()
+        data_dir_resolved = self.data_dir.resolve()
+        try:
+            candidate.relative_to(data_dir_resolved)
+        except ValueError:
+            raise DataFrameRegistryError(
+                f"Path containment violation: backing path '{candidate}' escapes authorized directory '{data_dir_resolved}'"
+            )
+        if candidate == data_dir_resolved:
+            raise DataFrameRegistryError(
+                f"Path containment violation: candidate cannot be directory itself: '{candidate}'"
+            )
+        return candidate
+
     def _write_df(self, df: pd.DataFrame, path: Path) -> bool:
-        """Write DataFrame to disk based on file extension."""
+        """Write DataFrame to disk atomically based on file extension."""
+        tmp_path: Optional[Path] = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.parent / f".tmp_{uuid.uuid4().hex[:12]}_{path.name}"
             suf = path.suffix.lower()
             if suf == ".csv":
-                df.to_csv(path, index=False)
+                df.to_csv(tmp_path, index=False)
             elif suf == ".parquet":
-                df.to_parquet(path, index=False)
+                df.to_parquet(tmp_path, index=False)
             elif suf in (".pkl", ".pickle"):
-                df.to_pickle(path)
+                df.to_pickle(tmp_path)
             elif suf == ".json":
-                df.to_json(path, orient="records")
+                df.to_json(tmp_path, orient="records")
             else:
-                df.to_csv(path, index=False)
+                df.to_csv(tmp_path, index=False)
+            os.replace(tmp_path, path)
             return True
         except Exception as e:
             print(f"Error writing DataFrame to {path}: {e}")
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
             return False
 
     def _read_df(self, path: Path) -> pd.DataFrame:
@@ -194,64 +242,108 @@ class DataFrameRegistry:
         with self._lock:
             if df_id is None:
                 df_id = str(uuid.uuid4())
-            path = self._norm_path(raw_path) if raw_path else None
-
-            if df_id in self.registry:
-                self.registry[df_id]["df"] = df
-                if raw_path and path is not None:
-                    self.registry[df_id]["raw_path"] = str(path)
-                    self.df_id_to_raw_path[df_id] = str(path)
-                elif df is not None:
-                    try:
-                        default_path = Path(self.data_dir) / f"{df_id}.csv"
-                        self._write_df(df, default_path)
-                        self.df_id_to_raw_path[df_id] = str(default_path)
-                        self.registry[df_id]["raw_path"] = str(default_path)
-                    except Exception as e:
-                        print(f"Warning: could not persist in-memory DataFrame {df_id}: {e}")
-                if df is not None:
-                    self._touch_cache(df_id, df)
-                return df_id
 
             if df is None and not raw_path:
                 print("Either df or raw_path must be provided")
                 return None
 
-            is_auto_path = not bool(raw_path)
-            if not raw_path:
-                raw_path = str((self.data_dir / f"{df_id}.csv").resolve())
-
-            path = self._norm_path(raw_path)
-
-            if df is None and not path.exists():
-                print("Either provide a DataFrame or a valid raw_path")
-                return None
-
-            if not path.parent.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-
-            if df is not None:
-                # If auto-generated path, always write to ensure fresh backing representation.
-                # If user-supplied raw_path, write if file doesn't already exist.
-                if is_auto_path or not path.exists() or not path.is_file():
-                    if not self._write_df(df, path):
+            # ---------------------------------------------------------------
+            # 1. UPDATE EXISTING ENTRY (Re-registration)
+            # ---------------------------------------------------------------
+            if df_id in self.registry:
+                entry = self.registry[df_id]
+                if df is not None:
+                    # An updated DataFrame is being registered!
+                    # Preserve external source file; write to registry-owned backing storage.
+                    backing_path = self._get_owned_backing_path(df_id)
+                    if not self._write_df(df, backing_path):
+                        print(f"Error: failed to persist updated DataFrame '{df_id}' to backing storage")
                         return None
 
-            if df is None:
-                try:
-                    df = self._read_df(path)
-                except Exception as e:
-                    print(f"Error loading DataFrame from {path}: {e}")
-                    return None
+                    # Backing write succeeded; update metadata and in-memory cache atomically
+                    entry["df"] = df
+                    entry["reload_path"] = str(backing_path)
+                    if raw_path:
+                        norm_user_path = str(self._norm_path(raw_path))
+                        entry["source_path"] = norm_user_path
+                        entry["raw_path"] = norm_user_path
+                        self.df_id_to_raw_path[df_id] = norm_user_path
+                    elif not entry.get("source_path"):
+                        entry["raw_path"] = str(backing_path)
+                        self.df_id_to_raw_path[df_id] = str(backing_path)
 
-            if df is None and raw_path is not None and not os.path.exists(raw_path):
-                print(f"File {raw_path} does not exist")
+                    self._touch_cache(df_id, df)
+                    return df_id
+
+                # df is None: re-registering an explicit source path to reload
+                if raw_path:
+                    norm_path = self._norm_path(raw_path)
+                    if not norm_path.exists():
+                        print(f"File {raw_path} does not exist")
+                        return None
+                    try:
+                        loaded = self._read_df(norm_path)
+                    except Exception as e:
+                        print(f"Error loading DataFrame from {norm_path}: {e}")
+                        return None
+                    entry["df"] = loaded
+                    entry["source_path"] = str(norm_path)
+                    entry["reload_path"] = str(norm_path)
+                    entry["raw_path"] = str(norm_path)
+                    self.df_id_to_raw_path[df_id] = str(norm_path)
+                    self._touch_cache(df_id, loaded)
+                    return df_id
+
+                return df_id
+
+            # ---------------------------------------------------------------
+            # 2. INITIAL REGISTRATION (New entry)
+            # ---------------------------------------------------------------
+            if raw_path:
+                norm_path = self._norm_path(raw_path)
+                if df is None:
+                    if not norm_path.exists():
+                        print(f"File {raw_path} does not exist")
+                        return None
+                    try:
+                        df = self._read_df(norm_path)
+                    except Exception as e:
+                        print(f"Error loading DataFrame from {norm_path}: {e}")
+                        return None
+                    if df is None:
+                        return None
+                else:
+                    # df is provided with an explicit raw_path
+                    if not norm_path.exists() or not norm_path.is_file():
+                        if not self._write_df(df, norm_path):
+                            return None
+
+                self.registry[df_id] = {
+                    "df": df,
+                    "source_path": str(norm_path),
+                    "reload_path": str(norm_path),
+                    "raw_path": str(norm_path),
+                }
+                self.df_id_to_raw_path[df_id] = str(norm_path)
+                self._touch_cache(df_id, df)
+                return df_id
+
+            # Auto-generated backing path
+            if df is None:
                 return None
 
-            self.registry[df_id] = {"df": df, "raw_path": str(raw_path)}
-            self.df_id_to_raw_path[df_id] = str(raw_path)
-            if df is not None:
-                self._touch_cache(df_id, df)
+            backing_path = self._get_owned_backing_path(df_id)
+            if not self._write_df(df, backing_path):
+                return None
+
+            self.registry[df_id] = {
+                "df": df,
+                "source_path": None,
+                "reload_path": str(backing_path),
+                "raw_path": str(backing_path),
+            }
+            self.df_id_to_raw_path[df_id] = str(backing_path)
+            self._touch_cache(df_id, df)
             return df_id
 
     def get_dataframe(
@@ -273,10 +365,10 @@ class DataFrameRegistry:
                 return df
 
             if load_if_not_exists:
-                raw_p = info.get("raw_path")
-                if not raw_p:
+                reload_p = info.get("reload_path") or info.get("raw_path")
+                if not reload_p:
                     return None
-                path = self._norm_path(str(raw_p))
+                path = self._norm_path(str(reload_p))
                 try:
                     loaded = self._read_df(path)
                 except FileNotFoundError:
@@ -298,14 +390,48 @@ class DataFrameRegistry:
             self.df_id_to_raw_path.pop(df_id, None)
 
     def get_raw_path_from_id(self, df_id: str) -> Optional[str]:
-        """Get the disk path associated with a registered DataFrame ID."""
+        """Get the disk path associated with a registered DataFrame ID.
+
+        Preserves public source-path provenance compatibility: returns the external
+        source path if one was provided upon registration, or the auto-generated
+        backing path if none was provided.
+        """
         with self._lock:
+            info = self.registry.get(df_id)
+            if info:
+                return info.get("source_path") or info.get("raw_path") or info.get("reload_path")
             return self.df_id_to_raw_path.get(df_id)
 
+    def get_source_path_from_id(self, df_id: str) -> Optional[str]:
+        """Get the original external source path associated with a DataFrame ID, if one was provided."""
+        with self._lock:
+            info = self.registry.get(df_id)
+            if info:
+                return info.get("source_path")
+            return None
+
+    def get_backing_path_from_id(self, df_id: str) -> Optional[str]:
+        """Get the registry-owned reload backing path for a DataFrame ID."""
+        with self._lock:
+            info = self.registry.get(df_id)
+            if info:
+                return info.get("reload_path")
+            return None
+
     def get_id_from_raw_path(self, raw_path: str) -> Optional[str]:
-        """Look up the DataFrame ID registered for a given disk path."""
+        """Look up the DataFrame ID registered for a given disk path (source or reload path)."""
         with self._lock:
             target = str(self._norm_path(raw_path))
+            for df_id, info in self.registry.items():
+                sp = info.get("source_path")
+                rp = info.get("reload_path")
+                raw_p = info.get("raw_path")
+                if sp and str(self._norm_path(sp)) == target:
+                    return df_id
+                if rp and str(self._norm_path(rp)) == target:
+                    return df_id
+                if raw_p and str(self._norm_path(raw_p)) == target:
+                    return df_id
             for df_id, path in self.df_id_to_raw_path.items():
                 if str(self._norm_path(path)) == target:
                     return df_id

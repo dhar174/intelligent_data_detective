@@ -22,6 +22,15 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
   - Instance-isolated default persistence directory (`WORKING_DIRECTORY / f"idd_registry_{uuid.uuid4().hex[:12]}"`), ensuring independent registry instances never collide or share backing paths.
   - Re-registration updates: registering updated data under an existing `df_id` updates backing files on disk, ensuring cache-evicted reloads serve fresh data.
   - Optional `data_dir` constructor argument for explicit storage directory configuration.
+- **Explicit Source Copy-on-Write Integrity**:
+  - Updating an existing `df_id` that originated from an explicit user `source_path` preserves the external user file byte-for-byte unchanged while writing updated data to registry-owned backing storage in `self.data_dir`.
+  - Cache evictions reload from the registry-owned backing path (`reload_path`), guaranteeing data freshness without corrupting external inputs.
+  - Atomic staged writes (`.tmp` + `os.replace`) ensure registry state is never corrupted if persistence fails.
+  - Explicit accessors: `get_source_path_from_id()` and `get_backing_path_from_id()`, with legacy `get_raw_path_from_id()` returning source path if explicit, else reload path.
+- **Directory Containment & Path Escapes**:
+  - Logical `df_id` values are decoupled from physical filenames via deterministic SHA-256 digest + sanitation (`_safe_backing_filename`), preventing path injection.
+  - Enforces strict directory containment (`_get_owned_backing_path`), raising `DataFrameRegistryError` if a path escapes `self.data_dir`.
+  - Traversal strings (`../`, `../../`), subdirectories (`folder/child`), Windows absolute/relative paths (`C:\temp`, `..\outside`), and root paths (`/absolute/path`) are fully contained within owned storage.
 - **Multi-Format Persistence & Reload**: Supports `.csv`, `.parquet`, `.pkl`, `.json`.
 - **Filesystem Safety**: `clear()` resets in-memory cache and tracking maps, but never deletes underlying files on disk.
 - **ContextVar Override Engine**:
@@ -31,8 +40,8 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
   - Guarantees strict LIFO nesting, thread isolation, and asyncio task inheritance.
 
 ### 3. CP0 Diagnostic Alignment (`reproduce_drift.py` & `test_cp0_diagnostics.py`)
-- **Claim 2 Refinement**: Evaluates approved NEW vs. RESTORE lifecycle contracts, high-water mark advancement, step synchronization, and revalidation idempotence. Reports `OBSERVED INVARIANT` (`is_defect=False`) on healthy code and dynamically reproduces regressions when simulated.
-- **Regression Tests**: Added `test_claim_2_approved_lifecycle_returns_observed_invariant`, `test_claim_2_simulated_broken_restore_returns_reproduced`, and `test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced`.
+- **Claim 2 Dynamic High-Water Mark**: Evaluates approved NEW vs. RESTORE lifecycle contracts. Dynamically sets `target_restore_v = v2 + 100`, guaranteeing it strictly exceeds pre-restoration allocator state regardless of test order. Verifies allocator advances > `target_restore_v`, step synchronization, and revalidation idempotence. Reports `OBSERVED INVARIANT` (`is_defect=False`) on healthy code.
+- **Regression Tests**: Added `test_claim_2_approved_lifecycle_returns_observed_invariant`, `test_claim_2_simulated_broken_restore_returns_reproduced`, `test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced`, and `test_claim_2_simulated_broken_high_water_advancement_returns_reproduced`.
 
 ### 4. Atomic Compatibility Migration (`idd_core.py`)
 - Re-exports all canonical symbols from `idd_models` and `idd_registry`.
@@ -47,14 +56,14 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 - `tools/diagnostics/reproduce_drift.py`: Migrated probe 7 and probe 8 to `with idd_core.override_global_registry(reg):`.
 
 ### 6. Verification Results
-- **Unit & Integration Suite**: 487 passed, 9 skipped in 18.25s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
+- **Unit & Integration Suite**: 508 passed, 9 skipped in 16.70s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
 - **Models Test Suite**: 29 passed in 2.36s (`tests/unit/test_models.py`).
-- **Registry Test Suite**: 32 passed, 1 skipped in 2.55s (`tests/unit/test_registry.py`).
-- **CP0 Diagnostics Suite**: 14 passed in 3.45s (`tools/diagnostics/test_cp0_diagnostics.py`).
+- **Registry Test Suite**: 53 passed, 1 skipped in 2.65s (`tests/unit/test_registry.py`).
+- **CP0 Diagnostics Suite**: 15 passed in 3.35s (`tools/diagnostics/test_cp0_diagnostics.py`).
 - **Drift Probes**: 12/12 evaluated cleanly (`tools/diagnostics/reproduce_drift.py --json`: 6 reproduced, 5 observed invariants, 1 static only, 0 blocked).
 - **Core & Memory Suites**: 110 passed in 3.44s (`test_intelligent_data_detective.py`, `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py`, `test_validate_notebook_integrity.py`).
 - **Prompt Suites**: 17 passed in 2.25s (`test_prompt_formatting.py`, `test_prompt_template_fixes.py`).
-- **Error Handling Suite**: 15 passed, 1 deselected in 0.70s (`test_error_handling_framework.py`).
+- **Error Handling Suite**: 15 passed, 1 deselected in 0.67s (`test_error_handling_framework.py`).
 - **Notebook Integrity & State Graph**:
   - `validate_notebook_integrity.py`: PASSED (99 cells, all code cells compiled cleanly).
   - `validate_graph.py`: PASSED (15 nodes, 33 edges, 0 dead-ends, 70 state fields).

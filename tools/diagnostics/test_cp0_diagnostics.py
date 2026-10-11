@@ -12,28 +12,13 @@ Validates that:
 8. Machine-readable JSON output contains complete environment and summary metadata.
 """
 
-import json
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock
-
 from tools.diagnostics import reproduce_drift
 from tools.diagnostics.reproduce_drift import (
     ClaimResult,
     probe_claim_1,
     probe_claim_2,
-    probe_claim_3,
-    probe_claim_4,
-    probe_claim_5,
-    probe_claim_6,
-    probe_claim_7,
-    probe_claim_8,
-    probe_claim_9,
-    probe_claim_10,
     probe_claim_11,
     probe_claim_12,
-    _extract_production_delete_rows_tool,
-    _InMemoryRegistry,
 )
 from tools.diagnostics.probe_notebook_cells import scan_notebook, REPO_ROOT
 
@@ -83,6 +68,27 @@ def test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced(monkeyp
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
     assert "new_allocated=False" in res.defect_or_contract_explanation
+
+
+def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(monkeypatch):
+    """Verify that restoration failing to advance allocator high-water mark reports REPRODUCED."""
+    import idd_core
+
+    orig_restore = idd_core.Plan.from_persisted_snapshot
+
+    def broken_restore(cls, snapshot):
+        prev_version = cls._current_version
+        p = orig_restore(snapshot)
+        # Revert high-water mark so restore doesn't advance it
+        cls.reset_counter(prev_version)
+        return p
+
+    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+
+    res = probe_claim_2()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "high_water_advanced=False" in res.defect_or_contract_explanation
 
 
 def test_static_only_finding_not_promoted_to_dynamic():
