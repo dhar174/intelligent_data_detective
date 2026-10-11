@@ -1,9 +1,13 @@
 """
-idd_core.py — Sanitized, importable core extracted from
-IntelligentDataDetective_beta_v5.ipynb for testing purposes.
-Shell magics and Colab-specific code are removed.
-Bug fix: CompletedStepsAndTasks._inject_and_dedupe now returns dedup_list (sorted)
-instead of list(seen.values()) (unsorted).
+idd_core.py — Transitional compatibility façade for Intelligent Data Detective.
+
+Historically extracted from IntelligentDataDetective_beta_v5.ipynb for testing.
+During the canonical core migration (Issue #140 / Issue #156):
+- Planning and step synchronization models have been extracted to `idd_models.py`.
+- DataFrameRegistry and context isolation helpers have been extracted to `idd_registry.py`.
+- This module serves as a backward-compatible façade re-exporting canonical symbols
+  alongside transitional tools, adapters, and helper functions until subsequent checkpoints
+  (CP2-CP5) establish dedicated canonical modules.
 """
 from __future__ import annotations
 import os, sys, re, json, uuid, hashlib, shutil, logging, functools
@@ -28,6 +32,28 @@ from pydantic import (
 )
 from typing import List, ClassVar
 from operator import add, or_ as bool_or
+
+# Canonical models and registry imports (Checkpoint 1)
+from idd_models import (
+    BaseNoExtrasModel,
+    ProgressReport,
+    PlanStep,
+    Plan,
+    CompletedStepsAndTasks,
+    Triplet,
+    _norm,
+    _triplet_from_raw,
+    _sort_plan_steps,
+    _assert_sorted_completed_no_dups,
+    _reduce_plan_keep_sorted,
+)
+from idd_registry import (
+    DataFrameRegistry,
+    DataFrameRegistryError,
+    get_global_registry,
+    set_global_registry,
+    override_global_registry,
+)
 
 # Optional LangChain imports (needed for MyChatOpenai and State only)
 try:
@@ -383,43 +409,6 @@ if HAS_LANGCHAIN:
                         message["role"] = "developer"
             return payload
 
-# ---------------------------------------------------------------------------
-# Base Pydantic model
-# ---------------------------------------------------------------------------
-
-class BaseNoExtrasModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", json_schema_extra={"additionalProperties": False})
-    reply_msg_to_supervisor: str = Field(
-        ...,
-        description=(
-            "Message to send to the supervisor. Can be a simple message stating completion "
-            "of the task, or it can be detailed information about the result, or you can put "
-            "any questions for the supervisor here as well. This is ONLY for sending messages "
-            "to the supervisor, NOT to worker agents. If you are the/a supervisor (or the "
-            "router, planner, or progress reporter), this field should be empty unless you are "
-            "expecting a reply from the main supervisor, NOT from a worker agent."
-        ),
-    )
-    finished_this_task: bool = Field(
-        ...,
-        description=(
-            "Whether this assigned task represented by this object has been completed. For "
-            "example, if it is a Router object, this field should be True if the route "
-            "decision has been made. Another example, if it is a CleaningMetadata object, "
-            "this field should be True if the cleaning has been completed."
-        ),
-    )
-    expect_reply: bool = Field(
-        ...,
-        description=(
-            "Whether you expect a reply from the supervisor based on content of "
-            "'reply_msg_to_supervisor'. This is ONLY for receiving replies from the supervisor, "
-            "not from worker agents. If you are the/a supervisor (or the router, planner, or "
-            "progress reporter), only set this to True if you are expecting a reply from the "
-            "main supervisor, NOT from a worker agent. Worker agents will always reply to "
-            "'next_agent_prompt' when routed to."
-        ),
-    )
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -549,157 +538,9 @@ class ListOfFiles(BaseNoExtrasModel):
     files: List[FileResult] = Field(...)
 
 
-class DataFrameRegistryError(Exception):
-    """Exception raised for errors in the DataFrameRegistry."""
-    def __init__(self, message):
-        self.message = message
-        super().__init__(self.message)
+# Core planning models (PlanStep, Plan, CompletedStepsAndTasks, ProgressReport,
+# DataFrameRegistryError) are canonical in idd_models.py and idd_registry.py.
 
-    def __str__(self): return self.message
-    def __repr__(self): return self.message
-    def to_dict(self): return {"error": self.message}
-
-
-class ProgressReport(BaseNoExtrasModel):
-    latest_progress: str = Field(..., description="Latest progress of the agent.")
-
-
-# Forward-declared helpers needed by PlanStep/Plan/CompletedStepsAndTasks
-def _sort_plan_steps(steps: List["PlanStep"]) -> List["PlanStep"]:
-    norm = [s if isinstance(s, PlanStep) else PlanStep.model_validate(s) for s in steps or []]
-    return sorted(norm, key=lambda s: s.step_number)
-
-
-Triplet = Tuple[int, str, str]  # (step_number, step_name, step_description)
-
-
-def _assert_sorted_completed_no_dups(steps: List["PlanStep"]) -> List["PlanStep"]:
-    nums = [s.step_number for s in steps]
-    if nums != sorted(nums):
-        raise ValueError("completed_steps must be sorted ascending by step_number.")
-    for s in steps:
-        if s.is_step_complete is not True:
-            raise ValueError("All completed_steps must have is_step_complete=True.")
-
-    seen: set[Triplet] = set()
-    seen_nums: set[int] = set()
-    for s in steps:
-        t = (s.step_number, s.step_name, s.step_description)
-        if t in seen:
-            raise ValueError(f"Duplicate completed step detected: {t}")
-        if s.step_number in seen_nums:
-            raise ValueError(f"Duplicate step_number {s.step_number} in completed_steps")
-        seen.add(t)
-        seen_nums.add(s.step_number)
-    return steps
-
-
-def _norm(s: Optional[str]) -> str:
-    return (s or "").strip()
-
-
-def _triplet_from_raw(d: Dict[str, Any]) -> Triplet:
-    return (int(d.get("step_number")), _norm(d.get("step_name")), _norm(d.get("step_description")))
-
-
-class PlanStep(BaseNoExtrasModel):
-    step_number: int = Field(..., description="Step number of the plan.")
-    step_name: str = Field(..., description="Name of the step.")
-    step_description: str = Field(..., description="Description and detailed instructions for the step.")
-    is_step_complete: bool = Field(..., description="Whether the step is complete.")
-    plan_version: int = Field(..., description="Numeric version of the plan.")
-
-
-class Plan(BaseNoExtrasModel):
-    plan_version: int = Field(..., description="Numeric version of the plan.")
-    plan_title: str = Field(..., description="Title of the plan.")
-    plan_summary: str = Field(..., description="Summary of the plan.")
-    plan_steps: Annotated[List[PlanStep], AfterValidator(_sort_plan_steps)] = Field(...)
-
-    _lock: ClassVar[threading.Lock] = threading.Lock()
-    _counter: ClassVar[itertools.count] = itertools.count(1)
-    _ver_assigned: bool = PrivateAttr(default=False)
-
-    @field_validator("plan_steps", mode="after")
-    @classmethod
-    def _sync_step_versions_on_assignment(cls, steps: List["PlanStep"], info: ValidationInfo) -> List["PlanStep"]:
-        pv = info.data.get("plan_version")
-        if pv is None:
-            return steps
-        steps = [s if s.plan_version == pv else s.model_copy(update={"plan_version": pv}) for s in steps]
-        nums = [s.step_number for s in steps]
-        if any(b <= a for a, b in zip(nums, nums[1:])):
-            raise ValueError(f"plan_steps must be strictly increasing by step_number, got {nums}")
-        return steps
-
-    @model_validator(mode="after")
-    def _sync_steps_and_assert_increasing(self) -> "Plan":
-        if not self._ver_assigned:
-            with self._lock:
-                v = Plan._counter.__next__()
-            object.__setattr__(self, "plan_version", v)
-            self._ver_assigned = True
-
-        pv = self.plan_version
-        self.plan_steps = [
-            s if s.plan_version == pv else s.model_copy(update={"plan_version": pv})
-            for s in self.plan_steps
-        ]
-
-        nums = [s.step_number for s in self.plan_steps]
-        if any(b <= a for a, b in zip(nums, nums[1:])):
-            raise ValueError(f"plan_steps must be strictly increasing by step_number, got {nums}")
-        return self
-
-
-class CompletedStepsAndTasks(BaseNoExtrasModel):
-    completed_steps: Annotated[List[PlanStep], AfterValidator(_assert_sorted_completed_no_dups)] = Field(...)
-    finished_tasks: List[str] = Field(..., description="List of tasks that have been completed based on the steps of the Plan")
-    progress_report: ProgressReport = Field(...)
-
-    @field_validator("completed_steps", mode="before")
-    @classmethod
-    def _inject_and_dedupe(cls, v, info: ValidationInfo):
-        if not isinstance(v, list):
-            return v
-        plan: Optional[Plan] = (info.context or {}).get("plan")
-        pv = plan.plan_version if plan else None
-
-        seen: Dict[Triplet, Dict[str, Any]] = {}
-        for item in v:
-            d = (item.model_dump() if isinstance(item, PlanStep)
-                 else dict(item) if hasattr(item, "items") or isinstance(item, dict)
-                 else {})
-            if pv is not None:
-                d["plan_version"] = pv
-            key = _triplet_from_raw(d)
-
-            prev = seen.get(key)
-            cand_score = (int(d.get("plan_version", -1)), bool(d.get("is_step_complete", False)))
-            prev_score = (-1, False) if prev is None else (int(prev.get("plan_version", -1)), bool(prev.get("is_step_complete", False)))
-
-            if prev is None or cand_score >= prev_score:
-                seen[key] = d
-        # BUG FIX: return dedup_list (sorted ascending) instead of list(seen.values())
-        dedup_list = list(seen.values())
-        dedup_list.sort(key=lambda d: int(d.get("step_number", 10**9)))
-        return dedup_list
-
-    @field_validator("completed_steps", mode="after")
-    @classmethod
-    def _sorted_no_dups_and_subset(cls, steps: List[PlanStep], info: ValidationInfo) -> List[PlanStep]:
-        nums = [s.step_number for s in steps]
-        if nums != sorted(nums):
-            raise ValueError("completed_steps must be sorted ascending by step_number.")
-
-        plan: Optional[Plan] = (info.context or {}).get("plan")
-        if plan:
-            allowed = {(ps.step_number, _norm(ps.step_name), _norm(ps.step_description)) for ps in plan.plan_steps}
-            for s in steps:
-                k = (s.step_number, _norm(s.step_name), _norm(s.step_description))
-                if k not in allowed:
-                    raise ValueError(f"Completed step {k} is not present in the supplied Plan.")
-        return steps
 
 
 class ToDoList(BaseNoExtrasModel):
@@ -767,222 +608,13 @@ class ConversationalResponse(BaseNoExtrasModel):
     response: str = Field(..., description="A conversational response to the supervisors message.")
 
 # ---------------------------------------------------------------------------
-# DataFrame Registry
+# DataFrame Registry (Canonical implementation in idd_registry.py)
 # ---------------------------------------------------------------------------
 
-class DataFrameRegistry:
-    def __init__(self, capacity=20):
-        self._lock = threading.RLock()
-        self.registry: Dict[str, dict] = {}
-        self.df_id_to_raw_path: Dict[str, str] = {}
-        self.cache = OrderedDict()
-        self.capacity = capacity
+def get_global_df_registry() -> DataFrameRegistry:
+    """Return the active DataFrameRegistry instance."""
+    return get_global_registry()
 
-    def _norm_path(self, p: str | PathlibPath) -> PathlibPath:
-        return PathlibPath(p).expanduser().resolve() if isinstance(p, (str, PathlibPath)) else PathlibPath(p)
-
-    def _write_df(self, df: pd.DataFrame, path: PathlibPath) -> bool:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            suf = path.suffix.lower()
-            if suf == ".csv":
-                df.to_csv(path, index=False)
-            elif suf == ".parquet":
-                df.to_parquet(path, index=False)
-            elif suf == ".pkl":
-                df.to_pickle(path)
-            elif suf == ".json":
-                df.to_json(path, orient="records")
-            else:
-                df.to_csv(path, index=False)
-            return True
-        except Exception as e:
-            print(f"Error writing DataFrame to {path}: {e}")
-            return False
-
-    def _read_df(self, path: PathlibPath) -> pd.DataFrame:
-        suf = path.suffix.lower()
-        if suf == ".csv":
-            return pd.read_csv(path)
-        if suf == ".parquet":
-            return pd.read_parquet(path)
-        if suf == ".pkl":
-            return pd.read_pickle(path)
-        if suf == ".json":
-            return pd.read_json(path, orient="records")
-        return pd.read_csv(path)
-
-    def _touch_cache(self, df_id: str, df: pd.DataFrame) -> None:
-        self.cache[df_id] = df
-        self.cache.move_to_end(df_id)
-        if len(self.cache) > self.capacity:
-            evicted_id, _ = self.cache.popitem(last=False)
-            if evicted_id in self.registry:
-                self.registry[evicted_id]["df"] = None
-
-    def write_dataframe_to_csv_file(self, df: pd.DataFrame, file_path: str) -> bool:
-        with self._lock:
-            try:
-                df.to_csv(file_path, index=False)
-                return True
-            except Exception as e:
-                print(f"Error writing DataFrame to {file_path}: {e}")
-                return False
-
-    def write_dataframe_to_parquet_file(self, df: pd.DataFrame, file_path: str) -> bool:
-        with self._lock:
-            try:
-                df.to_parquet(file_path, index=False)
-                return True
-            except Exception as e:
-                print(f"Error writing DataFrame to {file_path}: {e}")
-                return False
-
-    def write_dataframe_to_pickle_file(self, df: pd.DataFrame, file_path: str) -> bool:
-        with self._lock:
-            try:
-                df.to_pickle(file_path)
-                return True
-            except Exception as e:
-                print(f"Error writing DataFrame to {file_path}: {e}")
-                return False
-
-    def write_dataframe_to_json_file(self, df: pd.DataFrame, file_path: str) -> bool:
-        with self._lock:
-            try:
-                df.to_json(file_path, orient="records")
-                return True
-            except Exception as e:
-                print(f"Error writing DataFrame to {file_path}: {e}")
-                return False
-
-    def write_dataframe_to_file(self, df: pd.DataFrame, file_path: str) -> bool:
-        with self._lock:
-            return self._write_df(df, self._norm_path(file_path))
-
-    def register_dataframe(self, df=None, df_id=None, raw_path=""):
-        with self._lock:
-            if df_id is None:
-                df_id = str(uuid.uuid4())
-            path = self._norm_path(raw_path)
-
-            if df_id in self.registry:
-                self.registry[df_id]["df"] = df
-                if raw_path:
-                  self.registry[df_id]["raw_path"] = str(path)
-                  self.df_id_to_raw_path[df_id] = str(path)  # FIX: keep mapping in sync\n",
-                elif df is not None:
-                  # If registered directly from memory (no raw_path), try to persist to default
-                  try:
-                      default_path = PathlibPath(getattr(self, 'data_dir', WORKING_DIRECTORY)) / f"{df_id}.csv"
-                      self._write_df(df, default_path)
-                      self.df_id_to_raw_path[df_id] = str(default_path)
-                      self.registry[df_id]["raw_path"] = str(default_path)
-                  except Exception as e:
-                      print(f"Warning: could not persist in-memory DataFrame {df_id}: {e}")
-                if df is not None:
-                    self._touch_cache(df_id, df)
-                return df_id
-            if df is None and raw_path == "":
-                print("Either df or raw_path must be provided")
-                return None
-            if raw_path == "" or raw_path is None:
-                raw_path = str((WORKING_DIRECTORY / f"{df_id}.csv").resolve())
-            # Recompute path after raw_path may have been updated above
-            path = self._norm_path(raw_path)
-
-            if df is None and not path.exists():
-                print("Either provide a DataFrame or a valid raw_path")
-                return None
-            if not path.parent.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-
-            if df is not None and (not path.exists() or not path.is_file()):
-                if not self._write_df(df, path):
-                    return None
-
-            if df is None:
-                try:
-                    df = self._read_df(path)
-                except Exception as e:
-                    print(f"Error loading DataFrame from {path}: {e}")
-                    return None
-            if df is None and raw_path is not None and not os.path.exists(raw_path):
-                print(f"File {raw_path} does not exist")
-                return None
-
-            self.registry[df_id] = {"df": df, "raw_path": str(raw_path)}
-            self.df_id_to_raw_path[df_id] = str(raw_path)
-            if df is not None:
-                self._touch_cache(df_id, df)
-            return df_id
-
-    def get_dataframe(self, df_id: str, load_if_not_exists: bool = False) -> Optional[pd.DataFrame]:
-        with self._lock:
-            if df_id in self.cache:
-                self.cache.move_to_end(df_id)
-                return self.cache[df_id]
-
-            info = self.registry.get(df_id)
-            if not info:
-                return None
-
-            df = info.get("df")
-            if df is not None:
-                self._touch_cache(df_id, df)
-                return df
-
-            if load_if_not_exists:
-                path = self._norm_path(str(info.get("raw_path")))
-                try:
-                    loaded = self._read_df(path)
-                except FileNotFoundError:
-                    return None
-                except Exception as e:
-                    print(f"Error loading DataFrame from {path}: {e}")
-                    return None
-                self.registry[df_id]["df"] = loaded
-                self._touch_cache(df_id, loaded)
-                return loaded
-
-            return None
-
-    def remove_dataframe(self, df_id: str) -> None:
-        with self._lock:
-            self.registry.pop(df_id, None)
-            self.cache.pop(df_id, None)
-            self.df_id_to_raw_path.pop(df_id, None)
-
-    def get_raw_path_from_id(self, df_id: str) -> Optional[str]:
-        with self._lock:
-            return self.df_id_to_raw_path.get(df_id)
-
-    def get_id_from_raw_path(self, raw_path: str) -> Optional[str]:
-        with self._lock:
-            target = str(self._norm_path(raw_path))
-            for df_id, path in self.df_id_to_raw_path.items():
-                if str(self._norm_path(path)) == target:
-                    return df_id
-            return None
-
-    def has_df(self, df_id: str) -> bool:
-        with self._lock:
-            return df_id in self.registry
-
-    def ids(self) -> List[str]:
-        with self._lock:
-            return list(self.registry.keys())
-
-    def size(self) -> int:
-        with self._lock:
-            return len(self.registry)
-
-
-global_df_registry = DataFrameRegistry()
-
-
-def get_global_df_registry():
-    return global_df_registry
 
 # ---------------------------------------------------------------------------
 # Additional reducers (depend on Plan/PlanStep, so placed after them)
@@ -1019,20 +651,7 @@ def last_wins(a, b):
     return b
 
 
-def _reduce_plan_keep_sorted(a: Optional[Plan], b: Optional[Plan]) -> Optional[Plan]:
-    if a is None: return b
-    if b is None: return a
-
-    steps = []
-    if a.plan_steps: steps.extend(a.plan_steps)
-    if b.plan_steps: steps.extend(b.plan_steps)
-
-    norm = [s if isinstance(s, PlanStep) else PlanStep.model_validate(s) for s in steps]
-    by_num = {s.step_number: s for s in norm}
-    merged_sorted_steps = [by_num[k] for k in sorted(by_num)]
-
-    merged = {**a.model_dump(), **b.model_dump(), "plan_steps": merged_sorted_steps}
-    return Plan.model_validate(merged)
+# _reduce_plan_keep_sorted is canonical in idd_models.py
 
 # State TypedDict is intentionally excluded from idd_core.
 # It requires langgraph.graph.message.add_messages and inherits from AgentState,
@@ -1147,16 +766,17 @@ def validate_dataframe_exists(df_id: str) -> bool:
         return False
 
     try:
-        df = global_df_registry.get_dataframe(df_id)
+        reg = get_global_registry()
+        df = reg.get_dataframe(df_id)
         if df is not None:
             return not df.empty
 
-        raw_path = global_df_registry.get_raw_path_from_id(df_id)
+        raw_path = reg.get_raw_path_from_id(df_id)
         if raw_path and os.path.exists(raw_path):
             try:
                 df = pd.read_csv(raw_path)
                 if df is not None and not df.empty:
-                    global_df_registry.register_dataframe(df, df_id, raw_path)
+                    reg.register_dataframe(df, df_id, raw_path)
                     return True
             except Exception:
                 return False
@@ -1223,3 +843,17 @@ def handle_tool_errors(func):
             return error_msg
 
     return wrapper
+
+
+# ---------------------------------------------------------------------------
+# Module getattr for backward-compatible dynamic registry resolution
+# ---------------------------------------------------------------------------
+
+def __getattr__(name: str) -> Any:
+    if name == "global_df_registry":
+        return get_global_registry()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + ["global_df_registry"])

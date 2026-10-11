@@ -38,32 +38,51 @@ from tools.diagnostics.reproduce_drift import (
 from tools.diagnostics.probe_notebook_cells import scan_notebook, REPO_ROOT
 
 
-def test_reproduced_defect_returns_reproduced():
-    """Verify that an actual reproduced defect returns REPRODUCED with is_defect=True."""
+def test_claim_2_approved_lifecycle_returns_observed_invariant():
+    """Verify that the approved Plan lifecycle contract reports OBSERVED INVARIANT with is_defect=False."""
+    res = probe_claim_2()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "DYNAMIC"
+    assert "NEW plans allocate monotonically" in res.observed_behavior
+    assert "RESTORE preserved snapshot" in res.observed_behavior
+
+
+def test_claim_2_simulated_broken_restore_returns_reproduced(monkeypatch):
+    """Verify that a broken restoration (e.g. failing to preserve snapshot version) reports REPRODUCED."""
+    import idd_core
+
+    orig_restore = idd_core.Plan.from_persisted_snapshot
+
+    def broken_restore(cls, snapshot):
+        p = orig_restore(snapshot)
+        object.__setattr__(p, "plan_version", 1)
+        return p
+
+    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+
     res = probe_claim_2()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
-    assert res.evidence_type == "DYNAMIC"
+    assert "restore_preserved=False" in res.defect_or_contract_explanation
 
 
-def test_simulated_corrected_implementation_returns_not_reproduced(monkeypatch):
-    """Verify that a simulated fix causes the diagnostic classification to flip to NOT REPRODUCED."""
-    # In Claim 2, Plan unconditionally overwrites caller-supplied plan_version.
-    # Simulate a corrected Plan model where plan_version is preserved.
+def test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced(monkeypatch):
+    """Verify that broken new-plan creation (e.g. failing to allocate monotonic version) reports REPRODUCED."""
     import idd_core
 
-    class MockPlan:
-        def __init__(self, plan_title, plan_summary, plan_steps, plan_version, **kwargs):
-            self.plan_title = plan_title
-            self.plan_summary = plan_summary
-            self.plan_steps = plan_steps
-            self.plan_version = plan_version  # Preserved!
+    orig_init = idd_core.Plan.__init__
 
-    monkeypatch.setattr(idd_core, "Plan", MockPlan)
+    def broken_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        object.__setattr__(self, "plan_version", 1)
+
+    monkeypatch.setattr(idd_core.Plan, "__init__", broken_init)
 
     res = probe_claim_2()
-    assert res.classification == "NOT REPRODUCED"
-    assert res.is_defect is False
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "new_allocated=False" in res.defect_or_contract_explanation
 
 
 def test_static_only_finding_not_promoted_to_dynamic():
@@ -185,9 +204,6 @@ def test_claim_12_production_tool_cases_pass():
 
 def test_claim_1_thread_scheduling_order_independence(monkeypatch):
     """Verify that Claim 1 evaluates uniqueness and contiguous range without thread-order scheduling fragility."""
-    import idd_core
-
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
     # Execute probe_claim_1 directly
     res = probe_claim_1()
     assert res.classification == "OBSERVED INVARIANT"

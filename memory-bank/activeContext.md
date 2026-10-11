@@ -522,4 +522,48 @@ This is now the strongest completion baseline:
 - `git diff --check`: 0 errors.
 <!-- session-curated:2026-09-23-pr130-tool-message-conversion:end -->
 
+<!-- session-curated:2026-10-11-cp1-canonical-models-registry:start -->
+## 2026-10-11 — Checkpoint 1 (CP1): Canonical Models and ContextVar-isolated DataFrameRegistry (Issue #156, PR #157)
+
+### Scope Delivered
+- Established `idd_models.py` with canonical planning models and reducers:
+  - `BaseNoExtrasModel` contract (`extra="forbid"`, `reply_msg_to_supervisor`, `finished_this_task`, `expect_reply`).
+  - Mandatory 6-point `Plan` lifecycle contract:
+    - New plan construction (`Plan(...)` / `model_validate(data)`) allocates fresh monotonic version under lock even if draft input supplied `plan_version=1`.
+    - Explicit restoration (`Plan.from_persisted_snapshot(data)` / `model_validate(data, context={"restore": True})`) preserves stored snapshot version without reallocating.
+    - Allocator high-water mark advances on restored version under lock so subsequent new plans receive versions > restored.
+    - Step versions synchronized to parent version in both paths.
+    - `Plan.reset_counter(start=1)` for deterministic test isolation.
+    - `Plan._counter` iterator-compliant wrapper for backward compatibility.
+  - `CompletedStepsAndTasks` with RC-2 ascending deduplication return and duplicate step number rejection.
+  - `_reduce_plan_keep_sorted` state reducer.
+- Established `idd_registry.py` with canonical DataFrameRegistry:
+  - Thread-safe LRU caching with `RLock`.
+  - Multi-format reload and disk persistence (.csv, .parquet, .pkl, .json).
+  - `clear()` user file safety guarantee (never deletes disk files).
+  - `ContextVar` override engine with token-based reset in `finally`, LIFO nesting, and thread/asyncio context isolation.
+- Atomically refactored `idd_core.py`:
+  - Re-exports all canonical symbols.
+  - Module-level `__getattr__` exposing `global_df_registry` delegating dynamically to `get_global_registry()`.
+  - Internal lookups in `validate_dataframe_exists` and `get_global_df_registry` updated to call `get_global_registry()`.
+  - String tool error return contract and boolean dataframe validation contract preserved until CP2.
+- Migrated all direct module assignments:
+  - `tests/conftest.py` (`global_registry_reset` fixture).
+  - `tests/unit/test_handle_tool_errors.py` (eviction tests).
+  - `tools/diagnostics/reproduce_drift.py` (probe 7 and probe 8).
+- Zero notebook churn: exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+
+### Verification Baseline
+- `test_validate_run.py tests/unit tests/integration -q`: **478 passed, 9 skipped** in 17.62s (15 new CP1 unit tests added).
+- Core & memory suites: **77 passed** in 1.46s.
+- Prompt suites: **17 passed** in 2.21s.
+- Notebook integrity suite: **33 passed** in 2.28s.
+- Error handling framework: **15 passed, 1 deselected** in 0.72s.
+- CP0 diagnostics suite: **13 passed** in 3.70s.
+- Drift diagnostics: **12/12 evaluated cleanly** with 0 blocked, 0 failures.
+- Notebook validation: **99 cells compiled cleanly**, 15 nodes / 33 edges state graph verified.
+- Draft PR opened: [PR #157](https://github.com/dhar174/intelligent_data_detective/pull/157).
+- Status: **STOPPED FOR INDEPENDENT CP1 CODE REVIEW**.
+<!-- session-curated:2026-10-11-cp1-canonical-models-registry:end -->
+
 

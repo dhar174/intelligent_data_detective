@@ -229,3 +229,203 @@ class TestReducePlanKeepSorted:
         plan_b = make_plan(core, steps=[make_step(1, "New Name", "New", is_complete=True)])
         merged = core._reduce_plan_keep_sorted(plan_a, plan_b)
         assert merged.plan_steps[0].step_name == "New Name"
+
+    def test_reducer_preserves_winning_plan_version_without_increment(self, core):
+        """Merging Plan A (v1) and Plan B (v2) yields v2, not v3."""
+        core.Plan.reset_counter(start=1)
+        plan_a = make_plan(core, steps=[make_step(1, "A", "Do A")], title="Plan A")
+        plan_b = make_plan(core, steps=[make_step(2, "B", "Do B")], title="Plan B")
+        assert plan_a.plan_version == 1
+        assert plan_b.plan_version == 2
+
+        merged = core._reduce_plan_keep_sorted(plan_a, plan_b)
+        assert merged.plan_version == 2, f"Expected winning version 2, got {merged.plan_version}"
+        assert all(s.plan_version == 2 for s in merged.plan_steps), "All merged steps must reflect parent version"
+
+        # Subsequent new plan must receive v3 (reducer did not advance counter to 3)
+        plan_c = make_plan(core, title="Plan C")
+        assert plan_c.plan_version == 3
+
+    def test_reducer_repeated_merges_version_stable(self, core):
+        """Repeated reduction of the same plans remains version-stable."""
+        core.Plan.reset_counter(start=10)
+        plan_a = make_plan(core, steps=[make_step(1, "A", "Do A")])
+        plan_b = make_plan(core, steps=[make_step(2, "B", "Do B")])
+        merged1 = core._reduce_plan_keep_sorted(plan_a, plan_b)
+        merged2 = core._reduce_plan_keep_sorted(plan_a, merged1)
+        assert merged1.plan_version == merged2.plan_version == plan_b.plan_version
+
+
+class TestPlanLifecycleSemantics:
+    """Comprehensive test suite for Checkpoint 1 Plan lifecycle semantics (Issue #156)."""
+
+    def test_new_plan_auto_increments_monotonic_version(self, core):
+        """Normal construction allocates fresh monotonic version even if draft provided version=1."""
+        core.Plan.reset_counter(start=1)
+        p1 = make_plan(core, title="Plan 1", version=1)
+        p2 = make_plan(core, title="Plan 2", version=1)
+        assert p1.plan_version == 1
+        assert p2.plan_version == 2
+        assert p2.plan_version > p1.plan_version
+
+    def test_from_persisted_snapshot_preserves_version(self, core):
+        """Restoration entrypoint preserves the stored snapshot version without reallocating."""
+        core.Plan.reset_counter(start=1)
+        snapshot = {
+            "plan_title": "Restored Plan",
+            "plan_summary": "Summary",
+            "plan_steps": [make_step(1, "A", "Do A", is_complete=True, version=42)],
+            "plan_version": 42,
+            **_BASE_FIELDS,
+        }
+        restored = core.Plan.from_persisted_snapshot(snapshot)
+        assert restored.plan_version == 42
+        assert restored.plan_steps[0].plan_version == 42
+
+    def test_validation_context_restore_preserves_version(self, core):
+        """Explicit model_validate with context={'restore': True} preserves version."""
+        core.Plan.reset_counter(start=1)
+        snapshot = {
+            "plan_title": "Restored Plan",
+            "plan_summary": "Summary",
+            "plan_steps": [make_step(1, "A", "Do A", is_complete=True, version=77)],
+            "plan_version": 77,
+            **_BASE_FIELDS,
+        }
+        restored = core.Plan.model_validate(snapshot, context={"restore": True})
+        assert restored.plan_version == 77
+        assert restored.plan_steps[0].plan_version == 77
+
+    def test_persisted_snapshot_advances_high_water_mark(self, core):
+        """Restoring a snapshot advances the allocator high-water mark for future new plans."""
+        core.Plan.reset_counter(start=1)
+        p1 = make_plan(core, title="Plan 1")
+        assert p1.plan_version == 1
+
+        snapshot = {
+            "plan_title": "Restored 42",
+            "plan_summary": "Summary",
+            "plan_steps": [make_step(1, "A", "Do A", is_complete=True, version=42)],
+            "plan_version": 42,
+            **_BASE_FIELDS,
+        }
+        restored = core.Plan.from_persisted_snapshot(snapshot)
+        assert restored.plan_version == 42
+
+        # Subsequent new plan MUST receive version > 42 (i.e. 43)
+        p2 = make_plan(core, title="Plan 2")
+        assert p2.plan_version == 43
+        assert p2.plan_version > restored.plan_version
+
+    def test_nested_step_versions_synchronized_to_parent(self, core):
+        """Step versions are always synchronized to parent in both creation and restoration."""
+        core.Plan.reset_counter(start=10)
+        # Steps with mismatched versions
+        steps = [
+            make_step(1, "A", "Do A", is_complete=False, version=999),
+            make_step(2, "B", "Do B", is_complete=False, version=888),
+        ]
+        p_new = make_plan(core, steps=steps)
+        assert p_new.plan_version == 10
+        assert all(s.plan_version == 10 for s in p_new.plan_steps)
+
+        snapshot = {
+            "plan_title": "Snapshot",
+            "plan_summary": "Summary",
+            "plan_steps": steps,
+            "plan_version": 55,
+            **_BASE_FIELDS,
+        }
+        p_restored = core.Plan.from_persisted_snapshot(snapshot)
+        assert p_restored.plan_version == 55
+        assert all(s.plan_version == 55 for s in p_restored.plan_steps)
+
+    def test_reset_counter_isolation(self, core):
+        """reset_counter resets allocator for deterministic test isolation."""
+        core.Plan.reset_counter(start=500)
+        p = make_plan(core)
+        assert p.plan_version == 500
+        core.Plan.reset_counter(start=1)
+
+    def test_concurrent_plan_allocation(self, core):
+        """Concurrent allocation across threads produces strictly unique versions."""
+        import threading
+        core.Plan.reset_counter(start=1)
+        allocated_versions = []
+        lock = threading.Lock()
+
+        def worker():
+            p = make_plan(core)
+            with lock:
+                allocated_versions.append(p.plan_version)
+
+        threads = [threading.Thread(target=worker) for _ in range(30)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(allocated_versions) == 30
+        assert len(set(allocated_versions)) == 30, "Duplicate plan versions detected in concurrent allocation!"
+
+    def test_revalidation_of_existing_instance_is_idempotent(self, core):
+        """Plan.model_validate(existing_plan) preserves existing plan_version."""
+        core.Plan.reset_counter(start=1)
+        p = make_plan(core, title="Plan 1")
+        assert p.plan_version == 1
+
+        revalidated = core.Plan.model_validate(p)
+        assert revalidated.plan_version == 1
+
+        # High-water mark not advanced by revalidation
+        next_p = make_plan(core, title="Plan 2")
+        assert next_p.plan_version == 2
+
+    def test_roundtrip_snapshot_rehydration_preserves_version(self, core):
+        """Roundtrip rehydration via model_dump() and from_persisted_snapshot() preserves version."""
+        core.Plan.reset_counter(start=5)
+        p = make_plan(core, steps=[make_step(1, "A", "Do A"), make_step(2, "B", "Do B")])
+        dumped = p.model_dump()
+        rehydrated = core.Plan.from_persisted_snapshot(dumped)
+        assert rehydrated.plan_version == p.plan_version
+        assert all(s.plan_version == p.plan_version for s in rehydrated.plan_steps)
+
+    def test_interleaved_concurrent_restoration_and_allocation(self, core):
+        """Interleaved concurrent restoration and new allocation produces collision-free monotonic new versions."""
+        import threading
+        core.Plan.reset_counter(start=1)
+        results = []
+        lock = threading.Lock()
+
+        def worker_new():
+            p = make_plan(core)
+            with lock:
+                results.append(("new", p.plan_version))
+
+        def worker_restore(v):
+            snap = {
+                "plan_title": f"Restore {v}",
+                "plan_summary": "S",
+                "plan_steps": [make_step(1, "A", "Do A", is_complete=True, version=v)],
+                "plan_version": v,
+                **_BASE_FIELDS,
+            }
+            p = core.Plan.from_persisted_snapshot(snap)
+            with lock:
+                results.append(("restore", p.plan_version))
+
+        threads = []
+        for i in range(15):
+            threads.append(threading.Thread(target=worker_new))
+            threads.append(threading.Thread(target=worker_restore, args=(100 + i,)))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        new_versions = [v for kind, v in results if kind == "new"]
+        restore_versions = [v for kind, v in results if kind == "restore"]
+
+        assert sorted(restore_versions) == [100 + i for i in range(15)]
+        assert len(new_versions) == len(set(new_versions))
