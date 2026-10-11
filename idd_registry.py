@@ -117,9 +117,11 @@ class DataFrameRegistry:
         """Derive a safe, deterministic, collision-resistant filename within owned storage.
 
         Decouples user-controlled string df_id from physical filenames to prevent path
-        traversal escapes across POSIX and Windows conventions.
+        traversal escapes across POSIX and Windows conventions. Uses surrogatepass encoding
+        so distinct Python strings containing surrogate characters do not collapse into
+        the same digest.
         """
-        digest = hashlib.sha256(df_id.encode("utf-8", errors="replace")).hexdigest()
+        digest = hashlib.sha256(df_id.encode("utf-8", errors="surrogatepass")).hexdigest()
         safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", df_id)[:24].strip("_")
         if safe_prefix:
             return f"{safe_prefix}_{digest[:16]}.csv"
@@ -312,21 +314,50 @@ class DataFrameRegistry:
                         return None
                     if df is None:
                         return None
+                    self.registry[df_id] = {
+                        "df": df,
+                        "source_path": str(norm_path),
+                        "reload_path": str(norm_path),
+                        "raw_path": str(norm_path),
+                    }
+                    self.df_id_to_raw_path[df_id] = str(norm_path)
+                    self._touch_cache(df_id, df)
+                    return df_id
                 else:
                     # df is provided with an explicit raw_path
-                    if not norm_path.exists() or not norm_path.is_file():
+                    if norm_path.exists() and norm_path.is_file():
+                        # The source file exists on disk as external user provenance.
+                        # Preserve external source file byte-for-byte unchanged.
+                        # Persist supplied working DataFrame to registry-owned backing storage.
+                        backing_path = self._get_owned_backing_path(df_id)
+                        if not self._write_df(df, backing_path):
+                            print(f"Error: failed to persist initial DataFrame '{df_id}' to backing storage")
+                            return None
+                        self.registry[df_id] = {
+                            "df": df,
+                            "source_path": str(norm_path),
+                            "reload_path": str(backing_path),
+                            "raw_path": str(norm_path),
+                        }
+                        self.df_id_to_raw_path[df_id] = str(norm_path)
+                        self._touch_cache(df_id, df)
+                        return df_id
+                    elif not norm_path.exists():
+                        # Explicit new file path supplied; persist df to that path
                         if not self._write_df(df, norm_path):
                             return None
-
-                self.registry[df_id] = {
-                    "df": df,
-                    "source_path": str(norm_path),
-                    "reload_path": str(norm_path),
-                    "raw_path": str(norm_path),
-                }
-                self.df_id_to_raw_path[df_id] = str(norm_path)
-                self._touch_cache(df_id, df)
-                return df_id
+                        self.registry[df_id] = {
+                            "df": df,
+                            "source_path": str(norm_path),
+                            "reload_path": str(norm_path),
+                            "raw_path": str(norm_path),
+                        }
+                        self.df_id_to_raw_path[df_id] = str(norm_path)
+                        self._touch_cache(df_id, df)
+                        return df_id
+                    else:
+                        print(f"Path {raw_path} exists but is not a regular file")
+                        return None
 
             # Auto-generated backing path
             if df is None:

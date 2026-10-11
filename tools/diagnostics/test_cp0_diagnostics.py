@@ -17,6 +17,7 @@ from tools.diagnostics.reproduce_drift import (
     ClaimResult,
     probe_claim_1,
     probe_claim_2,
+    probe_claim_8,
     probe_claim_11,
     probe_claim_12,
 )
@@ -258,3 +259,30 @@ def test_ast_scanner_status_and_completeness():
     assert len(all_symbols) > 1000
     assert "delete_rows" in symbol_map
     assert "DataFrameRegistry" in symbol_map
+
+
+def test_claim_8_all_formats_succeed_returns_observed_invariant():
+    """Verify that multi-format eviction reload and validation reports OBSERVED INVARIANT."""
+    res = probe_claim_8()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "DYNAMIC"
+    assert "Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded" in res.observed_behavior
+
+
+def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):
+    """Verify that if validation fails on non-CSV formats, Claim 8 reports REPRODUCED."""
+    import idd_core
+    orig_validate = idd_core.validate_dataframe_exists
+
+    def broken_validate(df_id: str) -> bool:
+        if "pkl" in df_id or "json" in df_id:
+            return False
+        return orig_validate(df_id)
+
+    monkeypatch.setattr(idd_core, "validate_dataframe_exists", broken_validate)
+
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "validate_dataframe_exists fails on cache-evicted non-CSV" in res.defect_or_contract_explanation

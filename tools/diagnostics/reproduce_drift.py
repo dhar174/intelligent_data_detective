@@ -735,26 +735,34 @@ def probe_claim_8() -> ClaimResult:
 
                 results[fmt] = {"validate_exists": v_ok, "get_dataframe_reload": g_ok}
 
-    csv_reloaded = results["csv"]["get_dataframe_reload"] and results["csv"]["validate_exists"]
-    pkl_reloaded = results["pkl"]["get_dataframe_reload"]
-    pkl_val_failed = not results["pkl"]["validate_exists"]
-    json_reloaded = results["json"]["get_dataframe_reload"]
-    json_val_failed = not results["json"]["validate_exists"]
-
-    observed = (
-        f"get_dataframe(load_if_not_exists=True) succeeded across all formats: "
-        f"csv={results['csv']['get_dataframe_reload']}, pkl={results['pkl']['get_dataframe_reload']}, json={results['json']['get_dataframe_reload']}. "
-        f"However, validate_dataframe_exists FAILED on evicted pkl/json: "
-        f"csv={results['csv']['validate_exists']}, pkl={results['pkl']['validate_exists']}, json={results['json']['validate_exists']} "
-        f"because it hardcodes pd.read_csv(raw_path)."
+    all_formats_ok = all(
+        results[fmt]["validate_exists"] and results[fmt]["get_dataframe_reload"]
+        for fmt in ["csv", "pkl", "json"]
     )
 
-    if csv_reloaded and pkl_reloaded and pkl_val_failed and json_val_failed:
+    if all_formats_ok:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
+        observed = (
+            f"Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded across all registered formats upon cache eviction: "
+            f"csv (validate={results['csv']['validate_exists']}, reload={results['csv']['get_dataframe_reload']}), "
+            f"pkl (validate={results['pkl']['validate_exists']}, reload={results['pkl']['get_dataframe_reload']}), "
+            f"json (validate={results['json']['validate_exists']}, reload={results['json']['get_dataframe_reload']})."
+        )
+        explanation = (
+            "validate_dataframe_exists delegates to authoritative registry loader get_dataframe(load_if_not_exists=True), "
+            "seamlessly supporting all registered formats (.csv, .pkl, .json) upon cache eviction."
+        )
+    else:
         classification = "REPRODUCED"
         is_defect = True
-    else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
+        observed = (
+            f"validate_dataframe_exists failed on evicted formats: "
+            f"csv={results['csv']['validate_exists']}, pkl={results['pkl']['validate_exists']}, json={results['json']['validate_exists']}."
+        )
+        explanation = (
+            "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames because it does not use canonical loader delegation."
+        )
 
     return ClaimResult(
         claim_id=8,
@@ -765,7 +773,7 @@ def probe_claim_8() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation="validate_dataframe_exists calls pd.read_csv directly instead of using registry._read_df, causing silent validation failure on cache-evicted pickle, parquet, and JSON DataFrames.",
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 

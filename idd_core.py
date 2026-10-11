@@ -760,6 +760,7 @@ def _is_subpath(path: PathlibPath, parent: PathlibPath) -> bool:
 # Error handling
 # ---------------------------------------------------------------------------
 
+
 def validate_dataframe_exists(df_id: str) -> bool:
     """Validates the existence and validity of a dataframe by its ID."""
     if not df_id or not isinstance(df_id, str):
@@ -767,20 +768,9 @@ def validate_dataframe_exists(df_id: str) -> bool:
 
     try:
         reg = get_global_registry()
-        df = reg.get_dataframe(df_id)
+        df = reg.get_dataframe(df_id, load_if_not_exists=True)
         if df is not None:
             return not df.empty
-
-        raw_path = reg.get_raw_path_from_id(df_id)
-        if raw_path and os.path.exists(raw_path):
-            try:
-                df = pd.read_csv(raw_path)
-                if df is not None and not df.empty:
-                    reg.register_dataframe(df, df_id, raw_path)
-                    return True
-            except Exception:
-                return False
-
         return False
     except Exception:
         return False

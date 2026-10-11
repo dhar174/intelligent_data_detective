@@ -633,6 +633,121 @@ class TestExplicitSourceCopyOnWriteIntegrity:
         assert reg.get_id_from_raw_path(str(src_file)) == "prov_df"
         assert reg.get_id_from_raw_path(backing_path) == "prov_df"
 
+    def test_initially_transformed_dataframe_survives_eviction(self, core, tmp_path):
+        """Test A (Initial Transformed): First registration of in-memory df with explicit source persists to owned backing."""
+        src_file = tmp_path / "original_source.csv"
+        original_df = pd.DataFrame({"value": [1, 2, 3]})
+        original_df.to_csv(src_file, index=False)
+        original_bytes = src_file.read_bytes()
+
+        transformed_df = pd.DataFrame({"value": [100, 200, 300]})
+
+        reg = core.DataFrameRegistry(capacity=1)
+        df_id = reg.register_dataframe(transformed_df, "dataset_1", raw_path=str(src_file))
+        assert df_id == "dataset_1"
+
+        # Metadata checks
+        source_p = reg.get_source_path_from_id("dataset_1")
+        backing_p = reg.get_backing_path_from_id("dataset_1")
+        assert source_p == str(src_file.resolve())
+        assert backing_p is not None
+        assert source_p != backing_p
+        assert Path(backing_p).parent == reg.data_dir.resolve()
+
+        # Original source file must remain byte-for-byte unchanged
+        assert src_file.read_bytes() == original_bytes
+
+        # Backing file on disk contains the transformed data
+        backed_df = pd.read_csv(backing_p)
+        assert list(backed_df["value"]) == [100, 200, 300]
+
+        # Evict dataset_1 by exceeding capacity
+        reg.register_dataframe(pd.DataFrame({"evict": [999]}), "other")
+        assert reg.registry["dataset_1"]["df"] is None
+
+        # Reload from disk: must return transformed values [100, 200, 300], NOT [1, 2, 3]
+        reloaded = reg.get_dataframe("dataset_1", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["value"]) == [100, 200, 300]
+        assert src_file.read_bytes() == original_bytes
+
+    def test_validation_after_initial_registration(self, core, tmp_path):
+        """Test B (Initial Transformed Validation): validate_dataframe_exists after eviction restores transformed data."""
+        src_file = tmp_path / "original_source.csv"
+        original_df = pd.DataFrame({"value": [1, 2, 3]})
+        original_df.to_csv(src_file, index=False)
+
+        transformed_df = pd.DataFrame({"value": [100, 200, 300]})
+
+        reg = core.DataFrameRegistry(capacity=1)
+        with core.override_global_registry(reg):
+            reg.register_dataframe(transformed_df, "dataset_1", raw_path=str(src_file))
+
+            # Evict from in-memory cache
+            reg.register_dataframe(pd.DataFrame({"x": [0]}), "evictor")
+            assert reg.registry["dataset_1"]["df"] is None
+
+            # Validate exists: must succeed and restore transformed data
+            assert core.validate_dataframe_exists("dataset_1") is True
+            working = reg.get_dataframe("dataset_1")
+            assert list(working["value"]) == [100, 200, 300]
+
+    def test_initial_backing_write_failure_leaves_no_partial_state(self, core, tmp_path, monkeypatch):
+        """Test C (Initial Persistence Failure): Failure to persist initial transformed df leaves registry clean."""
+        src_file = tmp_path / "original_source.csv"
+        original_df = pd.DataFrame({"value": [1, 2, 3]})
+        original_df.to_csv(src_file, index=False)
+        original_bytes = src_file.read_bytes()
+
+        reg = core.DataFrameRegistry(capacity=1)
+        monkeypatch.setattr(reg, "_write_df", lambda df, p: False)
+
+        transformed_df = pd.DataFrame({"value": [100, 200, 300]})
+        result = reg.register_dataframe(transformed_df, "dataset_fail", raw_path=str(src_file))
+
+        assert result is None
+        assert "dataset_fail" not in reg.registry
+        assert "dataset_fail" not in reg.cache
+        assert "dataset_fail" not in reg.df_id_to_raw_path
+        assert src_file.read_bytes() == original_bytes
+
+    def test_existing_source_loading_without_df_preserved(self, core, tmp_path):
+        """Test D (Source Loading): df=None with existing raw_path loads the file and records source_path."""
+        src_file = tmp_path / "existing.csv"
+        source_df = pd.DataFrame({"value": [1, 2, 3]})
+        source_df.to_csv(src_file, index=False)
+
+        reg = core.DataFrameRegistry(capacity=2)
+        df_id = reg.register_dataframe(df=None, df_id="existing_id", raw_path=str(src_file))
+        assert df_id == "existing_id"
+
+        loaded = reg.get_dataframe("existing_id")
+        assert loaded is not None
+        assert list(loaded["value"]) == [1, 2, 3]
+        assert reg.get_source_path_from_id("existing_id") == str(src_file.resolve())
+        assert reg.get_raw_path_from_id("existing_id") == str(src_file.resolve())
+
+    def test_subsequent_transformations_after_initial_registration(self, core, tmp_path):
+        """Test E (Subsequent Updates): Updates after initial registration continue to use owned backing."""
+        src_file = tmp_path / "source.csv"
+        original_df = pd.DataFrame({"value": [1, 2, 3]})
+        original_df.to_csv(src_file, index=False)
+
+        reg = core.DataFrameRegistry(capacity=1)
+        v1 = pd.DataFrame({"value": [10, 20, 30]})
+        reg.register_dataframe(v1, "seq_df", raw_path=str(src_file))
+
+        v2 = pd.DataFrame({"value": [100, 200, 300]})
+        reg.register_dataframe(v2, "seq_df", raw_path=str(src_file))
+
+        # Evict
+        reg.register_dataframe(pd.DataFrame({"x": [0]}), "evictor")
+        assert reg.registry["seq_df"]["df"] is None
+
+        reloaded = reg.get_dataframe("seq_df", load_if_not_exists=True)
+        assert list(reloaded["value"]) == [100, 200, 300]
+        assert pd.read_csv(src_file)["value"].tolist() == [1, 2, 3]
+
 
 class TestDataFrameIdFilesystemContainment:
     """Verify DataFrame ID decoupling and storage directory containment (Issue #156 / PR #157 P1)."""
@@ -745,3 +860,57 @@ class TestDataFrameIdFilesystemContainment:
         reg.register_dataframe(df, "norm_key", raw_path=str(user_file))
         assert reg.get_source_path_from_id("norm_key") == str(user_file.resolve())
         assert not Path(reg.get_source_path_from_id("norm_key")).is_relative_to(reg.data_dir.resolve())
+
+    def test_distinct_unicode_surrogate_ids_do_not_collide(self, core):
+        """Test I: Distinct Unicode surrogate strings do not collapse to identical backing filenames."""
+        reg = core.DataFrameRegistry(capacity=5)
+        id_a = "\ud800"
+        id_b = "\udc00"
+
+        df_a = pd.DataFrame({"val": [1, 2]})
+        df_b = pd.DataFrame({"val": [100, 200]})
+
+        reg.register_dataframe(df_a, id_a)
+        reg.register_dataframe(df_b, id_b)
+
+        path_a = reg.get_backing_path_from_id(id_a)
+        path_b = reg.get_backing_path_from_id(id_b)
+
+        assert path_a is not None and path_b is not None
+        assert path_a != path_b, f"Surrogate IDs mapped to identical backing path: {path_a}"
+        assert Path(path_a).exists()
+        assert Path(path_b).exists()
+
+        # Evict from cache
+        reg.cache.clear()
+        reg.registry[id_a]["df"] = None
+        reg.registry[id_b]["df"] = None
+
+        # Reload both independently
+        reloaded_a = reg.get_dataframe(id_a, load_if_not_exists=True)
+        reloaded_b = reg.get_dataframe(id_b, load_if_not_exists=True)
+
+        assert reloaded_a is not None and reloaded_b is not None
+        assert list(reloaded_a["val"]) == [1, 2]
+        assert list(reloaded_b["val"]) == [100, 200]
+
+    def test_legitimate_unicode_ids_supported(self, core):
+        """Test J: Legitimate Unicode IDs (Japanese, accented, emoji) remain supported and distinct."""
+        reg = core.DataFrameRegistry(capacity=5)
+        test_ids = ["café", "データ", "emoji🚀"]
+        backing_paths = set()
+
+        for tid in test_ids:
+            df = pd.DataFrame({"name": [tid]})
+            reg.register_dataframe(df, tid)
+            bp = reg.get_backing_path_from_id(tid)
+            assert bp not in backing_paths
+            backing_paths.add(bp)
+            assert Path(bp).exists()
+
+        reg.cache.clear()
+        for tid in test_ids:
+            reg.registry[tid]["df"] = None
+            reloaded = reg.get_dataframe(tid, load_if_not_exists=True)
+            assert reloaded is not None
+            assert list(reloaded["name"]) == [tid]
