@@ -110,3 +110,21 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 - **RC3** — `file_writer`: emits a 356-char placeholder for body content; spams 25+ stub-marker tools to compensate.
 - **RC4** — supervisor FINAL gate accepts hollow completion (no content-validation preconditions).
 - **RC5 (NEW)** — structured Pydantic outputs (`AnalysisInsights`, `ReportResults`, …) may not actually be persisted to supervisor `State` after W9-SR-DROP — wrapper code reads them from `agent.invoke()` dict, but downstream nodes may be reading stale / empty State fields. Needs forensic confirmation in Phase A.
+
+---
+
+## Canonical Core Roadmap Progress (Issue #140)
+
+### Checkpoint 0 (CP0) — Completed & Merged
+- [PR #155](https://github.com/dhar174/intelligent_data_detective/pull/155) merged at commit `98da83a9d90a334b5a7ea98e0acb97dd78fa0548`.
+- Established comprehensive parity inventory (`docs/architecture/idd-core-parity-inventory.md`) and migration specification (`docs/plans/idd-canonical-core-migration.md`).
+- Established 12-probe automated diagnostic suite (`tools/diagnostics/reproduce_drift.py` and `test_cp0_diagnostics.py`).
+
+### Checkpoint 1 (CP1) — Implemented (Under Review)
+- Branch: `antigravity/issue-156-canonical-models-registry`.
+- Draft PR: [PR #157](https://github.com/dhar174/intelligent_data_detective/pull/157).
+- Canonical planning models (`idd_models.py`) with explicit Plan lifecycle semantics (new vs. restore) and RC-2 deduplication.
+- Canonical thread-safe `DataFrameRegistry` (`idd_registry.py`) with `ContextVar` override engine and user-file safety.
+- Atomic bridge in `idd_core.py` with `__getattr__` dynamic delegation and migrated callers in fixtures/diagnostics.
+- Zero notebook churn across 99 cells and full baseline quality gate compliance.
+- Status: **STOPPED FOR INDEPENDENT CP1 CODE REVIEW**.
