@@ -63,21 +63,40 @@ class DataFrameRegistryError(Exception):
 class DataFrameRegistry:
     """Thread-safe LRU cache and persistent registry for DataFrames.
 
-    Invariants:
+    Invariants & Storage Ownership Model:
     1. Single Source of Truth: All datasets are referenced strictly by string df_id.
     2. LRU In-Memory Caching: Bounded by `capacity`; evictions remain loadable from disk.
     3. Multi-Format Reload: Supports .csv, .parquet, .pkl, .pickle, .json.
-    4. File Safety: `clear()` resets in-memory cache and tracking maps, but NEVER
-       deletes user files or artifacts from disk.
+    4. Per-Instance Storage Isolation: When data_dir is not explicitly specified,
+       each DataFrameRegistry instance allocates an isolated storage directory
+       (WORKING_DIRECTORY / f"idd_registry_{instance_id}") so independent registries
+       registering identical df_ids never collide or overwrite each other's backing files.
+    5. Storage Ownership Separation:
+       - Registry-owned backing files: Auto-generated in self.data_dir for in-memory frames.
+       - User-supplied source files: Referenced by explicit raw_path; never modified or relocated.
+       - Published artifacts: Output documents/charts created via _resolve_artifact_path().
+    6. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
+       deletes user files or published artifacts from disk.
     """
 
-    def __init__(self, capacity: int = 20) -> None:
+    def __init__(
+        self,
+        capacity: int = 20,
+        data_dir: Optional[Union[str, Path]] = None,
+    ) -> None:
         self._lock = threading.RLock()
         self.registry: Dict[str, Dict[str, Any]] = {}
         self.df_id_to_raw_path: Dict[str, str] = {}
         self.cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
         self.capacity: int = capacity
-        self.data_dir: Path = WORKING_DIRECTORY
+        if data_dir is not None:
+            self.data_dir: Path = self._norm_path(data_dir)
+            self._is_owned_storage: bool = False
+        else:
+            instance_id = uuid.uuid4().hex[:12]
+            self.data_dir = (WORKING_DIRECTORY / f"idd_registry_{instance_id}").resolve()
+            self._is_owned_storage = True
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _norm_path(self, p: Union[str, Path]) -> Path:
         """Resolve and expand path."""
@@ -198,6 +217,7 @@ class DataFrameRegistry:
                 print("Either df or raw_path must be provided")
                 return None
 
+            is_auto_path = not bool(raw_path)
             if not raw_path:
                 raw_path = str((self.data_dir / f"{df_id}.csv").resolve())
 
@@ -210,9 +230,12 @@ class DataFrameRegistry:
             if not path.parent.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
 
-            if df is not None and (not path.exists() or not path.is_file()):
-                if not self._write_df(df, path):
-                    return None
+            if df is not None:
+                # If auto-generated path, always write to ensure fresh backing representation.
+                # If user-supplied raw_path, write if file doesn't already exist.
+                if is_auto_path or not path.exists() or not path.is_file():
+                    if not self._write_df(df, path):
+                        return None
 
             if df is None:
                 try:

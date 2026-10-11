@@ -1,9 +1,13 @@
 """
-idd_core.py — Sanitized, importable core extracted from
-IntelligentDataDetective_beta_v5.ipynb for testing purposes.
-Shell magics and Colab-specific code are removed.
-Bug fix: CompletedStepsAndTasks._inject_and_dedupe now returns dedup_list (sorted)
-instead of list(seen.values()) (unsorted).
+idd_core.py — Transitional compatibility façade for Intelligent Data Detective.
+
+Historically extracted from IntelligentDataDetective_beta_v5.ipynb for testing.
+During the canonical core migration (Issue #140 / Issue #156):
+- Planning and step synchronization models have been extracted to `idd_models.py`.
+- DataFrameRegistry and context isolation helpers have been extracted to `idd_registry.py`.
+- This module serves as a backward-compatible façade re-exporting canonical symbols
+  alongside transitional tools, adapters, and helper functions until subsequent checkpoints
+  (CP2-CP5) establish dedicated canonical modules.
 """
 from __future__ import annotations
 import os, sys, re, json, uuid, hashlib, shutil, logging, functools

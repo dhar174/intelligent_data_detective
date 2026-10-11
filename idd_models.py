@@ -422,4 +422,5 @@ def _reduce_plan_keep_sorted(
         **b.model_dump(),
         "plan_steps": merged_sorted_steps,
     }
-    return Plan.model_validate(merged)
+    # State reduction restores/merges existing state; it must not allocate a new Plan version.
+    return Plan.from_persisted_snapshot(merged)

@@ -93,6 +93,7 @@ class TestDataFrameRegistryFileRoundtrip:
         csv_path = tmp_path / "reload_test.csv"
         sample_df.to_csv(csv_path, index=False)
         df_id = registry.register_dataframe(sample_df, "reload_df", raw_path=str(csv_path))
+        assert df_id == "reload_df"
         # Manually evict from cache by setting df=None
         registry.registry["reload_df"]["df"] = None
         registry.cache.pop("reload_df", None)
@@ -387,3 +388,117 @@ class TestContextVarRegistryOverride:
             assert core.global_df_registry is new_default
         finally:
             core.set_global_registry(old_default)
+
+
+class TestDataFrameRegistryStorageIsolation:
+    """Verify instance-level directory and persistence file isolation (Issue #156 / PR #157)."""
+
+    def test_independent_registries_backing_file_isolation(self, core):
+        """
+        Two independent DataFrameRegistry instances with same df_id:
+        - must receive distinct backing file paths in isolated directories
+        - must persist different contents on auto-path registration
+        - must evict and reload correct instance-specific data without cross-instance corruption
+        """
+        from pathlib import Path
+
+        reg_a = core.DataFrameRegistry(capacity=1)
+        reg_b = core.DataFrameRegistry(capacity=1)
+
+        assert reg_a.data_dir != reg_b.data_dir
+        assert reg_a.data_dir.exists()
+        assert reg_b.data_dir.exists()
+
+        df_a = pd.DataFrame({"col": [1, 2, 3]})
+        df_b = pd.DataFrame({"col": [100, 200, 300]})
+
+        reg_a.register_dataframe(df_a, "shared_id")
+        reg_b.register_dataframe(df_b, "shared_id")
+
+        path_a = reg_a.get_raw_path_from_id("shared_id")
+        path_b = reg_b.get_raw_path_from_id("shared_id")
+
+        assert path_a is not None and path_b is not None
+        assert path_a != path_b, f"Independent registries shared identical backing path: {path_a}"
+        assert Path(path_a).exists()
+        assert Path(path_b).exists()
+
+        # Evict 'shared_id' from in-memory cache in both registries by exceeding capacity
+        reg_a.register_dataframe(pd.DataFrame({"x": [1]}), "other_a")
+        reg_b.register_dataframe(pd.DataFrame({"x": [2]}), "other_b")
+
+        assert reg_a.registry["shared_id"]["df"] is None
+        assert reg_b.registry["shared_id"]["df"] is None
+
+        # Reload from disk
+        reloaded_a = reg_a.get_dataframe("shared_id", load_if_not_exists=True)
+        reloaded_b = reg_b.get_dataframe("shared_id", load_if_not_exists=True)
+
+        assert reloaded_a is not None and reloaded_b is not None
+        assert list(reloaded_a["col"]) == [1, 2, 3], f"Registry A reloaded wrong data: {reloaded_a}"
+        assert list(reloaded_b["col"]) == [100, 200, 300], f"Registry B reloaded wrong data: {reloaded_b}"
+
+    def test_repeated_registration_updates_backing_file(self, core):
+        """Updating an existing df_id overwrites its backing file so reload serves fresh data."""
+        reg = core.DataFrameRegistry(capacity=1)
+        df1 = pd.DataFrame({"data": [10, 20]})
+        df2 = pd.DataFrame({"data": [99, 100]})
+
+        reg.register_dataframe(df1, "key")
+        path1 = reg.get_raw_path_from_id("key")
+
+        reg.register_dataframe(df2, "key")
+        path2 = reg.get_raw_path_from_id("key")
+        assert path1 == path2
+
+        # Evict from in-memory cache
+        reg.register_dataframe(pd.DataFrame({"dummy": [0]}), "other")
+        assert reg.registry["key"]["df"] is None
+
+        # Reload must yield df2 (updated), not df1
+        reloaded = reg.get_dataframe("key", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["data"]) == [99, 100]
+
+    def test_custom_data_dir_explicit_configuration(self, core, tmp_path):
+        """Specifying data_dir uses caller-provided path and stores backing files there."""
+        from pathlib import Path
+
+        custom_dir = tmp_path / "custom_registry_storage"
+        reg = core.DataFrameRegistry(capacity=5, data_dir=custom_dir)
+        assert reg.data_dir == custom_dir.resolve()
+        assert custom_dir.exists()
+
+        df = pd.DataFrame({"v": [42]})
+        reg.register_dataframe(df, "custom_df")
+        path = reg.get_raw_path_from_id("custom_df")
+        assert Path(path).parent == custom_dir.resolve()
+        assert Path(path).exists()
+
+    def test_clear_preserves_both_auto_and_user_backing_files_on_disk(self, core, tmp_path):
+        """clear() resets in-memory registry/cache but NEVER deletes files from disk."""
+        from pathlib import Path
+
+        reg = core.DataFrameRegistry(capacity=2)
+        df = pd.DataFrame({"a": [1, 2]})
+
+        # Auto-path registration
+        reg.register_dataframe(df, "auto_key")
+        auto_path = Path(reg.get_raw_path_from_id("auto_key"))
+        assert auto_path.exists()
+
+        # User-path registration
+        user_path = tmp_path / "user_data.csv"
+        df.to_csv(user_path, index=False)
+        reg.register_dataframe(df, "user_key", raw_path=str(user_path))
+        assert user_path.exists()
+
+        reg.clear()
+        assert reg.size() == 0
+        assert len(reg.cache) == 0
+        assert not reg.has_df("auto_key")
+        assert not reg.has_df("user_key")
+
+        # Verify disk files remain intact
+        assert auto_path.exists(), "reg.clear() erroneously deleted auto backing file!"
+        assert user_path.exists(), "reg.clear() erroneously deleted user-provided file!"
