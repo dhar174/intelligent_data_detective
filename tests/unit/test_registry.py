@@ -14,7 +14,6 @@ import tempfile
 import time
 import pytest
 import pandas as pd
-import numpy as np
 
 pytestmark = pytest.mark.unit
 
@@ -235,3 +234,156 @@ class TestDataFrameRegistryThreadSafety:
 
         assert errors == []
         assert all(results)
+
+
+class TestDataFrameRegistryClearFileSafety:
+    """Verify that clear() never deletes files from disk (Issue #156)."""
+
+    def test_clear_evicts_cache_and_registry_but_preserves_disk_files(self, core, sample_df, tmp_path):
+        csv_file = tmp_path / "user_data.csv"
+        sample_df.to_csv(csv_file, index=False)
+        assert csv_file.exists()
+
+        reg = core.DataFrameRegistry(capacity=5)
+        df_id = reg.register_dataframe(sample_df, "test_file_df", raw_path=str(csv_file))
+        assert reg.has_df(df_id)
+        assert len(reg.cache) == 1
+
+        reg.clear()
+        assert reg.size() == 0
+        assert len(reg.cache) == 0
+        assert not reg.has_df(df_id)
+
+        # CRITICAL SAFETY INVARIANT: User file must NOT be deleted!
+        assert csv_file.exists(), "reg.clear() erroneously deleted file on disk!"
+        re_read = pd.read_csv(csv_file)
+        assert len(re_read) == len(sample_df)
+
+
+class TestContextVarRegistryOverride:
+    """Verify ContextVar-based override engine and isolation contracts (Issue #156)."""
+
+    def test_override_basic_and_restoration(self, core):
+        initial = core.get_global_df_registry()
+        custom = core.DataFrameRegistry(capacity=7)
+
+        with core.override_global_registry(custom) as active:
+            assert active is custom
+            assert core.get_global_df_registry() is custom
+            assert core.global_df_registry is custom
+
+        assert core.get_global_df_registry() is initial
+        assert core.global_df_registry is initial
+
+    def test_nested_overrides_lifo(self, core):
+        initial = core.get_global_df_registry()
+        outer = core.DataFrameRegistry(capacity=10)
+        inner = core.DataFrameRegistry(capacity=5)
+
+        with core.override_global_registry(outer):
+            assert core.get_global_df_registry() is outer
+            assert core.global_df_registry is outer
+            with core.override_global_registry(inner):
+                assert core.get_global_df_registry() is inner
+                assert core.global_df_registry is inner
+            assert core.get_global_df_registry() is outer
+            assert core.global_df_registry is outer
+
+        assert core.get_global_df_registry() is initial
+        assert core.global_df_registry is initial
+
+    def test_exception_safety_guarantees_restoration(self, core):
+        initial = core.get_global_df_registry()
+        custom = core.DataFrameRegistry(capacity=3)
+
+        with pytest.raises(RuntimeError, match="deliberate failure"):
+            with core.override_global_registry(custom):
+                assert core.get_global_df_registry() is custom
+                raise RuntimeError("deliberate failure")
+
+        assert core.get_global_df_registry() is initial
+
+    def test_validate_dataframe_exists_observes_override(self, core, sample_df):
+        custom = core.DataFrameRegistry(capacity=5)
+        custom.register_dataframe(sample_df, "isolated_df_id")
+
+        # Outside override: isolated_df_id should not exist in the default registry
+        assert core.validate_dataframe_exists("isolated_df_id") is False
+
+        # Inside override: validate_dataframe_exists dynamically resolves custom registry
+        with core.override_global_registry(custom):
+            assert core.validate_dataframe_exists("isolated_df_id") is True
+
+        # Outside again: not found
+        assert core.validate_dataframe_exists("isolated_df_id") is False
+
+    def test_concurrent_threads_isolated_contexts(self, core):
+        """Concurrent threads with independent overrides do not leak to each other or default."""
+        initial = core.get_global_df_registry()
+        reg_a = core.DataFrameRegistry(capacity=11)
+        reg_b = core.DataFrameRegistry(capacity=12)
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def worker_a():
+            try:
+                with core.override_global_registry(reg_a):
+                    barrier.wait(timeout=5)
+                    assert core.get_global_df_registry() is reg_a
+                    time.sleep(0.05)
+                    assert core.get_global_df_registry() is reg_a
+            except Exception as e:
+                errors.append(e)
+
+        def worker_b():
+            try:
+                with core.override_global_registry(reg_b):
+                    barrier.wait(timeout=5)
+                    assert core.get_global_df_registry() is reg_b
+                    time.sleep(0.05)
+                    assert core.get_global_df_registry() is reg_b
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=worker_a)
+        t2 = threading.Thread(target=worker_b)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert errors == [], f"Thread errors: {errors}"
+        # Main thread was never touched
+        assert core.get_global_df_registry() is initial
+
+    def test_asyncio_task_isolation(self, core):
+        """Asyncio child tasks inherit context copy; task mutations do not leak."""
+        import asyncio
+
+        async def run_async_test():
+            initial = core.get_global_df_registry()
+            custom = core.DataFrameRegistry(capacity=15)
+
+            async def child_task():
+                assert core.get_global_df_registry() is custom
+
+            with core.override_global_registry(custom):
+                assert core.get_global_df_registry() is custom
+                task = asyncio.create_task(child_task())
+                await task
+
+            assert core.get_global_df_registry() is initial
+
+        asyncio.run(run_async_test())
+
+    def test_set_global_registry_updates_process_default(self, core):
+        """set_global_registry safely updates process default when no override active."""
+        old_default = core.get_global_df_registry()
+        new_default = core.DataFrameRegistry(capacity=99)
+        try:
+            core.set_global_registry(new_default)
+            assert core.get_global_df_registry() is new_default
+            assert core.global_df_registry is new_default
+        finally:
+            core.set_global_registry(old_default)

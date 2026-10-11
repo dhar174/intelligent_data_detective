@@ -562,24 +562,21 @@ def probe_claim_7() -> ClaimResult:
     if not HAS_IDD_CORE:
         return ClaimResult(7, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
-    orig_reg = getattr(idd_core, "global_df_registry", None)
     prev_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
         reg = idd_core.DataFrameRegistry(capacity=5)
-        idd_core.global_df_registry = reg
-        reg.register_dataframe(pd.DataFrame({"a": [1]}), "valid_df_id")
+        with idd_core.override_global_registry(reg):
+            reg.register_dataframe(pd.DataFrame({"a": [1]}), "valid_df_id")
 
-        @idd_core.handle_tool_errors
-        def tool_without_df_id(message: str, count: int) -> str:
-            return f"{message}: {count}"
+            @idd_core.handle_tool_errors
+            def tool_without_df_id(message: str, count: int) -> str:
+                return f"{message}: {count}"
 
-        res = tool_without_df_id("hello", 42)
-        broken_by_first_arg = isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res
+            res = tool_without_df_id("hello", 42)
+            broken_by_first_arg = isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res
     finally:
         logging.disable(prev_level)
-        if orig_reg is not None:
-            idd_core.global_df_registry = orig_reg
 
     observed = (
         f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Broken by args[0] assumption: {broken_by_first_arg}). "
@@ -622,15 +619,11 @@ def probe_claim_8() -> ClaimResult:
     if not HAS_IDD_CORE:
         return ClaimResult(8, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
-    orig_reg = getattr(idd_core, "global_df_registry", None)
     results: Dict[str, Dict[str, bool]] = {}
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="idd_reg_probe_") as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            reg = idd_core.DataFrameRegistry(capacity=5)
-            idd_core.global_df_registry = reg
-
+    with tempfile.TemporaryDirectory(prefix="idd_reg_probe_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        reg = idd_core.DataFrameRegistry(capacity=5)
+        with idd_core.override_global_registry(reg):
             test_formats = {
                 "csv": lambda df, p: df.to_csv(p, index=False),
                 "pkl": lambda df, p: df.to_pickle(p),
@@ -656,9 +649,6 @@ def probe_claim_8() -> ClaimResult:
                 g_ok = loaded is not None and not loaded.empty
 
                 results[fmt] = {"validate_exists": v_ok, "get_dataframe_reload": g_ok}
-    finally:
-        if orig_reg is not None:
-            idd_core.global_df_registry = orig_reg
 
     csv_reloaded = results["csv"]["get_dataframe_reload"] and results["csv"]["validate_exists"]
     pkl_reloaded = results["pkl"]["get_dataframe_reload"]

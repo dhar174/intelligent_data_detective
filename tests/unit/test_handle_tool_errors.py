@@ -10,6 +10,7 @@ import idd_core
 from idd_core import (
     DataFrameRegistry,
     handle_tool_errors,
+    override_global_registry,
     validate_dataframe_exists,
 )
 
@@ -54,42 +55,40 @@ class TestValidateDataframeExists:
         sample_df.to_csv(csv_path, index=False)
 
         small_reg = DataFrameRegistry(capacity=2)
-        idd_core.global_df_registry = small_reg
+        with override_global_registry(small_reg):
+            # Register target df
+            target_id = small_reg.register_dataframe(sample_df, "target_df", raw_path=str(csv_path))
+            assert target_id is not None
 
-        # Register target df
-        target_id = small_reg.register_dataframe(sample_df, "target_df", raw_path=str(csv_path))
-        assert target_id is not None
+            # Evict target by adding 2 more dfs
+            for i in range(2):
+                extra = pd.DataFrame({"val": [i, i + 1]})
+                small_reg.register_dataframe(extra, f"evict_{i}")
 
-        # Evict target by adding 2 more dfs
-        for i in range(2):
-            extra = pd.DataFrame({"val": [i, i + 1]})
-            small_reg.register_dataframe(extra, f"evict_{i}")
+            # target_df should now be evicted from in-memory cache
+            assert "target_df" not in small_reg.cache
 
-        # target_df should now be evicted from in-memory cache
-        assert "target_df" not in small_reg.cache
-
-        # But raw_path is on disk — should reload
-        result = validate_dataframe_exists("target_df")
-        assert result is True
+            # But raw_path is on disk — should reload
+            result = validate_dataframe_exists("target_df")
+            assert result is True
 
     def test_raw_path_registered_but_file_missing_returns_false(self, global_registry_reset, tmp_path):
         csv_path = tmp_path / "missing.csv"
         # Register WITHOUT writing the CSV file
         small_reg = DataFrameRegistry(capacity=2)
-        idd_core.global_df_registry = small_reg
+        with override_global_registry(small_reg):
+            sample = pd.DataFrame({"a": [1, 2]})
+            sample.to_csv(csv_path, index=False)
+            target_id = small_reg.register_dataframe(sample, "ghost_df", raw_path=str(csv_path))
 
-        sample = pd.DataFrame({"a": [1, 2]})
-        sample.to_csv(csv_path, index=False)
-        target_id = small_reg.register_dataframe(sample, "ghost_df", raw_path=str(csv_path))
+            # Evict the df from cache
+            for i in range(2):
+                extra = pd.DataFrame({"x": [i]})
+                small_reg.register_dataframe(extra, f"evict2_{i}")
 
-        # Evict the df from cache
-        for i in range(2):
-            extra = pd.DataFrame({"x": [i]})
-            small_reg.register_dataframe(extra, f"evict2_{i}")
-
-        # Now delete the file so disk-fallback fails
-        csv_path.unlink()
-        assert validate_dataframe_exists("ghost_df") is False
+            # Now delete the file so disk-fallback fails
+            csv_path.unlink()
+            assert validate_dataframe_exists("ghost_df") is False
 
 
 # ---------------------------------------------------------------------------

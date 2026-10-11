@@ -47,14 +47,9 @@ def global_registry_reset():
     core = _idd_core()
     if core is None:
         pytest.skip("idd_core.py not available")
-    # Save original state
-    original = core.global_df_registry
-    # Replace with a fresh registry
     fresh = core.DataFrameRegistry(capacity=20)
-    core.global_df_registry = fresh
-    yield fresh
-    # Restore after test
-    core.global_df_registry = original
+    with core.override_global_registry(fresh):
+        yield fresh
 
 
 # ---------------------------------------------------------------------------
