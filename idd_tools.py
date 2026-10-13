@@ -389,6 +389,9 @@ def _resolve_artifact_path(
     Raises:
         ValueError: If file_name is invalid or path escapes authorized root.
     """
+    if not file_name or not isinstance(file_name, str) or not file_name.strip():
+        raise ValueError("file_name must be a non-empty string.")
+
     fn_stripped = file_name.strip()
     if _is_uri_scheme(fn_stripped):
         raise ValueError(
