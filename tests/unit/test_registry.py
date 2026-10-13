@@ -963,8 +963,10 @@ class TestLosslessDataFramePersistence:
         reloaded = reg.get_dataframe("tz_dates", load_if_not_exists=True)
         assert reloaded is not None
         pd.testing.assert_frame_equal(original_df, reloaded, check_dtype=True)
-        assert str(reloaded["utc_time"].dtype) == "datetime64[ns, UTC]"
-        assert "America/New_York" in str(reloaded["ny_time"].dtype)
+        assert reloaded["utc_time"].dtype == original_df["utc_time"].dtype
+        assert str(reloaded["utc_time"].dt.tz) == "UTC"
+        assert reloaded["ny_time"].dtype == original_df["ny_time"].dtype
+        assert "America/New_York" in str(reloaded["ny_time"].dt.tz)
 
     def test_nontrivial_index_structures_preserved_losslessly(self, core):
         """Test C: Custom index names and MultiIndexes preserved across cache eviction."""
