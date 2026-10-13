@@ -235,9 +235,8 @@ class Plan(BaseNoExtrasModel):
         receive strictly increasing versions.
         """
         if isinstance(data, cls):
-            cls._update_high_water_mark(data.plan_version)
-            return data
-        if not isinstance(data, dict):
+            data = data.model_dump()
+        elif not isinstance(data, dict):
             raise TypeError(
                 f"Snapshot data must be a dict or Plan, got {type(data).__name__}"
             )
@@ -269,16 +268,11 @@ class Plan(BaseNoExtrasModel):
             and (info.context.get("restore") or info.context.get("persisted"))
         )
 
-        if not self._ver_assigned:
-            if is_restore:
-                # Restoration path: trust and preserve the persisted plan_version
-                self._update_high_water_mark(self.plan_version)
-                self._ver_assigned = True
-            else:
-                # New plan path: allocate fresh globally monotonic version
-                v = self._allocate_version()
-                object.__setattr__(self, "plan_version", v)
-                self._ver_assigned = True
+        if not self._ver_assigned and not is_restore:
+            # New plan path: allocate fresh globally monotonic version
+            v = self._allocate_version()
+            object.__setattr__(self, "plan_version", v)
+            self._ver_assigned = True
 
         pv = self.plan_version
         self.plan_steps = [
@@ -291,6 +285,13 @@ class Plan(BaseNoExtrasModel):
             raise ValueError(
                 f"plan_steps must be strictly increasing by step_number, got {nums}"
             )
+
+        if not self._ver_assigned and is_restore:
+            # Restoration path: trust and preserve the persisted plan_version;
+            # update allocator high-water mark ONLY after successful validation
+            self._update_high_water_mark(self.plan_version)
+            self._ver_assigned = True
+
         return self
 
 

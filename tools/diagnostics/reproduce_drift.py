@@ -717,26 +717,68 @@ def probe_claim_8() -> ClaimResult:
 
             for fmt, writer in test_formats.items():
                 file_p = str(tmp_path / f"test.{fmt}")
-                df = pd.DataFrame({"col": [10, 20]})
-                writer(df, file_p)
+                expected_df = pd.DataFrame({"col": [10, 20]})
+                writer(expected_df, file_p)
                 df_id = f"test_{fmt}"
-                reg.register_dataframe(df, df_id, raw_path=file_p)
 
-                # Evict from in-memory cache
+                # Register directly from existing source file (df=None).
+                # Explicitly authorize trusted import only for this diagnostic temporary pickle fixture.
+                reg_kwargs = {"trust_external_pickle": True} if fmt == "pkl" else {}
+                try:
+                    registered_id = reg.register_dataframe(
+                        df=None,
+                        df_id=df_id,
+                        raw_path=file_p,
+                        **reg_kwargs,
+                    )
+                except Exception:
+                    registered_id = None
+                reg_ok = bool(registered_id == df_id and reg.has_df(df_id))
+
+                # Verify recorded reload path identifies the intended external source file (not a private snapshot)
+                reload_path_ok = False
+                if reg_ok:
+                    info = reg.registry.get(df_id, {})
+                    rec_reload = info.get("reload_path")
+                    if rec_reload and Path(rec_reload).resolve() == Path(file_p).resolve():
+                        reload_path_ok = True
+
+                # Force in-memory cache eviction
                 reg.cache.clear()
-                reg.registry[df_id]["df"] = None
+                if df_id in reg.registry:
+                    reg.registry[df_id]["df"] = None
 
-                # Test validate_dataframe_exists on evicted frame
+                # Test validate_dataframe_exists on evicted frame (must reload from external source)
                 v_ok = idd_core.validate_dataframe_exists(df_id)
 
-                # Test get_dataframe reload on evicted frame
-                loaded = reg.get_dataframe(df_id, load_if_not_exists=True)
-                g_ok = loaded is not None and not loaded.empty
+                # Re-evict to ensure get_dataframe independently reloads without cache hit masking broken reader
+                reg.cache.clear()
+                if df_id in reg.registry:
+                    reg.registry[df_id]["df"] = None
 
-                results[fmt] = {"validate_exists": v_ok, "get_dataframe_reload": g_ok}
+                # Test get_dataframe reload on evicted frame from external source
+                try:
+                    loaded = reg.get_dataframe(df_id, load_if_not_exists=True)
+                except Exception:
+                    loaded = None
+                g_ok = bool(
+                    loaded is not None
+                    and not loaded.empty
+                    and list(loaded["col"]) == [10, 20]
+                )
+
+                results[fmt] = {
+                    "registered": reg_ok,
+                    "reload_path_source": reload_path_ok,
+                    "validate_exists": v_ok,
+                    "get_dataframe_reload": g_ok,
+                }
 
     all_formats_ok = all(
-        results[fmt]["validate_exists"] and results[fmt]["get_dataframe_reload"]
+        results[fmt]["registered"]
+        and results[fmt]["reload_path_source"]
+        and results[fmt]["validate_exists"]
+        and results[fmt]["get_dataframe_reload"]
         for fmt in ["csv", "pkl", "json"]
     )
 
@@ -744,24 +786,24 @@ def probe_claim_8() -> ClaimResult:
         classification = "OBSERVED INVARIANT"
         is_defect = False
         observed = (
-            f"Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded across all registered formats upon cache eviction: "
-            f"csv (validate={results['csv']['validate_exists']}, reload={results['csv']['get_dataframe_reload']}), "
-            f"pkl (validate={results['pkl']['validate_exists']}, reload={results['pkl']['get_dataframe_reload']}), "
-            f"json (validate={results['json']['validate_exists']}, reload={results['json']['get_dataframe_reload']})."
+            f"Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded across all registered source formats upon cache eviction: "
+            f"csv (registered={results['csv']['registered']}, reload_path={results['csv']['reload_path_source']}, validate={results['csv']['validate_exists']}, reload={results['csv']['get_dataframe_reload']}), "
+            f"pkl (registered={results['pkl']['registered']}, reload_path={results['pkl']['reload_path_source']}, validate={results['pkl']['validate_exists']}, reload={results['pkl']['get_dataframe_reload']}), "
+            f"json (registered={results['json']['registered']}, reload_path={results['json']['reload_path_source']}, validate={results['json']['validate_exists']}, reload={results['json']['get_dataframe_reload']})."
         )
         explanation = (
             "validate_dataframe_exists delegates to authoritative registry loader get_dataframe(load_if_not_exists=True), "
-            "seamlessly supporting all registered formats (.csv, .pkl, .json) upon cache eviction."
+            "seamlessly supporting all registered source formats (.csv, .pkl, .json) upon cache eviction without falling back to stale CSV assumptions."
         )
     else:
         classification = "REPRODUCED"
         is_defect = True
         observed = (
-            f"validate_dataframe_exists failed on evicted formats: "
-            f"csv={results['csv']['validate_exists']}, pkl={results['pkl']['validate_exists']}, json={results['json']['validate_exists']}."
+            f"validate_dataframe_exists or source reload failed on evicted formats: "
+            f"csv={results['csv']}, pkl={results['pkl']}, json={results['json']}."
         )
         explanation = (
-            "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames because it does not use canonical loader delegation."
+            "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames or format source loading failed upon cache eviction."
         )
 
     return ClaimResult(

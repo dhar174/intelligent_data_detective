@@ -12,6 +12,8 @@ Validates that:
 8. Machine-readable JSON output contains complete environment and summary metadata.
 """
 
+import pytest
+
 from tools.diagnostics import reproduce_drift
 from tools.diagnostics.reproduce_drift import (
     ClaimResult,
@@ -268,6 +270,62 @@ def test_claim_8_all_formats_succeed_returns_observed_invariant():
     assert res.is_defect is False
     assert res.evidence_type == "DYNAMIC"
     assert "Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded" in res.observed_behavior
+    assert "registered=True" in res.observed_behavior
+    assert "reload_path=True" in res.observed_behavior
+
+
+def test_claim_8_broken_csv_reader_detected(monkeypatch):
+    """Verify that a broken CSV reader is detected by Claim 8 and reports REPRODUCED."""
+    import pandas as pd
+
+    def broken_read_csv(*args, **kwargs):
+        raise RuntimeError("Simulated CSV reader failure")
+
+    monkeypatch.setattr(pd, "read_csv", broken_read_csv)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_broken_json_reader_detected(monkeypatch):
+    """Verify that a broken JSON reader is detected by Claim 8 and reports REPRODUCED."""
+    import pandas as pd
+
+    def broken_read_json(*args, **kwargs):
+        raise RuntimeError("Simulated JSON reader failure")
+
+    monkeypatch.setattr(pd, "read_json", broken_read_json)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_registration_failure_not_counted_as_success(monkeypatch):
+    """Verify that registration failures cannot silently count as successful evidence in Claim 8."""
+    import idd_core
+    orig_reg = idd_core.DataFrameRegistry.register_dataframe
+
+    def failing_register(self, df=None, df_id=None, raw_path="", **kwargs):
+        if df_id == "test_csv":
+            return None  # Simulate silent registration failure
+        return orig_reg(self, df=df, df_id=df_id, raw_path=raw_path, **kwargs)
+
+    monkeypatch.setattr(idd_core.DataFrameRegistry, "register_dataframe", failing_register)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_untrusted_pickle_rejected_by_default(tmp_path):
+    """Verify that untrusted external pickle imports remain rejected by default without trust_external_pickle."""
+    import idd_core
+    import pandas as pd
+    reg = idd_core.DataFrameRegistry(capacity=5)
+    pkl_file = tmp_path / "external.pkl"
+    pd.DataFrame({"x": [1]}).to_pickle(pkl_file)
+
+    with pytest.raises(idd_core.DataFrameRegistryError, match="trust_external_pickle"):
+        reg.register_dataframe(df=None, df_id="untrusted", raw_path=str(pkl_file))
 
 
 def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):

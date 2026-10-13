@@ -5,8 +5,8 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 - **`BaseNoExtrasModel`**: Mandatory base contract (`extra='forbid'`, `reply_msg_to_supervisor`, `finished_this_task`, `expect_reply`).
 - **`Plan` Lifecycle Contract**:
   - Normal construction (`Plan(...)` / `model_validate(data)`) allocates fresh monotonic version under lock, even if draft input supplied `plan_version=1`.
-  - Restoration entrypoint (`Plan.from_persisted_snapshot(data)` / `model_validate(data, context={'restore': True})`) preserves stored snapshot version (e.g. 42).
-  - Allocator high-water mark policy: advances under lock on restored version so subsequent new plans receive versions > restored.
+  - Restoration entrypoint (`Plan.from_persisted_snapshot(data)` / `model_validate(data, context={'restore': True})`) preserves stored snapshot version (e.g. 42). Fully revalidates existing `Plan` instances via `data.model_dump()` through the RESTORE lifecycle, preventing mutated invalid state (e.g. duplicate step numbers, out-of-order steps, corrupted schema fields) from bypassing validation, while synchronizing step versions and leaving the original input object unmutated.
+  - Allocator high-water mark policy: advances under lock on restored version only after successful validation so subsequent new plans receive versions > restored, without advancing on failed restoration.
   - `Plan.reset_counter(start=1)` for deterministic test isolation.
   - Step versions synchronized to parent in both creation and restoration paths.
   - `Plan._counter` iterator-compliant wrapper for backward compatibility.
@@ -61,18 +61,18 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 
 ### 4. CP0 Diagnostic Alignment (`reproduce_drift.py` & `test_cp0_diagnostics.py`)
 - **Claim 2 Dynamic High-Water Mark**: Evaluates approved NEW vs. RESTORE lifecycle contracts. Dynamically sets `target_restore_v = v2 + 100`, guaranteeing it strictly exceeds pre-restoration allocator state regardless of test order. Verifies allocator advances > `target_restore_v`, step synchronization, and revalidation idempotence. Reports `OBSERVED INVARIANT` (`is_defect=False`) on healthy code.
-- **Claim 8 Format Support Resolution**: Dynamically verifies that `validate_dataframe_exists` and `get_dataframe(load_if_not_exists=True)` succeed across all registered formats (.csv, .pkl, .json) upon cache eviction, resolving the historical defect and reporting `OBSERVED INVARIANT` (`is_defect=False`).
-- **Regression Tests**: Added simulated regression tests for broken restore, broken new-plan allocation, broken high-water advancement (Claim 2), and broken non-CSV validation fallback (Claim 8) to `test_cp0_diagnostics.py`.
+- **Claim 8 Format Support Resolution**: Dynamically verifies that `validate_dataframe_exists` and `get_dataframe(load_if_not_exists=True)` succeed across all registered external source formats (.csv, .pkl, .json) upon cache eviction using `df=None` and explicit `trust_external_pickle=True` for the temporary fixture, verifying that reload paths identify the source files rather than private snapshots and testing unmasked reader execution. Reports `OBSERVED INVARIANT` (`is_defect=False`).
+- **Regression Tests**: Added simulated regression tests for broken restore, broken new-plan allocation, broken high-water advancement (Claim 2), broken CSV reader detection, broken JSON reader detection, silent registration failure detection, untrusted pickle rejection, and non-CSV validation fallback (Claim 8) to `test_cp0_diagnostics.py`.
 
 ### 5. Verification Results
-- **Unit & Integration Suite**: 544 passed, 16 skipped in 44.87s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
-- **Models Test Suite**: 29 passed in 6.14s (`tests/unit/test_models.py`).
+- **Unit & Integration Suite**: 550 passed, 16 skipped in 19.92s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
+- **Models Test Suite**: 35 passed in 2.47s (`tests/unit/test_models.py`, including 6 new tests in `TestPlanInstanceRestorationValidation` covering valid instance restoration, nested version sync, duplicate step rejection, schema violations, roundtrip equivalence, and allocator safety).
 - **Registry Test Suite**: 94 tests total (`tests/unit/test_registry.py`):
   - On Windows: 86 passed, 8 skipped (6 POSIX permission/ownership tests, 2 optional pyarrow).
   - On Linux (POSIX in WSL): 94 passed, 0 skipped in 5.90s.
   - Covers group-writable directory rejection (mode 0770 rejected, mode 0700 accepted), fail-closed pickle deserialization (boundary confinement, traversal, symlink escapes, external untrusted pickle rejection, trusted opt-in imports, CSV/JSON/Parquet compatibility), and secure staging permissions (mode 0600 during serialization, cleanup on failure).
-- **Tool Error Handling Suite**: 24 passed in 4.32s (`tests/unit/test_handle_tool_errors.py`).
-- **CP0 Diagnostics Suite**: 17 passed in 6.77s (`tools/diagnostics/test_cp0_diagnostics.py`).
+- **Tool Error Handling Suite**: 24 passed in 2.28s (`tests/unit/test_handle_tool_errors.py`).
+- **CP0 Diagnostics Suite**: 21 passed in 4.13s (`tools/diagnostics/test_cp0_diagnostics.py`).
 - **Drift Probes**: 12/12 evaluated cleanly (`tools/diagnostics/reproduce_drift.py --json`: 5 reproduced, 6 observed invariants, 1 static only, 0 blocked).
 - **Core & Memory Suites**: 110 passed in 5.81s (`test_intelligent_data_detective.py`, `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py`, `test_validate_notebook_integrity.py`).
 - **Prompt Suites**: 17 passed in 2.72s (`test_prompt_formatting.py`, `test_prompt_template_fixes.py`).

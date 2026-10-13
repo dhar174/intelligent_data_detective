@@ -429,3 +429,118 @@ class TestPlanLifecycleSemantics:
 
         assert sorted(restore_versions) == [100 + i for i in range(15)]
         assert len(new_versions) == len(set(new_versions))
+
+
+class TestPlanInstanceRestorationValidation:
+    """Regression suite for PR #157 Fix A: Plan.from_persisted_snapshot(Plan) validation."""
+
+    def test_valid_instance_restoration_preserves_version_without_consuming_allocator(self, core):
+        """A. Valid existing Plan restores without changing version or consuming another allocator version."""
+        core.Plan.reset_counter(start=10)
+        p = make_plan(core, title="Plan at 10")
+        assert p.plan_version == 10
+
+        # Restoring p must preserve version 10 without consuming 11
+        restored = core.Plan.from_persisted_snapshot(p)
+        assert restored.plan_version == 10
+        assert restored is not p  # returns a fresh validated instance, not unvalidated alias
+
+        # Next new plan gets 11 (high-water mark preserved at 11, counter not prematurely advanced)
+        next_plan = make_plan(core, title="Next Plan")
+        assert next_plan.plan_version == 11
+
+    def test_nested_version_synchronization_preserves_original_object(self, core):
+        """B. Mutated step plan_version is synchronized on restored instance while original remains unchanged."""
+        core.Plan.reset_counter(start=20)
+        p = make_plan(core, title="Parent Plan")
+        assert p.plan_version == 20
+        assert all(s.plan_version == 20 for s in p.plan_steps)
+
+        # Mutate a step's plan_version on the original object
+        p.plan_steps[0].plan_version = 9999
+        assert p.plan_steps[0].plan_version == 9999
+
+        # Restore from mutated instance
+        restored = core.Plan.from_persisted_snapshot(p)
+        # Restored step must be synchronized to parent version
+        assert restored.plan_version == 20
+        assert restored.plan_steps[0].plan_version == 20
+
+        # Original object must remain untouched by restoration
+        assert p.plan_steps[0].plan_version == 9999
+
+    def test_mutated_duplicate_step_numbers_rejected_on_restoration(self, core):
+        """C. Mutating an existing Plan to contain duplicate step numbers is rejected by restoration."""
+        core.Plan.reset_counter(start=30)
+        p = make_plan(core, title="Duplicate Step Test", steps=[
+            make_step(1, "Step 1", "Do 1"),
+            make_step(2, "Step 2", "Do 2"),
+        ])
+        assert len(p.plan_steps) == 2
+
+        # Mutate to duplicate step numbers (both step_number=1)
+        p.plan_steps[1].step_number = 1
+
+        with pytest.raises(ValidationError) as exc_info:
+            core.Plan.from_persisted_snapshot(p)
+        assert "plan_steps must be strictly increasing by step_number" in str(exc_info.value)
+
+    def test_malformed_plan_instance_cannot_bypass_validation(self, core):
+        """D. Malformed Plan instances (e.g. invalid fields, non-string, missing required) reject on restoration."""
+        core.Plan.reset_counter(start=40)
+        p = make_plan(core, title="Malformed Test")
+
+        # Mutate a field to violate schema (e.g. plan_title = None)
+        p.plan_title = None
+
+        with pytest.raises(ValidationError):
+            core.Plan.from_persisted_snapshot(p)
+
+    def test_serialization_roundtrip_equivalence(self, core):
+        """E. Plan.from_persisted_snapshot(plan) and Plan.from_persisted_snapshot(plan.model_dump()) produce equivalent representations."""
+        core.Plan.reset_counter(start=50)
+        p = make_plan(core, title="Equivalence Test", steps=[
+            make_step(1, "Step 1", "Do 1"),
+            make_step(2, "Step 2", "Do 2"),
+        ])
+        r1 = core.Plan.from_persisted_snapshot(p)
+        r2 = core.Plan.from_persisted_snapshot(p.model_dump())
+
+        assert r1.model_dump() == r2.model_dump()
+        assert r1.plan_version == r2.plan_version == p.plan_version
+
+    def test_allocator_safety_on_invalid_and_valid_restoration(self, core):
+        """F. Restoring invalid Plan does not advance allocator; restoring valid higher version updates high-water mark."""
+        core.Plan.reset_counter(start=10)
+        # Create plan at version 10
+        p_valid = make_plan(core, title="Initial at 10")
+        assert p_valid.plan_version == 10
+
+        # Create a plan with high version 500, but mutate it to be invalid (duplicate step numbers)
+        p_invalid = make_plan(core, title="High Invalid", version=500)
+        p_invalid.plan_version = 500
+        p_invalid.plan_steps = [
+            core.PlanStep(**make_step(1, "Step 1", "Do 1", version=500)),
+            core.PlanStep(**make_step(1, "Step 1 dup", "Do 1 dup", version=500)),
+        ]
+
+        # Attempt to restore invalid plan
+        with pytest.raises(ValidationError):
+            core.Plan.from_persisted_snapshot(p_invalid)
+
+        # Allocator counter must NOT have advanced to > 500; next plan must be 12 (10 was p_valid, 11 was p_invalid construction)
+        p_next = make_plan(core, title="Next After Failed Restore")
+        assert p_next.plan_version == 12
+
+        # Now restore a VALID plan with high version 500
+        p_high_valid = make_plan(core, title="High Valid", steps=[
+            make_step(1, "Step 1", "Do 1", version=500),
+            make_step(2, "Step 2", "Do 2", version=500),
+        ])
+        p_high_valid.plan_version = 500
+        restored_high = core.Plan.from_persisted_snapshot(p_high_valid)
+        assert restored_high.plan_version == 500
+
+        # Now allocator must advance beyond 500
+        p_after_high = make_plan(core, title="After High Valid")
+        assert p_after_high.plan_version == 501
