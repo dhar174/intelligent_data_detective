@@ -226,44 +226,129 @@ def probe_claim_1() -> ClaimResult:
 
 
 def probe_claim_2() -> ClaimResult:
-    """Claim 2: Explicit Plan version preservation."""
-    title = "Plan version overwrite on explicitly supplied plan_version"
-    subsystem = "Pydantic Planning Models (Plan.__init__)"
+    """Claim 2: Explicit Plan version lifecycle (NEW allocation vs. RESTORE preservation)."""
+    title = "Plan version lifecycle: explicit new-plan allocation vs. snapshot restoration"
+    subsystem = "Pydantic Planning Models (Plan lifecycle)"
     locators = [
-        {"file": "idd_core.py", "lines": "635-642", "symbol": "Plan._sync_steps_and_assert_increasing"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "250-265", "symbol": "Plan._sync_steps_and_assert_increasing"},
+        {"file": "idd_models.py", "lines": "172-296", "symbol": "Plan._sync_steps_and_assert_increasing & from_persisted_snapshot"},
+        {"file": "idd_core.py", "lines": "30-44", "symbol": "Plan re-export from idd_models"},
+        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "250-265", "symbol": "Historical Plan._sync_steps_and_assert_increasing"},
     ]
-    expected = "Explicitly caller-supplied plan_version (e.g. 42 during deserialization) should be preserved."
+    expected = (
+        "NEW plan creation (Plan(...)) must allocate a fresh monotonic version even if draft version was provided; "
+        "RESTORE (Plan.from_persisted_snapshot) must preserve stored snapshot version (e.g. 42); "
+        "allocator high-water mark must advance > restored; step versions must synchronize to parent; "
+        "revalidation of an existing Plan must be idempotent."
+    )
 
     if not HAS_IDD_CORE:
         return ClaimResult(2, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
     base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
-    step = idd_core.PlanStep(step_number=1, step_name="s", step_description="d", is_step_complete=True, plan_version=42, **base_agent)
-    plan = idd_core.Plan(plan_title="T", plan_summary="S", plan_steps=[step], plan_version=42, **base_agent)
 
-    was_overwritten = (plan.plan_version != 42)
-    observed = f"Caller requested plan_version=42; resulting plan.plan_version={plan.plan_version} (Overwritten: {was_overwritten})."
+    try:
+        if not hasattr(idd_core.Plan, "from_persisted_snapshot"):
+            return ClaimResult(
+                2, title, subsystem, "BLOCKED", "DYNAMIC", True, expected,
+                "Plan.from_persisted_snapshot restoration API is missing",
+                "idd_core.Plan missing from_persisted_snapshot", locators, "Missing lifecycle API",
+            )
 
-    if was_overwritten:
-        classification = "REPRODUCED"
-        is_defect = True
-    else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
+        # 1. NEW Plan Creation:
+        # Normal construction allocates fresh version even if draft input supplied plan_version=1
+        new_plan_1 = idd_core.Plan(
+            plan_title="New Plan 1", plan_summary="S1",
+            plan_steps=[idd_core.PlanStep(step_number=1, step_name="s1", step_description="d1", is_step_complete=False, plan_version=1, **base_agent)],
+            plan_version=1, **base_agent
+        )
+        v1 = new_plan_1.plan_version
+        step_v1 = new_plan_1.plan_steps[0].plan_version
 
-    return ClaimResult(
-        claim_id=2,
-        title=title,
-        subsystem=subsystem,
-        classification=classification,
-        evidence_type="DYNAMIC",
-        is_defect=is_defect,
-        expected_behavior=expected,
-        observed_behavior=observed,
-        defect_or_contract_explanation="Plan unconditionally overwrites caller-supplied plan_version with the next counter value because _ver_assigned defaults to False on instantiation.",
-        locators=locators,
-    )
+        new_plan_2 = idd_core.Plan(
+            plan_title="New Plan 2", plan_summary="S2",
+            plan_steps=[idd_core.PlanStep(step_number=1, step_name="s2", step_description="d2", is_step_complete=False, plan_version=1, **base_agent)],
+            plan_version=1, **base_agent
+        )
+        v2 = new_plan_2.plan_version
+
+        new_plan_allocated = (v2 > v1 and step_v1 == v1)
+
+        # 2. RESTORE Snapshot:
+        # Establish controlled baseline: snapshot version must strictly exceed current allocator high-water mark (v2)
+        target_restore_v = v2 + 100
+        snapshot = {
+            "plan_title": f"Restored {target_restore_v}", "plan_summary": "S_restored",
+            "plan_steps": [{"step_number": 1, "step_name": "sr", "step_description": "dr", "is_step_complete": True, "plan_version": 999, **base_agent}],
+            "plan_version": target_restore_v, **base_agent
+        }
+        restored_plan = idd_core.Plan.from_persisted_snapshot(snapshot)
+        v_restored = restored_plan.plan_version
+        step_v_restored = restored_plan.plan_steps[0].plan_version
+        restore_preserved = (v_restored == target_restore_v and step_v_restored == target_restore_v)
+
+        # 3. High-Water Mark Advancement:
+        # Subsequent new plan after restoring target_restore_v must receive version > target_restore_v
+        new_plan_after_restore = idd_core.Plan(
+            plan_title="New Plan After Restore", plan_summary="S_after",
+            plan_steps=[], plan_version=1, **base_agent
+        )
+        v_after = new_plan_after_restore.plan_version
+        high_water_advanced = (v_after > target_restore_v)
+
+        # 4. Idempotence:
+        # Revalidating existing plan instance does not allocate another version
+        revalidated = idd_core.Plan.model_validate(restored_plan)
+        idempotent_revalidation = (revalidated.plan_version == target_restore_v)
+
+        all_lifecycle_ok = (
+            new_plan_allocated
+            and restore_preserved
+            and high_water_advanced
+            and idempotent_revalidation
+        )
+
+        observed = (
+            f"NEW plans allocate monotonically: v1={v1}, v2={v2} (monotonic: {new_plan_allocated}); "
+            f"RESTORE preserved snapshot: v_restored={v_restored}, step_v={step_v_restored} (preserved: {restore_preserved}); "
+            f"High-water mark after restore: v_after={v_after} (>{target_restore_v}: {high_water_advanced}); "
+            f"Revalidation idempotent: {idempotent_revalidation}."
+        )
+
+        if all_lifecycle_ok:
+            classification = "OBSERVED INVARIANT"
+            is_defect = False
+            explanation = (
+                "Approved Plan lifecycle contract confirmed: normal construction allocates fresh monotonic versions; "
+                "from_persisted_snapshot preserves stored snapshot versions; high-water mark advances; and revalidation is idempotent."
+            )
+        else:
+            classification = "REPRODUCED"
+            is_defect = True
+            explanation = (
+                f"Plan lifecycle regression detected: new_allocated={new_plan_allocated}, "
+                f"restore_preserved={restore_preserved}, high_water_advanced={high_water_advanced}, "
+                f"idempotent_revalidation={idempotent_revalidation}."
+            )
+
+        return ClaimResult(
+            claim_id=2,
+            title=title,
+            subsystem=subsystem,
+            classification=classification,
+            evidence_type="DYNAMIC",
+            is_defect=is_defect,
+            expected_behavior=expected,
+            observed_behavior=observed,
+            defect_or_contract_explanation=explanation,
+            locators=locators,
+        )
+
+    except Exception as e:
+        return ClaimResult(
+            2, title, subsystem, "BLOCKED", "DYNAMIC", True, expected,
+            f"Diagnostic execution raised unexpected exception: {e}",
+            str(e), locators, "Lifecycle probe failed with exception",
+        )
 
 
 def probe_claim_3() -> ClaimResult:
@@ -562,24 +647,21 @@ def probe_claim_7() -> ClaimResult:
     if not HAS_IDD_CORE:
         return ClaimResult(7, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
-    orig_reg = getattr(idd_core, "global_df_registry", None)
     prev_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
         reg = idd_core.DataFrameRegistry(capacity=5)
-        idd_core.global_df_registry = reg
-        reg.register_dataframe(pd.DataFrame({"a": [1]}), "valid_df_id")
+        with idd_core.override_global_registry(reg):
+            reg.register_dataframe(pd.DataFrame({"a": [1]}), "valid_df_id")
 
-        @idd_core.handle_tool_errors
-        def tool_without_df_id(message: str, count: int) -> str:
-            return f"{message}: {count}"
+            @idd_core.handle_tool_errors
+            def tool_without_df_id(message: str, count: int) -> str:
+                return f"{message}: {count}"
 
-        res = tool_without_df_id("hello", 42)
-        broken_by_first_arg = isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res
+            res = tool_without_df_id("hello", 42)
+            broken_by_first_arg = isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res
     finally:
         logging.disable(prev_level)
-        if orig_reg is not None:
-            idd_core.global_df_registry = orig_reg
 
     observed = (
         f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Broken by args[0] assumption: {broken_by_first_arg}). "
@@ -622,15 +704,11 @@ def probe_claim_8() -> ClaimResult:
     if not HAS_IDD_CORE:
         return ClaimResult(8, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
-    orig_reg = getattr(idd_core, "global_df_registry", None)
     results: Dict[str, Dict[str, bool]] = {}
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="idd_reg_probe_") as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            reg = idd_core.DataFrameRegistry(capacity=5)
-            idd_core.global_df_registry = reg
-
+    with tempfile.TemporaryDirectory(prefix="idd_reg_probe_") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        reg = idd_core.DataFrameRegistry(capacity=5)
+        with idd_core.override_global_registry(reg):
             test_formats = {
                 "csv": lambda df, p: df.to_csv(p, index=False),
                 "pkl": lambda df, p: df.to_pickle(p),
@@ -639,47 +717,94 @@ def probe_claim_8() -> ClaimResult:
 
             for fmt, writer in test_formats.items():
                 file_p = str(tmp_path / f"test.{fmt}")
-                df = pd.DataFrame({"col": [10, 20]})
-                writer(df, file_p)
+                expected_df = pd.DataFrame({"col": [10, 20]})
+                writer(expected_df, file_p)
                 df_id = f"test_{fmt}"
-                reg.register_dataframe(df, df_id, raw_path=file_p)
 
-                # Evict from in-memory cache
+                # Register directly from existing source file (df=None).
+                # Explicitly authorize trusted import only for this diagnostic temporary pickle fixture.
+                reg_kwargs = {"trust_external_pickle": True} if fmt == "pkl" else {}
+                try:
+                    registered_id = reg.register_dataframe(
+                        df=None,
+                        df_id=df_id,
+                        raw_path=file_p,
+                        **reg_kwargs,
+                    )
+                except Exception:
+                    registered_id = None
+                reg_ok = bool(registered_id == df_id and reg.has_df(df_id))
+
+                # Verify recorded reload path identifies the intended external source file (not a private snapshot)
+                reload_path_ok = False
+                if reg_ok:
+                    info = reg.registry.get(df_id, {})
+                    rec_reload = info.get("reload_path")
+                    if rec_reload and Path(rec_reload).resolve() == Path(file_p).resolve():
+                        reload_path_ok = True
+
+                # Force in-memory cache eviction
                 reg.cache.clear()
-                reg.registry[df_id]["df"] = None
+                if df_id in reg.registry:
+                    reg.registry[df_id]["df"] = None
 
-                # Test validate_dataframe_exists on evicted frame
+                # Test validate_dataframe_exists on evicted frame (must reload from external source)
                 v_ok = idd_core.validate_dataframe_exists(df_id)
 
-                # Test get_dataframe reload on evicted frame
-                loaded = reg.get_dataframe(df_id, load_if_not_exists=True)
-                g_ok = loaded is not None and not loaded.empty
+                # Re-evict to ensure get_dataframe independently reloads without cache hit masking broken reader
+                reg.cache.clear()
+                if df_id in reg.registry:
+                    reg.registry[df_id]["df"] = None
 
-                results[fmt] = {"validate_exists": v_ok, "get_dataframe_reload": g_ok}
-    finally:
-        if orig_reg is not None:
-            idd_core.global_df_registry = orig_reg
+                # Test get_dataframe reload on evicted frame from external source
+                try:
+                    loaded = reg.get_dataframe(df_id, load_if_not_exists=True)
+                except Exception:
+                    loaded = None
+                g_ok = bool(
+                    loaded is not None
+                    and not loaded.empty
+                    and list(loaded["col"]) == [10, 20]
+                )
 
-    csv_reloaded = results["csv"]["get_dataframe_reload"] and results["csv"]["validate_exists"]
-    pkl_reloaded = results["pkl"]["get_dataframe_reload"]
-    pkl_val_failed = not results["pkl"]["validate_exists"]
-    json_reloaded = results["json"]["get_dataframe_reload"]
-    json_val_failed = not results["json"]["validate_exists"]
+                results[fmt] = {
+                    "registered": reg_ok,
+                    "reload_path_source": reload_path_ok,
+                    "validate_exists": v_ok,
+                    "get_dataframe_reload": g_ok,
+                }
 
-    observed = (
-        f"get_dataframe(load_if_not_exists=True) succeeded across all formats: "
-        f"csv={results['csv']['get_dataframe_reload']}, pkl={results['pkl']['get_dataframe_reload']}, json={results['json']['get_dataframe_reload']}. "
-        f"However, validate_dataframe_exists FAILED on evicted pkl/json: "
-        f"csv={results['csv']['validate_exists']}, pkl={results['pkl']['validate_exists']}, json={results['json']['validate_exists']} "
-        f"because it hardcodes pd.read_csv(raw_path)."
+    all_formats_ok = all(
+        results[fmt]["registered"]
+        and results[fmt]["reload_path_source"]
+        and results[fmt]["validate_exists"]
+        and results[fmt]["get_dataframe_reload"]
+        for fmt in ["csv", "pkl", "json"]
     )
 
-    if csv_reloaded and pkl_reloaded and pkl_val_failed and json_val_failed:
+    if all_formats_ok:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
+        observed = (
+            f"Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded across all registered source formats upon cache eviction: "
+            f"csv (registered={results['csv']['registered']}, reload_path={results['csv']['reload_path_source']}, validate={results['csv']['validate_exists']}, reload={results['csv']['get_dataframe_reload']}), "
+            f"pkl (registered={results['pkl']['registered']}, reload_path={results['pkl']['reload_path_source']}, validate={results['pkl']['validate_exists']}, reload={results['pkl']['get_dataframe_reload']}), "
+            f"json (registered={results['json']['registered']}, reload_path={results['json']['reload_path_source']}, validate={results['json']['validate_exists']}, reload={results['json']['get_dataframe_reload']})."
+        )
+        explanation = (
+            "validate_dataframe_exists delegates to authoritative registry loader get_dataframe(load_if_not_exists=True), "
+            "seamlessly supporting all registered source formats (.csv, .pkl, .json) upon cache eviction without falling back to stale CSV assumptions."
+        )
+    else:
         classification = "REPRODUCED"
         is_defect = True
-    else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
+        observed = (
+            f"validate_dataframe_exists or source reload failed on evicted formats: "
+            f"csv={results['csv']}, pkl={results['pkl']}, json={results['json']}."
+        )
+        explanation = (
+            "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames or format source loading failed upon cache eviction."
+        )
 
     return ClaimResult(
         claim_id=8,
@@ -690,7 +815,7 @@ def probe_claim_8() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation="validate_dataframe_exists calls pd.read_csv directly instead of using registry._read_df, causing silent validation failure on cache-evicted pickle, parquet, and JSON DataFrames.",
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 

@@ -522,4 +522,135 @@ This is now the strongest completion baseline:
 - `git diff --check`: 0 errors.
 <!-- session-curated:2026-09-23-pr130-tool-message-conversion:end -->
 
+<!-- session-curated:2026-10-11-cp1-canonical-models-registry:start -->
+## 2026-10-11 — Checkpoint 1 (CP1): Canonical Models and ContextVar-isolated DataFrameRegistry (Issue #156, PR #157)
+
+### Scope Delivered
+- Established `idd_models.py` with canonical planning models and reducers:
+  - `BaseNoExtrasModel` contract (`extra="forbid"`, `reply_msg_to_supervisor`, `finished_this_task`, `expect_reply`).
+  - Mandatory 6-point `Plan` lifecycle contract:
+    - New plan construction (`Plan(...)` / `model_validate(data)`) allocates fresh monotonic version under lock even if draft input supplied `plan_version=1`.
+    - Explicit restoration (`Plan.from_persisted_snapshot(data)` / `model_validate(data, context={"restore": True})`) preserves stored snapshot version without reallocating.
+    - Allocator high-water mark advances on restored version under lock so subsequent new plans receive versions > restored.
+    - Step versions synchronized to parent version in both paths.
+    - `Plan.reset_counter(start=1)` for deterministic test isolation.
+    - `Plan._counter` iterator-compliant wrapper for backward compatibility.
+  - `CompletedStepsAndTasks` with RC-2 ascending deduplication return and duplicate step number rejection.
+  - `_reduce_plan_keep_sorted` state reducer.
+- Established `idd_registry.py` with canonical DataFrameRegistry:
+  - Thread-safe LRU caching with `RLock`.
+  - Multi-format reload and disk persistence (.csv, .parquet, .pkl, .json).
+  - `clear()` user file safety guarantee (never deletes disk files).
+  - `ContextVar` override engine with token-based reset in `finally`, LIFO nesting, and thread/asyncio context isolation.
+- Atomically refactored `idd_core.py`:
+  - Re-exports all canonical symbols.
+  - Module-level `__getattr__` exposing `global_df_registry` delegating dynamically to `get_global_registry()`.
+  - Internal lookups in `validate_dataframe_exists` and `get_global_df_registry` updated to call `get_global_registry()`.
+  - String tool error return contract and boolean dataframe validation contract preserved until CP2.
+- Migrated all direct module assignments:
+  - `tests/conftest.py` (`global_registry_reset` fixture).
+  - `tests/unit/test_handle_tool_errors.py` (eviction tests).
+  - `tools/diagnostics/reproduce_drift.py` (probe 7 and probe 8).
+- Zero notebook churn: exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+
+### Verification Baseline
+- `test_validate_run.py tests/unit tests/integration -q`: **478 passed, 9 skipped** in 17.62s (15 new CP1 unit tests added).
+- Core & memory suites: **77 passed** in 1.46s.
+- Prompt suites: **17 passed** in 2.21s.
+- Notebook integrity suite: **33 passed** in 2.28s.
+- Error handling framework: **15 passed, 1 deselected** in 0.72s.
+- CP0 diagnostics suite: **13 passed** in 3.70s.
+- Drift diagnostics: **12/12 evaluated cleanly** with 0 blocked, 0 failures.
+- Notebook validation: **99 cells compiled cleanly**, 15 nodes / 33 edges state graph verified.
+- Draft PR opened: [PR #157](https://github.com/dhar174/intelligent_data_detective/pull/157).
+- Status: **STOPPED FOR INDEPENDENT CP1 CODE REVIEW**.
+<!-- session-curated:2026-10-11-cp1-canonical-models-registry:end -->
+
+<!-- session-curated:2026-10-12-cp1-corrective-pass:start -->
+## 2026-10-12 — CP1 Corrective Pass: Lossless DataFrame Persistence Across Cache Eviction (Issue #156, PR #157)
+
+### Context & Independent Review Resolution
+- **Review Finding**: Independent review `pullrequestreview-5497205553` on PR #157 flagged a Priority 1 (P1) defect regarding internal backing snapshot fidelity across LRU cache eviction and reload.
+- **Root Cause**: `_safe_backing_filename(df_id)` in `idd_registry.py` generated backing filenames with `.csv` extension. While CSV was functional for simple tabular data, CSV serialization is inherently lossy for pandas DataFrames:
+  1. Integer column labels (`0`) silently converted to string `'0'` (or `'0.1'` on collisions).
+  2. Timezone-aware datetimes lost timezone metadata or coerced to naive strings.
+  3. Non-trivial indexes (MultiIndex, named indexes) flattened to default ranges.
+  4. Nullable and categorical dtypes (`Int64`, `boolean`, `category`) degraded to float64 or object.
+
+### Solution Delivered
+1. **Transitioned Backing Storage to `.pkl`:**
+   - Modified `_safe_backing_filename()` in `idd_registry.py` to use `.pkl` (`{safe_prefix}_{digest[:16]}.pkl` or `df_{digest[:24]}.pkl`).
+   - `_write_df()` and `_read_df()` utilize `pd.to_pickle()` and `pd.read_pickle()` for internal backing storage, preserving complete DataFrame representation losslessly.
+2. **Clarified Trusted Storage Boundary:**
+   - Internal snapshots reside strictly within the registry's private, verified directory (`self.data_dir`), protected by `_get_owned_backing_path()` path-containment assertions.
+   - External user files (`raw_path`) are never modified or rewritten to `.pkl`; they retain caller-specified formats (`.csv`, `.parquet`, `.json`) byte-for-byte untouched.
+3. **Comprehensive Regression Suite:**
+   - Added `TestLosslessDataFramePersistence` with 10 comprehensive tests (Tests A–J) in `tests/unit/test_registry.py`:
+     - Test A: Mixed column label types (int `0` vs str `'0'`).
+     - Test B: Timezone-aware datetimes across timezones (UTC, America/New_York) without coercion.
+     - Test C: MultiIndex columns.
+     - Test D: MultiIndex rows.
+     - Test E: Named index preservation.
+     - Test F: Nullable dtypes (`Int64`, `boolean`) and `pd.NA` retention without float64 casting.
+     - Test G: Categorical dtypes and category order.
+     - Test H: Large/empty DataFrames and edge-case schemas.
+     - Test I: User file format safety (external `.csv`/`.parquet` files never rewritten to `.pkl`).
+     - Test J: Deterministic reload identity across multiple eviction-reload cycles.
+   - Relaxed datetime timezone unit check in tests (`check_freq=False`, cross-version unit compatibility ns vs us) for robust cross-pandas environment support.
+4. **Zero Notebook Churn:**
+   - 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+
+### Verification Baseline
+- GitHub Actions CI `No-key validation` passed cleanly (1m53s).
+- Full local test suite: **367+ passed, 0 failures**.
+- PR #157 description updated with latest evidence and test results.
+- Status: **CP1 Corrective Pass complete; PR #157 verified and ready for merge**.
+<!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
+
+<!-- session-curated:2026-10-13-cp1-private-storage-security:start -->
+## 2026-10-13 — CP1 Security Pass: Trusted Private Storage Boundary for Registry Snapshots (Issue #156, PR #157)
+
+### Context & Independent Review Resolution
+- **Review Finding**: Independent review `pullrequestreview-5497824478` on PR #157 raised a security finding regarding the filesystem boundary for registry-owned pickle (`.pkl`) snapshots: ensuring snapshots reside strictly in trusted, private storage with restrictive permissions and that unpickling cannot be coerced against arbitrary/shared locations.
+- **Security Boundary Hardening**:
+  1. **Default Storage Isolation**:
+     - Default directory creation in `idd_registry.py` replaced with `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))`.
+     - Explicit `0700` (`drwx------`) directory permissions enforced on POSIX, ensuring process exclusivity and preventing local multi-user access to temporary snapshots.
+  2. **File Permission Discipline**:
+     - Staging `.tmp` files and final `.pkl` snapshots are set to `0600` (`-rw-------`) on POSIX prior to atomic `os.replace`.
+  3. **Configured `data_dir` Validation**:
+     - Strict pre-validation for user-configured storage directories:
+       - Rejects filesystem volume roots (`/` on POSIX, `C:\` on Windows).
+       - Rejects non-directory paths (regular files).
+       - On POSIX, rejects world-writable directories (`stat.S_IWOTH`, such as shared `/tmp`) and unowned directories (`st.st_uid != os.getuid()`).
+       - If group-writable, verifies directory GID matches process GID.
+  4. **Strict Deserialization Trust Boundary**:
+     - In `get_dataframe(df_id, load_if_not_exists=True)`, reloading `.pkl` / `.pickle` files verifies that the resolved reload path is strictly within the verified `self.data_dir.resolve()` directory (`is_relative_to(resolved_data_dir)`).
+     - Protects against path traversal escapes and directory-pointer collisions.
+  5. **Windows Security Model Documented**:
+     - Documented in `DataFrameRegistry.__doc__` that Windows relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%` to restrict access to the user principal, and that custom multi-user storage on Windows requires explicit NTFS DACL management.
+
+### Verification Baseline
+- **Targeted Unit Tests**: Added `TestPrivateStorageSecurity` with 9 targeted unit tests in `tests/unit/test_registry.py`:
+  - Test 1: Default storage created with 0700 permissions on POSIX.
+  - Test 2: Internal pickle snapshots created with mode 0600 on POSIX.
+  - Test 3: Unsafe world-writable configured directory rejected with `DataFrameRegistryError`.
+  - Test 4: Unowned configured directory rejected on POSIX.
+  - Test 5: Secure explicitly configured directory accepted and usable across eviction-reload.
+  - Test 6: Filesystem root rejected as `data_dir`.
+  - Test 7: Non-directory regular file rejected as `data_dir`.
+  - Test 8: Pickle deserialization confined to verified registry storage.
+  - Test 9: Windows NTFS DACL security model assumptions documented.
+- **Test Suite Results**:
+  - `tests/unit/test_registry.py`: **79 passed** (including 9 security tests + 10 lossless persistence tests).
+  - Linux CI: **537 passed, 9 skipped** (Windows: 533 passed, 13 skipped).
+  - GitHub Actions CI `No-key validation` ran green (2m1s, run ID `38334366737`).
+- **Zero Notebook Churn**: Exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+- **Branch & PR Status**:
+  - Pushed to branch `antigravity/issue-156-canonical-models-registry` at commit `396df69`.
+  - PR #157 description updated with comprehensive evidence.
+  - Status: **CP1 SECURITY PASS COMPLETE — ALL FINDINGS RESOLVED, PR #157 READY FOR MERGE**.
+<!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
+
+
 

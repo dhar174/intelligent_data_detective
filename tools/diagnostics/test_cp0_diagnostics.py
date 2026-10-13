@@ -12,58 +12,86 @@ Validates that:
 8. Machine-readable JSON output contains complete environment and summary metadata.
 """
 
-import json
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock
 
 from tools.diagnostics import reproduce_drift
 from tools.diagnostics.reproduce_drift import (
     ClaimResult,
     probe_claim_1,
     probe_claim_2,
-    probe_claim_3,
-    probe_claim_4,
-    probe_claim_5,
-    probe_claim_6,
-    probe_claim_7,
     probe_claim_8,
-    probe_claim_9,
-    probe_claim_10,
     probe_claim_11,
     probe_claim_12,
-    _extract_production_delete_rows_tool,
-    _InMemoryRegistry,
 )
 from tools.diagnostics.probe_notebook_cells import scan_notebook, REPO_ROOT
 
 
-def test_reproduced_defect_returns_reproduced():
-    """Verify that an actual reproduced defect returns REPRODUCED with is_defect=True."""
+def test_claim_2_approved_lifecycle_returns_observed_invariant():
+    """Verify that the approved Plan lifecycle contract reports OBSERVED INVARIANT with is_defect=False."""
+    res = probe_claim_2()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "DYNAMIC"
+    assert "NEW plans allocate monotonically" in res.observed_behavior
+    assert "RESTORE preserved snapshot" in res.observed_behavior
+
+
+def test_claim_2_simulated_broken_restore_returns_reproduced(monkeypatch):
+    """Verify that a broken restoration (e.g. failing to preserve snapshot version) reports REPRODUCED."""
+    import idd_core
+
+    orig_restore = idd_core.Plan.from_persisted_snapshot
+
+    def broken_restore(cls, snapshot):
+        p = orig_restore(snapshot)
+        object.__setattr__(p, "plan_version", 1)
+        return p
+
+    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+
     res = probe_claim_2()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
-    assert res.evidence_type == "DYNAMIC"
+    assert "restore_preserved=False" in res.defect_or_contract_explanation
 
 
-def test_simulated_corrected_implementation_returns_not_reproduced(monkeypatch):
-    """Verify that a simulated fix causes the diagnostic classification to flip to NOT REPRODUCED."""
-    # In Claim 2, Plan unconditionally overwrites caller-supplied plan_version.
-    # Simulate a corrected Plan model where plan_version is preserved.
+def test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced(monkeypatch):
+    """Verify that broken new-plan creation (e.g. failing to allocate monotonic version) reports REPRODUCED."""
     import idd_core
 
-    class MockPlan:
-        def __init__(self, plan_title, plan_summary, plan_steps, plan_version, **kwargs):
-            self.plan_title = plan_title
-            self.plan_summary = plan_summary
-            self.plan_steps = plan_steps
-            self.plan_version = plan_version  # Preserved!
+    orig_init = idd_core.Plan.__init__
 
-    monkeypatch.setattr(idd_core, "Plan", MockPlan)
+    def broken_init(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        object.__setattr__(self, "plan_version", 1)
+
+    monkeypatch.setattr(idd_core.Plan, "__init__", broken_init)
 
     res = probe_claim_2()
-    assert res.classification == "NOT REPRODUCED"
-    assert res.is_defect is False
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "new_allocated=False" in res.defect_or_contract_explanation
+
+
+def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(monkeypatch):
+    """Verify that restoration failing to advance allocator high-water mark reports REPRODUCED."""
+    import idd_core
+
+    orig_restore = idd_core.Plan.from_persisted_snapshot
+
+    def broken_restore(cls, snapshot):
+        prev_version = cls._current_version
+        p = orig_restore(snapshot)
+        # Revert high-water mark so restore doesn't advance it
+        cls.reset_counter(prev_version)
+        return p
+
+    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+
+    res = probe_claim_2()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "high_water_advanced=False" in res.defect_or_contract_explanation
 
 
 def test_static_only_finding_not_promoted_to_dynamic():
@@ -185,9 +213,6 @@ def test_claim_12_production_tool_cases_pass():
 
 def test_claim_1_thread_scheduling_order_independence(monkeypatch):
     """Verify that Claim 1 evaluates uniqueness and contiguous range without thread-order scheduling fragility."""
-    import idd_core
-
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
     # Execute probe_claim_1 directly
     res = probe_claim_1()
     assert res.classification == "OBSERVED INVARIANT"
@@ -236,3 +261,86 @@ def test_ast_scanner_status_and_completeness():
     assert len(all_symbols) > 1000
     assert "delete_rows" in symbol_map
     assert "DataFrameRegistry" in symbol_map
+
+
+def test_claim_8_all_formats_succeed_returns_observed_invariant():
+    """Verify that multi-format eviction reload and validation reports OBSERVED INVARIANT."""
+    res = probe_claim_8()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "DYNAMIC"
+    assert "Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded" in res.observed_behavior
+    assert "registered=True" in res.observed_behavior
+    assert "reload_path=True" in res.observed_behavior
+
+
+def test_claim_8_broken_csv_reader_detected(monkeypatch):
+    """Verify that a broken CSV reader is detected by Claim 8 and reports REPRODUCED."""
+    import pandas as pd
+
+    def broken_read_csv(*args, **kwargs):
+        raise RuntimeError("Simulated CSV reader failure")
+
+    monkeypatch.setattr(pd, "read_csv", broken_read_csv)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_broken_json_reader_detected(monkeypatch):
+    """Verify that a broken JSON reader is detected by Claim 8 and reports REPRODUCED."""
+    import pandas as pd
+
+    def broken_read_json(*args, **kwargs):
+        raise RuntimeError("Simulated JSON reader failure")
+
+    monkeypatch.setattr(pd, "read_json", broken_read_json)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_registration_failure_not_counted_as_success(monkeypatch):
+    """Verify that registration failures cannot silently count as successful evidence in Claim 8."""
+    import idd_core
+    orig_reg = idd_core.DataFrameRegistry.register_dataframe
+
+    def failing_register(self, df=None, df_id=None, raw_path="", **kwargs):
+        if df_id == "test_csv":
+            return None  # Simulate silent registration failure
+        return orig_reg(self, df=df, df_id=df_id, raw_path=raw_path, **kwargs)
+
+    monkeypatch.setattr(idd_core.DataFrameRegistry, "register_dataframe", failing_register)
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+
+
+def test_claim_8_untrusted_pickle_rejected_by_default(tmp_path):
+    """Verify that untrusted external pickle imports remain rejected by default without trust_external_pickle."""
+    import idd_core
+    import pandas as pd
+    reg = idd_core.DataFrameRegistry(capacity=5)
+    pkl_file = tmp_path / "external.pkl"
+    pd.DataFrame({"x": [1]}).to_pickle(pkl_file)
+
+    with pytest.raises(idd_core.DataFrameRegistryError, match="trust_external_pickle"):
+        reg.register_dataframe(df=None, df_id="untrusted", raw_path=str(pkl_file))
+
+
+def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):
+    """Verify that if validation fails on non-CSV formats, Claim 8 reports REPRODUCED."""
+    import idd_core
+    orig_validate = idd_core.validate_dataframe_exists
+
+    def broken_validate(df_id: str) -> bool:
+        if "pkl" in df_id or "json" in df_id:
+            return False
+        return orig_validate(df_id)
+
+    monkeypatch.setattr(idd_core, "validate_dataframe_exists", broken_validate)
+
+    res = probe_claim_8()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "validate_dataframe_exists fails on cache-evicted non-CSV" in res.defect_or_contract_explanation

@@ -110,3 +110,38 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 - **RC3** — `file_writer`: emits a 356-char placeholder for body content; spams 25+ stub-marker tools to compensate.
 - **RC4** — supervisor FINAL gate accepts hollow completion (no content-validation preconditions).
 - **RC5 (NEW)** — structured Pydantic outputs (`AnalysisInsights`, `ReportResults`, …) may not actually be persisted to supervisor `State` after W9-SR-DROP — wrapper code reads them from `agent.invoke()` dict, but downstream nodes may be reading stale / empty State fields. Needs forensic confirmation in Phase A.
+
+---
+
+## Canonical Core Roadmap Progress (Issue #140)
+
+### Checkpoint 0 (CP0) — Completed & Merged
+- [PR #155](https://github.com/dhar174/intelligent_data_detective/pull/155) merged at commit `98da83a9d90a334b5a7ea98e0acb97dd78fa0548`.
+- Established comprehensive parity inventory (`docs/architecture/idd-core-parity-inventory.md`) and migration specification (`docs/plans/idd-canonical-core-migration.md`).
+- Established 12-probe automated diagnostic suite (`tools/diagnostics/reproduce_drift.py` and `test_cp0_diagnostics.py`).
+
+### Checkpoint 1 (CP1) — Implemented, Corrective Pass & Security Hardening Completed
+- Branch: `antigravity/issue-156-canonical-models-registry`.
+- PR: [PR #157](https://github.com/dhar174/intelligent_data_detective/pull/157).
+- Canonical planning models (`idd_models.py`) with explicit Plan lifecycle semantics (new vs. restore) and RC-2 deduplication.
+- Canonical thread-safe `DataFrameRegistry` (`idd_registry.py`) with `ContextVar` override engine and user-file safety.
+- Atomic bridge in `idd_core.py` with `__getattr__` dynamic delegation and migrated callers in fixtures/diagnostics.
+- **CP1 Corrective Pass (2026-10-12)**:
+  - Resolved P1 finding from independent review `pullrequestreview-5497205553` regarding representation fidelity across cache eviction.
+  - Transitioned internal backing snapshots from `.csv` to `.pkl` (`idd_registry.py`), losslessly preserving mixed integer column names, timezones, MultiIndexes, and nullable dtypes.
+  - Preserved strict trusted storage boundary (internal `.pkl` in `self.data_dir`; external `raw_path` formats untouched).
+  - Added 10 comprehensive regression tests (Tests A–J) in `TestLosslessDataFramePersistence` (`tests/unit/test_registry.py`).
+  - GitHub Actions CI `No-key validation` passed cleanly (1m53s).
+- **CP1 Security Pass (2026-10-13)**:
+  - Resolved security finding from independent review `pullrequestreview-5497824478` on private storage boundaries for pickle snapshots.
+  - Replaced default storage directory creation with `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))` and explicit mode `0700` (`drwx------`) on POSIX.
+  - Hardened file permissions on POSIX: staging `.tmp` files and final `.pkl` snapshots created with mode `0600` (`-rw-------`) prior to atomic `os.replace`.
+  - Added validation for configured `data_dir`: rejects volume roots (`/`, `C:\`), non-directory paths, world-writable directories (`stat.S_IWOTH`), and unowned directories (`st.st_uid != os.getuid()`) on POSIX.
+  - Enforced strict deserialization trust boundary: pickle deserialization confined to verified storage in `self.data_dir.resolve()` via `is_relative_to()`.
+  - Documented Windows NTFS DACL security model in `DataFrameRegistry.__doc__`.
+  - Added `TestPrivateStorageSecurity` with 9 targeted unit tests in `tests/unit/test_registry.py` (79 total tests passing in `test_registry.py`).
+  - Full test suites: 537 passed, 9 skipped in Linux CI (533 passed, 13 skipped on Windows).
+  - GitHub Actions CI `No-key validation` ran green (2m1s, run ID `38334366737`).
+  - Pushed at commit `396df69`.
+- Zero notebook churn across 99 cells and full baseline quality gate compliance.
+- Status: **CP1 SECURITY PASS COMPLETE — ALL FINDINGS RESOLVED, PR #157 READY FOR MERGE**.
