@@ -607,5 +607,50 @@ This is now the strongest completion baseline:
 - Status: **CP1 Corrective Pass complete; PR #157 verified and ready for merge**.
 <!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
 
+<!-- session-curated:2026-10-13-cp1-private-storage-security:start -->
+## 2026-10-13 — CP1 Security Pass: Trusted Private Storage Boundary for Registry Snapshots (Issue #156, PR #157)
+
+### Context & Independent Review Resolution
+- **Review Finding**: Independent review `pullrequestreview-5497824478` on PR #157 raised a security finding regarding the filesystem boundary for registry-owned pickle (`.pkl`) snapshots: ensuring snapshots reside strictly in trusted, private storage with restrictive permissions and that unpickling cannot be coerced against arbitrary/shared locations.
+- **Security Boundary Hardening**:
+  1. **Default Storage Isolation**:
+     - Default directory creation in `idd_registry.py` replaced with `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))`.
+     - Explicit `0700` (`drwx------`) directory permissions enforced on POSIX, ensuring process exclusivity and preventing local multi-user access to temporary snapshots.
+  2. **File Permission Discipline**:
+     - Staging `.tmp` files and final `.pkl` snapshots are set to `0600` (`-rw-------`) on POSIX prior to atomic `os.replace`.
+  3. **Configured `data_dir` Validation**:
+     - Strict pre-validation for user-configured storage directories:
+       - Rejects filesystem volume roots (`/` on POSIX, `C:\` on Windows).
+       - Rejects non-directory paths (regular files).
+       - On POSIX, rejects world-writable directories (`stat.S_IWOTH`, such as shared `/tmp`) and unowned directories (`st.st_uid != os.getuid()`).
+       - If group-writable, verifies directory GID matches process GID.
+  4. **Strict Deserialization Trust Boundary**:
+     - In `get_dataframe(df_id, load_if_not_exists=True)`, reloading `.pkl` / `.pickle` files verifies that the resolved reload path is strictly within the verified `self.data_dir.resolve()` directory (`is_relative_to(resolved_data_dir)`).
+     - Protects against path traversal escapes and directory-pointer collisions.
+  5. **Windows Security Model Documented**:
+     - Documented in `DataFrameRegistry.__doc__` that Windows relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%` to restrict access to the user principal, and that custom multi-user storage on Windows requires explicit NTFS DACL management.
+
+### Verification Baseline
+- **Targeted Unit Tests**: Added `TestPrivateStorageSecurity` with 9 targeted unit tests in `tests/unit/test_registry.py`:
+  - Test 1: Default storage created with 0700 permissions on POSIX.
+  - Test 2: Internal pickle snapshots created with mode 0600 on POSIX.
+  - Test 3: Unsafe world-writable configured directory rejected with `DataFrameRegistryError`.
+  - Test 4: Unowned configured directory rejected on POSIX.
+  - Test 5: Secure explicitly configured directory accepted and usable across eviction-reload.
+  - Test 6: Filesystem root rejected as `data_dir`.
+  - Test 7: Non-directory regular file rejected as `data_dir`.
+  - Test 8: Pickle deserialization confined to verified registry storage.
+  - Test 9: Windows NTFS DACL security model assumptions documented.
+- **Test Suite Results**:
+  - `tests/unit/test_registry.py`: **79 passed** (including 9 security tests + 10 lossless persistence tests).
+  - Linux CI: **537 passed, 9 skipped** (Windows: 533 passed, 13 skipped).
+  - GitHub Actions CI `No-key validation` ran green (2m1s, run ID `38334366737`).
+- **Zero Notebook Churn**: Exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+- **Branch & PR Status**:
+  - Pushed to branch `antigravity/issue-156-canonical-models-registry` at commit `396df69`.
+  - PR #157 description updated with comprehensive evidence.
+  - Status: **CP1 SECURITY PASS COMPLETE — ALL FINDINGS RESOLVED, PR #157 READY FOR MERGE**.
+<!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
+
 
 

@@ -219,3 +219,39 @@ While CSV is human-readable, CSV serialization in pandas is lossy:
 - Downstream tools (such as query views or column indexers) no longer experience type drift on evicted DataFrames.
 - Security boundary is maintained: unpickling is restricted strictly to registry-owned files within `self.data_dir`.
 
+---
+
+## 2026-10-13 — ADR: Private storage boundary and filesystem security hardening in DataFrameRegistry (PR #157 CP1 Security Pass)
+
+### Status
+✅ Accepted and verified (CI green 2m1s run ID 38334366737, 9 unit tests in `TestPrivateStorageSecurity`, 79 tests in `test_registry.py`).
+
+### Context
+During independent code review of PR #157 (`pullrequestreview-5497824478`), a security finding was raised regarding the filesystem boundary for internal `.pkl` snapshots. Using Python pickle serialization requires strict filesystem access controls to guarantee that:
+1. Temporary snapshots cannot be inspected or tampered with by other local users on shared multi-user systems.
+2. The registry never adopts untrusted directories (e.g. volume roots, world-writable directories, or directories owned by other users) as snapshot storage.
+3. Pickle deserialization is strictly confined to registry-owned storage and cannot be redirected to arbitrary paths.
+
+### Decision
+1. **Isolated Default Directory**:
+   - Replaced default storage directory creation with `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))`.
+   - On POSIX, explicitly set directory permissions to `0700` (`drwx------`) to ensure exclusive ownership by the calling process UID.
+2. **Snapshot File Permission Hardening**:
+   - Staging files (`.tmp_*`) and final `.pkl` snapshots are created with restrictive permissions (`0600`, `-rw-------`) on POSIX before atomic `os.replace`.
+3. **Configured `data_dir` Validation**:
+   - Rejects filesystem volume roots (e.g., `/` on POSIX, `C:\` on Windows).
+   - Rejects non-directory files.
+   - On POSIX: rejects world-writable directories (`stat.S_IWOTH`) and directories not owned by the current process UID (`st.st_uid != os.getuid()`).
+   - If group-writable, validates directory GID matches process GID.
+4. **Trusted Deserialization Boundary**:
+   - In `get_dataframe(load_if_not_exists=True)`, reloading `.pkl` / `.pickle` files asserts `path.resolve().is_relative_to(self.data_dir.resolve())` and rejects paths matching the directory root itself.
+5. **Windows NTFS DACL Model**:
+   - Documented in `DataFrameRegistry.__doc__` that Windows security relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%`, which defaults to access restricted to the user principal.
+
+### Consequences
+- Unpickling is strictly confined to verified, private, registry-owned storage.
+- Multi-user isolation is guaranteed on POSIX via 0700/0600 permissions, and on Windows via NTFS DACLs.
+- Existing user files (`raw_path`) and published artifacts are never affected.
+- 0 lines of notebook churn; 100% backward compatible with canonical API.
+
+

@@ -208,4 +208,33 @@ filename = f"{safe_prefix}_{digest[:16]}.pkl"
 **Why:** CSV serialization silently discards integer column name types (`0` stringified to `'0'`), timezone metadata on datetimes, MultiIndex column/row hierarchies, and nullable dtypes (`pd.NA`, `Int64`, `boolean`). Using `.pkl` provides 100% lossless representation fidelity across cache eviction while keeping unpickling strictly confined to verified paths within `self.data_dir` (`_get_owned_backing_path`).
 <!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
 
+<!-- session-curated:2026-10-13-cp1-private-storage-security:start -->
+### Pattern: Private Storage Boundary & Filesystem Security Discipline (CP1 Security Pass)
+**Pattern:** Registry-owned snapshot storage must be strictly isolated per instance, permission-hardened, and validated against untrusted filesystem locations to protect pickle serialization:
+```python
+# 1. Default storage directory allocation:
+tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))
+# Enforced 0700 permissions (drwx------) on POSIX
+
+# 2. Backing file writes via atomic staging:
+tmp_path = path.parent / f".tmp_{uuid.uuid4().hex[:12]}_{path.name}"
+# Mode 0600 (-rw-------) applied on POSIX before atomic os.replace(tmp_path, path)
+
+# 3. Directory pre-validation on explicit data_dir:
+# - Rejects filesystem root (path == path.parent)
+# - Rejects non-directory files
+# - On POSIX: rejects world-writable dirs (st.st_mode & stat.S_IWOTH)
+# - On POSIX: rejects unowned dirs (st.st_uid != os.getuid())
+
+# 4. Deserialization trust boundary check:
+if path.suffix.lower() in (".pkl", ".pickle"):
+    resolved = path.resolve()
+    resolved_data_dir = self.data_dir.resolve()
+    if not resolved.is_relative_to(resolved_data_dir) or resolved == resolved_data_dir:
+        raise DataFrameRegistryError(...)
+```
+**Why:** Deserializing pickles from world-writable or multi-user shared directories without strict permission enforcement creates local privilege escalation and tampering risks. By creating isolated directories via `mkdtemp(0700)`, restricting snapshot permissions to `0600`, and enforcing containment within verified `self.data_dir`, the registry maintains a secure deserialization boundary. On Windows, security relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%`.
+<!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
+
+
 
