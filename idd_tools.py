@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # RFC-compliant URI scheme detection: ^[A-Za-z][A-Za-z0-9+.-]*:
 _URI_SCHEME_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
+# Windows drive-letter path pattern: ^[A-Za-z]:[/\\]
+_WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[/\\]")
 
 # Default working directory fallback
 _DEFAULT_WORKING_DIR = PathlibPath(tempfile.mkdtemp(prefix="idd_tools_"))
@@ -387,13 +389,13 @@ def _resolve_artifact_path(
     Raises:
         ValueError: If file_name is invalid or path escapes authorized root.
     """
-    if not file_name or not isinstance(file_name, str) or not file_name.strip():
-        raise ValueError("file_name must be a non-empty string.")
-
-    if _is_uri_scheme(file_name):
+    fn_stripped = file_name.strip()
+    if _is_uri_scheme(fn_stripped):
         raise ValueError(
             f"Refusing to resolve URI scheme as artifact path: {file_name}"
         )
+    if os.name != "nt" and _WINDOWS_DRIVE_PATTERN.match(fn_stripped):
+        raise ValueError(f"Refusing to access path outside artifacts root: {file_name}")
 
     base = _get_artifacts_base(config, create=False)
     if subdir:
@@ -442,6 +444,8 @@ def is_safe_artifact_path(
     try:
         cand_str = str(candidate).strip()
         if _is_uri_scheme(cand_str):
+            return False
+        if os.name != "nt" and _WINDOWS_DRIVE_PATTERN.match(cand_str):
             return False
 
         cand_obj = PathlibPath(candidate)

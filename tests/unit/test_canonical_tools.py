@@ -535,6 +535,10 @@ class TestArtifactPathResolution:
         assert (
             idd_tools.is_safe_artifact_path(outside_drive_path, allowed_roots) is False
         )
+        with pytest.raises(
+            ValueError, match="Refusing to access path outside artifacts root"
+        ):
+            idd_tools._resolve_artifact_path(outside_drive_path)
 
     def test_global_runtime_artifact_precedence(self, tmp_path, monkeypatch):
         """Verify __main__.RUNTIME.artifacts_dir takes precedence over env var and fallback."""
