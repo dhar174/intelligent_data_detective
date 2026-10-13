@@ -652,5 +652,51 @@ This is now the strongest completion baseline:
   - Status: **CP1 SECURITY PASS COMPLETE — ALL FINDINGS RESOLVED, PR #157 READY FOR MERGE**.
 <!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
 
+<!-- session-curated:2026-10-13-cp2-canonical-tools-error-handling:start -->
+## 2026-10-13 — Checkpoint 2 (CP2): Canonical Tools & Error Handling Hardening (Issue #158, Roadmap Issue #140)
+
+### Scope Delivered
+- **Established Canonical Module `idd_tools.py`**:
+  - Authoritative source for tool error handling, signature-aware argument binding, DataFrame existence validation, and artifact path security.
+  - Standardized 4-field user-safe error response contract: `{'status': 'error', 'operation': str, 'reason': str, 'action': str}` matching notebook Cell 32 (`_tool_error()`).
+  - Diagnostic logging and exception sanitization: `_tool_failure()` logs full diagnostic tracebacks via `logger.exception()` while presenting sanitized, user-safe guidance ("An unexpected data-processing failure occurred.") for unexpected exceptions. Distinct actionable guidance preserved for known domain exceptions (`FileNotFoundError`, `KeyError`, `ValueError`, `EmptyDataError`, `ParserError`, `DtypeWarning`).
+  - Signature-aware argument binding in `@handle_tool_errors`:
+    - Uses `inspect.signature(func).bind(*args, **kwargs)` with `.apply_defaults()`.
+    - Detects argument count and type binding mismatches before execution and emits structured error dictionaries.
+    - Accurately binds `df_id` regardless of positional index, keyword argument order, or parameter object attribute (`.df_id`).
+    - Skips DataFrame existence validation entirely for utility functions lacking a `df_id` parameter (resolving Claim 7 and the historical failure in `test_error_handling_framework.py`).
+  - Canonical `validate_dataframe_exists()`:
+    - Delegates to authoritative `get_global_registry().get_dataframe(df_id, load_if_not_exists=True)`.
+    - Reliably checks existence and non-empty status across all registered formats (.csv, .parquet, .pkl, .json) and LRU cache evictions while preserving context isolation.
+  - Secure Artifact Path Containment:
+    - `_resolve_artifact_path()` guarantees strict single-root containment within the active artifacts directory. Rejects path traversal (`../`), absolute path escapes, symlink escapes, and root targeting (`path == base`) with `ValueError`.
+    - Delayed parent directory creation: `mkdir(parents=True, exist_ok=True)` executed only after path containment validation succeeds.
+    - Multi-root read validation: `is_safe_artifact_path()` validates candidates against authorized roots (`_allowed_roots`) and immediately rejects URI schemes (`http://`, `https://`, `data:`, `file:`) for downstream reporting nodes without weakening single-root write containment.
+- **Transitional Compatibility Façade (`idd_core.py`)**:
+  - Re-exports all canonical symbols (`handle_tool_errors`, `validate_dataframe_exists`, `_tool_error`, `_tool_failure`, `_resolve_artifact_path`, `_get_artifacts_base`, `_is_subpath`, `is_safe_artifact_path`, `WORKING_DIRECTORY`) with 100% symbol identity.
+- **Zero Notebook Churn**:
+  - Exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+
+### Diagnostic Claims Resolved
+- **Claim 6 (Structured tool error schema divergence)**: Evaluates to `OBSERVED INVARIANT`. Standardized 4-field error dictionary verified dynamically and statically against notebook Cell 32.
+- **Claim 7 (Signature-aware df_id extraction)**: Evaluates to `OBSERVED INVARIANT`. Functions without `df_id` parameters execute cleanly without invalid DataFrame lookup errors.
+- **Claim 9 (Artifact path containment & multi-root protections)**: Evaluates to `OBSERVED INVARIANT`. Path traversal rejection, delayed directory creation, and multi-root read validation verified.
+
+### Verification Baseline
+- `test_error_handling_framework.py`: **16/16 passed** without `--deselect` in 0.95s!
+- `tests/unit/test_canonical_tools.py`: **24/24 passed** in 0.32s (comprehensive new test suite).
+- `tests/unit/test_handle_tool_errors.py`: **24/24 passed** in 0.35s (migrated from string assertions to dict contract).
+- `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **28/28 passed**, 12/12 evaluated cleanly with 0 blocked/failed.
+- Full test suites:
+  - Unit & integration suites: **574 passed, 9 skipped** in 18.5s.
+  - Core & memory suites: **110 passed** in 1.8s.
+  - Prompt validation suites: **17 passed** in 2.1s.
+- Notebook & Graph Invariants:
+  - Notebook integrity verified across **99 cells**.
+  - LangGraph state topology verified across **15 nodes and 33 edges**.
+- Status: **CP2 COMPLETE & VERIFIED** (Issue #158).
+<!-- session-curated:2026-10-13-cp2-canonical-tools-error-handling:end -->
+
+
 
 

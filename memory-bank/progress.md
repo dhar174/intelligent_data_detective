@@ -18,7 +18,7 @@
 
 ## What works
 - Core test suite: **22/22 pass** (`test_intelligent_data_detective.py`)
-- Error handling tests: **15/16 pass** (1 known edge-case failure — acceptable)
+- Error handling tests: **16/16 pass** (`test_error_handling_framework.py` passes completely without `--deselect`)
 - Memory test suites: all pass
 - Notebook execution: functional end-to-end (requires `OPENAI_API_KEY`; 6–25 min)
 - Historical W14 completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`; not a fresh PR #153 proof.
@@ -32,7 +32,7 @@
 - CI intentionally excludes the full API-key notebook trajectory proof; `.github/workflows/copilot-setup-steps.yml` currently gates only no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps on `pull_request`, `push` to `main`, and `workflow_dispatch`.
 - `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
 - Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
-- The one known test failure in `test_error_handling_framework.py` is an edge case in function signature handling and has no functional impact on the main system.
+- The historical test failure in `test_error_handling_framework.py` is fully resolved by signature-aware binding in `idd_tools.py` (16/16 pass without `--deselect`).
 
 ## Validation status
 PR #153 revised-worktree evidence: [commands, dependency environment, skips, known isolated failure, and actual-kernel smoke](../docs/evidence/pr-153-validation.json). Required local suites passed (451 no-key + 94 root/prompt + 15 required error-handling); actual-kernel smoke passed 3/3. The exact pre-existing signature exception still fails separately. These are local results, not hosted CI or production certification.
@@ -144,4 +144,27 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - GitHub Actions CI `No-key validation` ran green (2m1s, run ID `38334366737`).
   - Pushed at commit `396df69`.
 - Zero notebook churn across 99 cells and full baseline quality gate compliance.
-- Status: **CP1 SECURITY PASS COMPLETE — ALL FINDINGS RESOLVED, PR #157 READY FOR MERGE**.
+- Status: **CP1 MERGED TO MAIN** (PR #157 merged at commit `196f813e0d74d0ee71782634c8028a00989de5c2`, hosted CI passed 546/546). Issue #156 closed.
+
+### Checkpoint 2 (CP2) — Canonical Tools & Error Handling Hardening (Issue #158)
+- Scope Delivered:
+  - Canonical tools and error handling module: `idd_tools.py`.
+  - Standardized 4-field error dictionary contract: `{'status': 'error', 'operation': str, 'reason': str, 'action': str}` matching notebook Cell 32.
+  - Exception sanitization via `_tool_failure()`: logs diagnostic tracebacks locally via `logger.exception()` while presenting user-safe guidance for unexpected exceptions; distinct actionable messages for known domain errors (`FileNotFoundError`, `KeyError`, `ValueError`, `EmptyDataError`, `ParserError`, `DtypeWarning`).
+  - Signature-aware argument binding in `@handle_tool_errors`: inspects `inspect.signature(func)` and uses `.bind(*args, **kwargs)` with `.apply_defaults()`. Detects argument count mismatches, binds `df_id` regardless of positional index, keyword argument, or parameter object attribute (`.df_id`), and skips DataFrame validation completely for tools without a `df_id` parameter (resolving Claim 7 and historical failure in `test_error_handling_framework.py`).
+  - Canonical `validate_dataframe_exists()` delegating to authoritative `get_global_registry().get_dataframe(df_id, load_if_not_exists=True)`, supporting all source formats across cache evictions while preserving context isolation.
+  - Artifact path resolution (`_resolve_artifact_path`, `_get_artifacts_base`, `_is_subpath`, `is_safe_artifact_path`) preserving PR #149 security invariants: path traversal rejection, delayed parent directory creation, and multi-root read validation for downstream reporting nodes.
+  - Compatibility façade in `idd_core.py` updated with 100% symbol re-exports and identity.
+- Claim Resolutions:
+  - Claim 6 (Structured tool error schema divergence): **OBSERVED INVARIANT**.
+  - Claim 7 (Signature-aware df_id extraction): **OBSERVED INVARIANT**.
+  - Claim 9 (Artifact path containment & multi-root protections): **OBSERVED INVARIANT**.
+- Verification Baseline:
+  - `test_error_handling_framework.py`: **16/16 passed** without `--deselect`!
+  - `tests/unit/test_canonical_tools.py`: **24/24 passed** (new unit test suite).
+  - `tests/unit/test_handle_tool_errors.py`: **24/24 passed** (migrated from string to dict assertions).
+  - `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **28/28 passed**, 12/12 evaluated cleanly with 0 blocked/failed.
+  - Full test suites: **574 unit/integration passed**, **110 core/memory passed**, **17 prompt passed**.
+  - Zero notebook churn: 0 notebook lines modified, 99 cells intact, 15 nodes / 33 edges state graph verified.
+- Status: **CP2 COMPLETE & VERIFIED** (Issue #158).
+

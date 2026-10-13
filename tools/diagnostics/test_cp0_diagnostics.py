@@ -19,7 +19,10 @@ from tools.diagnostics.reproduce_drift import (
     ClaimResult,
     probe_claim_1,
     probe_claim_2,
+    probe_claim_6,
+    probe_claim_7,
     probe_claim_8,
+    probe_claim_9,
     probe_claim_11,
     probe_claim_12,
 )
@@ -344,3 +347,95 @@ def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
     assert "validate_dataframe_exists fails on cache-evicted non-CSV" in res.defect_or_contract_explanation
+
+
+def test_claim_6_structured_tool_error_returns_observed_invariant():
+    """Verify that canonical tool error handling returns OBSERVED INVARIANT."""
+    res = probe_claim_6()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "BOTH"
+    assert "returns structured error dict (True)" in res.observed_behavior
+
+
+def test_claim_6_simulated_string_error_returns_reproduced(monkeypatch):
+    """Verify that a plain-string error return is detected as a defect (Claim 6 REPRODUCED)."""
+    import idd_core
+
+    def broken_decorator(func):
+        def wrapper(*args, **kwargs):
+            return "Error: Simulated legacy plain string error"
+        return wrapper
+
+    monkeypatch.setattr(idd_core, "handle_tool_errors", broken_decorator)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "plain error strings" in res.defect_or_contract_explanation
+
+
+def test_claim_7_signature_aware_returns_observed_invariant():
+    """Verify that signature-aware df_id extraction returns OBSERVED INVARIANT."""
+    res = probe_claim_7()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "DYNAMIC"
+    assert "Signature-aware success: True" in res.observed_behavior
+
+
+def test_claim_7_simulated_blind_args0_returns_reproduced(monkeypatch):
+    """Verify that blind args[0] extraction is detected as a defect (Claim 7 REPRODUCED)."""
+    import idd_core
+
+    def legacy_handle_tool_errors(func):
+        def wrapper(*args, **kwargs):
+            if args and isinstance(args[0], str):
+                df_id = args[0]
+                if not idd_core.validate_dataframe_exists(df_id):
+                    return f"Error: DataFrame with ID '{df_id}' not found"
+            return func(*args, **kwargs)
+        return wrapper
+
+    monkeypatch.setattr(idd_core, "handle_tool_errors", legacy_handle_tool_errors)
+    res = probe_claim_7()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "Blind args[0] check" in res.defect_or_contract_explanation
+
+
+def test_claim_9_artifact_containment_returns_observed_invariant():
+    """Verify that artifact containment & multi-root protections return OBSERVED INVARIANT."""
+    res = probe_claim_9()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+    assert res.evidence_type == "BOTH"
+    assert "safe path resolved=True" in res.observed_behavior
+    assert "traversal attempt blocked=True" in res.observed_behavior
+    assert "delayed directory creation verified=True" in res.observed_behavior
+    assert "multi-root helper is_safe_artifact_path functional=True" in res.observed_behavior
+
+
+def test_claim_9_simulated_traversal_leak_returns_reproduced(monkeypatch):
+    """Verify that failure to block traversal is detected as a defect (Claim 9 REPRODUCED)."""
+    import idd_core
+    from pathlib import Path
+
+    def leaking_resolve(file_name, config=None, subdir=None, create_parents=True):
+        return Path("/unauthorized/escape") / file_name
+
+    monkeypatch.setattr(idd_core, "_resolve_artifact_path", leaking_resolve)
+    res = probe_claim_9()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "Path traversal attempts were not blocked" in res.defect_or_contract_explanation
+
+
+def test_claim_9_simulated_missing_multi_root_helper_returns_reproduced(monkeypatch):
+    """Verify that a broken or missing multi-root helper is detected as a defect (Claim 9 REPRODUCED)."""
+    import idd_core
+
+    monkeypatch.setattr(idd_core, "is_safe_artifact_path", lambda candidate, roots: False)
+    res = probe_claim_9()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "multi-root validation helper" in res.defect_or_contract_explanation

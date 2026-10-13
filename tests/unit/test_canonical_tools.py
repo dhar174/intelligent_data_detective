@@ -1,0 +1,382 @@
+"""
+tests/unit/test_canonical_tools.py - Comprehensive Unit Tests for CP2 Canonical Tools.
+
+Validates:
+1. Structured tool error schema (4 mandatory fields, sanitization).
+2. Signature-aware @handle_tool_errors (df_id first, later, kwarg, kw-only, absent, param object).
+3. Canonical validate_dataframe_exists (registry delegation, evicted lossless reload, ContextVar).
+4. Secure artifact path resolution (precedence, traversal, symlink escapes, deferred mkdir).
+5. Symbol identity with idd_core compatibility façade.
+"""
+
+import inspect
+import types
+import pandas as pd
+import pytest
+
+import idd_core
+import idd_tools
+from idd_registry import DataFrameRegistry, override_global_registry
+
+
+pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# 1. Structured Error Response Schema & Sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredErrorResponses:
+    def test_tool_error_schema_fields(self):
+        err = idd_tools._tool_error(
+            operation="filter_data",
+            reason="Column missing",
+            action="Check column list",
+        )
+        assert isinstance(err, dict)
+        assert set(err.keys()) == {"status", "operation", "reason", "action"}
+        assert err["status"] == "error"
+        assert err["operation"] == "filter_data"
+        assert err["reason"] == "Column missing"
+        assert err["action"] == "Check column list"
+
+    def test_tool_failure_sanitizes_unexpected_exception(self, caplog):
+        with caplog.at_level("ERROR"):
+            err = idd_tools._tool_failure(
+                operation="deep_compute",
+                action="Retry the operation",
+                exc=RuntimeError("internal secret connection failure: password=123"),
+            )
+        assert err["status"] == "error"
+        assert err["operation"] == "deep_compute"
+        assert err["reason"] == "An unexpected data-processing failure occurred."
+        assert err["action"] == "Retry the operation"
+        # Secret exception message must not leak in returned dict
+        assert "password" not in str(err)
+        # But diagnostic details must be logged locally
+        assert any("deep_compute failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 2. Signature-Aware @handle_tool_errors
+# ---------------------------------------------------------------------------
+
+
+class TestSignatureAwareDecorator:
+    def test_first_positional_df_id(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "df_first")
+
+            @idd_tools.handle_tool_errors
+            def tool_pos(df_id: str, factor: int) -> int:
+                return factor * 2
+
+            assert tool_pos("df_first", 3) == 6
+
+            # Error case
+            err = tool_pos("nonexistent_df", 3)
+            assert isinstance(err, dict)
+            assert err["status"] == "error"
+            assert "nonexistent_df" in err["reason"]
+
+    def test_later_positional_df_id(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "df_later")
+
+            @idd_tools.handle_tool_errors
+            def tool_later(prefix: str, count: int, df_id: str) -> str:
+                return f"{prefix}_{count}_{df_id}"
+
+            assert tool_later("item", 5, "df_later") == "item_5_df_later"
+
+            err = tool_later("item", 5, "missing_later")
+            assert isinstance(err, dict)
+            assert err["status"] == "error"
+            assert "missing_later" in err["reason"]
+
+    def test_keyword_df_id(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "df_kw")
+
+            @idd_tools.handle_tool_errors
+            def tool_kw(x: int, df_id: str = "default") -> str:
+                return f"{x}_{df_id}"
+
+            assert tool_kw(10, df_id="df_kw") == "10_df_kw"
+
+    def test_keyword_only_df_id(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "df_kwonly")
+
+            @idd_tools.handle_tool_errors
+            def tool_kwonly(value: float, *, df_id: str) -> str:
+                return f"{value}_{df_id}"
+
+            assert tool_kwonly(3.14, df_id="df_kwonly") == "3.14_df_kwonly"
+
+            err = tool_kwonly(3.14, df_id="bad_kwonly")
+            assert isinstance(err, dict)
+            assert err["status"] == "error"
+
+    def test_function_without_df_id_executes_normally_with_string_args(self):
+        """Claim 7 resolution: String arguments in functions without df_id must NOT trigger validation."""
+        @idd_tools.handle_tool_errors
+        def echo_message(message: str, count: int) -> str:
+            return f"{message}: {count}"
+
+        # 'hello' is a string at args[0], but function has no df_id parameter!
+        result = echo_message("hello", 42)
+        assert result == "hello: 42"
+
+    def test_parameter_object_with_df_id_attribute(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "df_obj")
+
+            class RequestObject:
+                def __init__(self, df_id: str, task: str):
+                    self.df_id = df_id
+                    self.task = task
+
+            @idd_tools.handle_tool_errors
+            def process_request(req: RequestObject) -> str:
+                return f"processed {req.task} on {req.df_id}"
+
+            valid_req = RequestObject("df_obj", "clean")
+            assert process_request(valid_req) == "processed clean on df_obj"
+
+            bad_req = RequestObject("missing_obj", "clean")
+            err = process_request(bad_req)
+            assert isinstance(err, dict)
+            assert err["status"] == "error"
+            assert "missing_obj" in err["reason"]
+
+    def test_empty_or_non_string_df_id_fails_gracefully(self):
+        @idd_tools.handle_tool_errors
+        def my_tool(df_id: str) -> str:
+            return "ok"
+
+        err_empty = my_tool("")
+        assert isinstance(err_empty, dict)
+        assert err_empty["status"] == "error"
+        assert err_empty["reason"] == "DataFrame ID must be a non-empty string."
+
+        err_none = my_tool(None)
+        assert isinstance(err_none, dict)
+        assert err_none["status"] == "error"
+        assert err_none["reason"] == "DataFrame ID must be a non-empty string."
+
+        err_num = my_tool(12345)
+        assert isinstance(err_num, dict)
+        assert err_num["status"] == "error"
+        assert err_num["reason"] == "DataFrame ID must be a non-empty string."
+
+    def test_invalid_argument_counts_produce_structured_error(self):
+        @idd_tools.handle_tool_errors
+        def binary_op(a: int, b: int) -> int:
+            return a + b
+
+        # Missing required argument
+        err_missing = binary_op(10)
+        assert isinstance(err_missing, dict)
+        assert err_missing["status"] == "error"
+        assert "Invalid arguments" in err_missing["reason"]
+
+        # Too many arguments
+        err_extra = binary_op(10, 20, 30)
+        assert isinstance(err_extra, dict)
+        assert err_extra["status"] == "error"
+        assert "Invalid arguments" in err_extra["reason"]
+
+    def test_metadata_and_signature_preservation(self):
+        @idd_tools.handle_tool_errors
+        def documented_function(df_id: str, factor: int = 1) -> str:
+            """This is a documented tool."""
+            return f"{df_id}:{factor}"
+
+        assert documented_function.__name__ == "documented_function"
+        assert documented_function.__doc__ == "This is a documented tool."
+        sig = inspect.signature(documented_function)
+        assert "df_id" in sig.parameters
+        assert "factor" in sig.parameters
+        assert sig.parameters["factor"].default == 1
+
+    def test_known_exception_categorization(self):
+        @idd_tools.handle_tool_errors
+        def raise_fnf():
+            raise FileNotFoundError("missing.csv")
+
+        @idd_tools.handle_tool_errors
+        def raise_ke():
+            raise KeyError("missing_col")
+
+        @idd_tools.handle_tool_errors
+        def raise_ve():
+            raise ValueError("bad parameter")
+
+        @idd_tools.handle_tool_errors
+        def raise_empty():
+            raise pd.errors.EmptyDataError("empty data")
+
+        assert raise_fnf()["reason"] == "The dataset or required file could not be found."
+        assert raise_ke()["reason"] == "A requested column or key does not exist."
+        assert raise_ve()["reason"] == "One or more inputs are invalid."
+        assert raise_empty()["reason"] == "The dataset contains no rows."
+
+
+# ---------------------------------------------------------------------------
+# 3. Canonical validate_dataframe_exists
+# ---------------------------------------------------------------------------
+
+
+class TestValidateDataFrameExistsCanonical:
+    def test_valid_in_memory_dataframe(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"col": [1, 2, 3]})
+            df_id = reg.register_dataframe(df, "valid_in_mem")
+            assert idd_tools.validate_dataframe_exists(df_id) is True
+
+    def test_empty_dataframe_returns_false(self):
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame()
+            df_id = reg.register_dataframe(df, "empty_df")
+            assert idd_tools.validate_dataframe_exists(df_id) is False
+
+    def test_unknown_df_id_returns_false(self):
+        assert idd_tools.validate_dataframe_exists("unregistered_xyz") is False
+        assert idd_tools.validate_dataframe_exists("") is False
+        assert idd_tools.validate_dataframe_exists(None) is False
+
+    def test_evicted_multi_format_reload(self, tmp_path):
+        """Claim 8: Evicted non-CSV frames reload losslessly via get_dataframe."""
+        reg = DataFrameRegistry(capacity=1)
+        with override_global_registry(reg):
+            # 1. Pickle format
+            pkl_file = tmp_path / "data.pkl"
+            df_pkl = pd.DataFrame({"col": [10, 20]})
+            df_pkl.to_pickle(pkl_file)
+            reg.register_dataframe(df_pkl, "df_pkl", raw_path=str(pkl_file))
+
+            # Evict df_pkl by registering a second frame
+            reg.register_dataframe(pd.DataFrame({"x": [1]}), "evictor")
+            assert reg.registry["df_pkl"]["df"] is None
+
+            # Validation must succeed through get_dataframe loader
+            assert idd_tools.validate_dataframe_exists("df_pkl") is True
+
+
+# ---------------------------------------------------------------------------
+# 4. Artifact Path Resolution & Containment
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactPathResolution:
+    def test_valid_relative_path_and_creation(self, tmp_path):
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(tmp_path / "art"))}
+        )
+        resolved = idd_tools._resolve_artifact_path("report.html", config=cfg)
+        assert resolved == (tmp_path / "art" / "report.html").resolve()
+        assert resolved.parent.exists()
+
+    def test_environment_override_precedence(self, tmp_path, monkeypatch):
+        art_dir = tmp_path / "env_artifacts"
+        monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(art_dir))
+        resolved = idd_tools._resolve_artifact_path("chart.png", config=None)
+        assert resolved == (art_dir / "chart.png").resolve()
+
+    def test_working_directory_fallback(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("IDD_ARTIFACTS_DIR", raising=False)
+        monkeypatch.setattr(idd_tools, "WORKING_DIRECTORY", tmp_path / "workdir")
+        resolved = idd_tools._resolve_artifact_path("output.csv", config=None)
+        assert resolved == (tmp_path / "workdir" / "artifacts" / "output.csv").resolve()
+
+    def test_path_traversal_double_dot_rejected_without_mkdir(self, tmp_path):
+        base_dir = tmp_path / "art_base"
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(base_dir))}
+        )
+        with pytest.raises(ValueError, match="(?i)outside|refus"):
+            idd_tools._resolve_artifact_path(
+                "../../escape.txt", config=cfg, subdir="sub_uncreated"
+            )
+
+        # sub_uncreated directory must NOT have been created on disk
+        assert not (base_dir / "sub_uncreated").exists()
+
+    def test_absolute_escape_rejected(self, tmp_path):
+        base_dir = tmp_path / "art_base"
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(base_dir))}
+        )
+        outside = str(tmp_path / "outside.txt")
+        with pytest.raises(ValueError, match="(?i)outside|refus"):
+            idd_tools._resolve_artifact_path(outside, config=cfg)
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        outside_dir = tmp_path / "secret_outside"
+        outside_dir.mkdir()
+        secret_file = outside_dir / "secret.png"
+        secret_file.write_bytes(b"secret")
+
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(art_dir))}
+        )
+
+        symlink_file = art_dir / "symlink_secret.png"
+        try:
+            symlink_file.symlink_to(secret_file)
+            with pytest.raises(ValueError, match="(?i)outside|refus"):
+                idd_tools._resolve_artifact_path(str(symlink_file), config=cfg)
+        except (OSError, NotImplementedError):
+            pytest.skip("Symlinks not supported in this environment")
+
+    def test_multi_root_report_containment_helper(self, tmp_path):
+        art_root = tmp_path / "artifacts"
+        work_root = tmp_path / "workspace"
+        art_root.mkdir()
+        work_root.mkdir()
+
+        chart_in_art = art_root / "chart.png"
+        chart_in_art.write_bytes(b"chart")
+
+        chart_in_work = work_root / "viz.png"
+        chart_in_work.write_bytes(b"viz")
+
+        outside_file = tmp_path / "outside.png"
+        outside_file.write_bytes(b"outside")
+
+        allowed_roots = [art_root, work_root]
+        assert idd_tools.is_safe_artifact_path(chart_in_art, allowed_roots) is True
+        assert idd_tools.is_safe_artifact_path(chart_in_work, allowed_roots) is True
+        assert idd_tools.is_safe_artifact_path(outside_file, allowed_roots) is False
+
+
+# ---------------------------------------------------------------------------
+# 5. Compatibility Façade Identity
+# ---------------------------------------------------------------------------
+
+
+class TestCoreFacadeIdentity:
+    def test_facade_re_exports_canonical_symbols(self):
+        assert idd_core.handle_tool_errors is idd_tools.handle_tool_errors
+        assert idd_core.validate_dataframe_exists is idd_tools.validate_dataframe_exists
+        assert idd_core._resolve_artifact_path is idd_tools._resolve_artifact_path
+        assert idd_core._tool_error is idd_tools._tool_error
+        assert idd_core._tool_failure is idd_tools._tool_failure
+        assert idd_core._is_subpath is idd_tools._is_subpath
+        assert idd_core._get_artifacts_base is idd_tools._get_artifacts_base

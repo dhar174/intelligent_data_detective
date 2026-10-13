@@ -236,5 +236,52 @@ if path.suffix.lower() in (".pkl", ".pickle"):
 **Why:** Deserializing pickles from world-writable or multi-user shared directories without strict permission enforcement creates local privilege escalation and tampering risks. By creating isolated directories via `mkdtemp(0700)`, restricting snapshot permissions to `0600`, and enforcing containment within verified `self.data_dir`, the registry maintains a secure deserialization boundary. On Windows, security relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%`.
 <!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
 
+<!-- session-curated:2026-10-13-cp2-canonical-tools:start -->
+### Pattern: Standardized Tool Error Contract & Exception Sanitization (CP2)
+**Pattern:** Data tools return a standardized 4-field user-safe dictionary rather than raw strings:
+```python
+{
+    "status": "error",
+    "operation": func.__name__,
+    "reason": "An unexpected data-processing failure occurred." | specific_reason,
+    "action": "User-actionable remediation instructions",
+}
+```
+**Why:** Standardizing the error dictionary matches notebook Cell 32 and provides actionable guidance for LLM agent reflection. Unexpected internal exceptions are logged with full traceback via `logger.exception()` but sanitized in the response to prevent leaking internal stack traces, system paths, or environment secrets to model prompts. Known domain exceptions (`FileNotFoundError`, `KeyError`, `ValueError`, `EmptyDataError`, `ParserError`, `DtypeWarning`) return distinct, actionable diagnostics.
+
+### Pattern: Signature-Aware Argument Binding in Tool Decorator (CP2)
+**Pattern:** Decorators inspecting parameters (such as `df_id` for DataFrame validation) must use Python's `inspect.signature` rather than positional indexing:
+```python
+func_sig = inspect.signature(func)
+bound_args = func_sig.bind(*args, **kwargs)
+bound_args.apply_defaults()
+
+if "df_id" in bound_args.arguments:
+    df_id = bound_args.arguments["df_id"]
+    # validate registered DataFrame exists
+```
+**Why:** Blind `args[0]` checks (the root cause of Claim 7 and historical test failures) erroneously treat the first argument of any tool as a DataFrame identifier. When decorating functions without a `df_id` parameter (e.g. `func(message: str, count: int)`), passing `"hello"` fails because `"hello"` is not in the registry. Signature binding accurately extracts `df_id` regardless of positional index, keyword argument order, or parameter object attribute (`.df_id`), and cleanly skips DataFrame validation for functions that do not take a DataFrame ID.
+
+### Pattern: Artifact Path Containment & Multi-Root Verification (CP2 / PR #149)
+**Pattern:** All tool writes must use single-root containment, while report aggregators use multi-root read validation:
+```python
+# Single-root write containment (tools):
+def _resolve_artifact_path(file_name: str, config=None, subdir=None, create_parents=True):
+    base = _get_artifacts_base(config)
+    path = (base / file_name).resolve()
+    if not _is_subpath(path, base):
+        raise ValueError("Path outside artifacts root")
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)  # Delayed mkdir only after validation
+    return path
+
+# Multi-root read verification (report/packager nodes):
+def is_safe_artifact_path(candidate, allowed_roots, require_file=False):
+    # Verifies candidate is within at least one authorized root and rejects URI schemes
+```
+**Why:** Single-root containment protects against path traversal attacks (`../`), absolute path escapes, and symlink escapes, ensuring tool artifacts are written strictly into the designated run directory. Delayed directory creation prevents malicious or malformed paths from creating directories before validation. Multi-root read verification allows downstream publication nodes to verify images across artifacts, working directories, and run directories without weakening write containment.
+<!-- session-curated:2026-10-13-cp2-canonical-tools:end -->
+
+
 
 

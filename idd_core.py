@@ -687,152 +687,20 @@ CLASS_TO_AGENT: dict[type, AgentId] = {
 }
 
 # ---------------------------------------------------------------------------
-# Path helper functions
+# Canonical tools, error handling, and artifact path resolution (CP2)
 # ---------------------------------------------------------------------------
 
-if HAS_LANGCHAIN:
-    def _get_artifacts_base(config: Optional[RunnableConfig]) -> PathlibPath:
-        """Resolve the base directory for artifacts."""
-        try:
-            cfg = getattr(config, "configurable", None) or {}
-            runtime = cfg.get("runtime")
-            if runtime is not None and getattr(runtime, "artifacts_dir", None):
-                base = PathlibPath(runtime.artifacts_dir)
-                base.mkdir(parents=True, exist_ok=True)
-                return base
-        except Exception:
-            pass
-
-        try:
-            if "RUNTIME" in globals() and getattr(globals()["RUNTIME"], "artifacts_dir", None):
-                base = PathlibPath(globals()["RUNTIME"].artifacts_dir)
-                base.mkdir(parents=True, exist_ok=True)
-                return base
-        except Exception:
-            pass
-
-        env_artifacts = os.environ.get("IDD_ARTIFACTS_DIR")
-        if env_artifacts:
-            base = PathlibPath(env_artifacts)
-            base.mkdir(parents=True, exist_ok=True)
-            return base
-
-        base = PathlibPath(WORKING_DIRECTORY) / "artifacts"
-        base.mkdir(parents=True, exist_ok=True)
-        return base
-
-    def _resolve_artifact_path(
-        file_name: str,
-        *,
-        config: Optional[RunnableConfig],
-        subdir: Optional[str] = None,
-        create_parents: bool = True,
-    ) -> PathlibPath:
-        """Resolve file_name relative to (or validated within) the artifacts dir."""
-        if not file_name or not isinstance(file_name, str):
-            raise ValueError("file_name must be a non-empty string.")
-
-        base = _get_artifacts_base(config)
-        if subdir:
-            base = (base / subdir).resolve()
-
-        base.mkdir(parents=True, exist_ok=True)
-
-        candidate = PathlibPath(file_name)
-        path = (base / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-
-        if not _is_subpath(path, base):
-            raise ValueError(f"Refusing to access path outside artifacts root: {path}")
-
-        if create_parents:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-
-def _is_subpath(path: PathlibPath, parent: PathlibPath) -> bool:
-    try:
-        path.resolve().relative_to(parent.resolve())
-        return True
-    except Exception:
-        return False
-
-# ---------------------------------------------------------------------------
-# Error handling
-# ---------------------------------------------------------------------------
-
-
-def validate_dataframe_exists(df_id: str) -> bool:
-    """Validates the existence and validity of a dataframe by its ID."""
-    if not df_id or not isinstance(df_id, str):
-        return False
-
-    try:
-        reg = get_global_registry()
-        df = reg.get_dataframe(df_id, load_if_not_exists=True)
-        if df is not None:
-            return not df.empty
-        return False
-    except Exception:
-        return False
-
-
-def handle_tool_errors(func):
-    """Decorator for consistent error handling across tool functions."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            df_id = None
-
-            if args and isinstance(args[0], str):
-                df_id = args[0]
-            elif 'df_id' in kwargs:
-                df_id = kwargs['df_id']
-            elif args and hasattr(args[0], 'df_id'):
-                df_id = args[0].df_id
-
-            if df_id and not validate_dataframe_exists(df_id):
-                error_msg = f"Error: DataFrame with ID '{df_id}' not found or is invalid."
-                logging.error(f'{func.__name__}: {error_msg}')
-                return error_msg
-
-            return func(*args, **kwargs)
-
-        except FileNotFoundError as e:
-            error_msg = f"Error: File not found - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except KeyError as e:
-            error_msg = f"Error: Column or key '{str(e)}' not found"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except pd.errors.EmptyDataError:
-            error_msg = "Error: No data - the DataFrame or file is empty"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except pd.errors.ParserError as e:
-            error_msg = f"Error: Failed to parse data - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except pd.errors.DtypeWarning as e:
-            error_msg = f"Error: Data type mismatch - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except ValueError as e:
-            error_msg = f"Error: Invalid value - {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-        except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            logging.error(f"{func.__name__}: {error_msg}")
-            return error_msg
-
-    return wrapper
+from idd_tools import (
+    WORKING_DIRECTORY,
+    _get_artifacts_base,
+    _is_subpath,
+    _resolve_artifact_path,
+    _tool_error,
+    _tool_failure,
+    handle_tool_errors,
+    is_safe_artifact_path,
+    validate_dataframe_exists,
+)
 
 
 # ---------------------------------------------------------------------------

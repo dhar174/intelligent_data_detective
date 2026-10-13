@@ -189,9 +189,11 @@ class TestHandleToolErrorsDfIdExtraction:
             return "ok"
 
         result = my_tool("nonexistent_df_xyz")
-        assert isinstance(result, str)
-        assert "Error" in result
-        assert "nonexistent_df_xyz" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "my_tool"
+        assert "nonexistent_df_xyz" in result["reason"]
+        assert "action" in result
 
     def test_kwargs_df_id_not_found_returns_error(self, global_registry_reset):
         @handle_tool_errors
@@ -199,8 +201,11 @@ class TestHandleToolErrorsDfIdExtraction:
             return "ok"
 
         result = my_tool(df_id="nonexistent_via_kwargs")
-        assert isinstance(result, str)
-        assert "Error" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "my_tool"
+        assert "nonexistent_via_kwargs" in result["reason"]
+        assert "action" in result
 
     def test_object_with_df_id_attr_not_found_returns_error(self, global_registry_reset):
         class Req:
@@ -212,8 +217,11 @@ class TestHandleToolErrorsDfIdExtraction:
             return "ok"
 
         result = my_tool(Req("bad_df_id"))
-        assert isinstance(result, str)
-        assert "Error" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "my_tool"
+        assert "bad_df_id" in result["reason"]
+        assert "action" in result
 
     def test_registered_df_calls_wrapped_function(self, global_registry_reset, sample_df, tmp_path):
         csv_path = tmp_path / "data.csv"
@@ -257,9 +265,11 @@ class TestHandleToolErrorsExceptions:
             raise ValueError("invalid configuration")
 
         result = bad_tool()
-        assert isinstance(result, str)
-        assert result.startswith("Error: Invalid value")
-        assert "invalid configuration" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "bad_tool"
+        assert result["reason"] == "One or more inputs are invalid."
+        assert "action" in result
 
     def test_file_not_found_returns_error_string(self):
         @handle_tool_errors
@@ -267,8 +277,11 @@ class TestHandleToolErrorsExceptions:
             raise FileNotFoundError("data.csv")
 
         result = fnf_tool()
-        assert isinstance(result, str)
-        assert result.startswith("Error: File not found")
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "fnf_tool"
+        assert result["reason"] == "The dataset or required file could not be found."
+        assert "action" in result
 
     def test_key_error_returns_error_string(self):
         @handle_tool_errors
@@ -276,9 +289,11 @@ class TestHandleToolErrorsExceptions:
             raise KeyError("column_x")
 
         result = key_tool()
-        assert isinstance(result, str)
-        assert "column_x" in result
-        assert "Error" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "key_tool"
+        assert result["reason"] == "A requested column or key does not exist."
+        assert "action" in result
 
     def test_empty_data_error_returns_error_string(self):
         @handle_tool_errors
@@ -286,8 +301,11 @@ class TestHandleToolErrorsExceptions:
             raise pd.errors.EmptyDataError()
 
         result = empty_tool()
-        assert isinstance(result, str)
-        assert "empty" in result.lower()
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "empty_tool"
+        assert result["reason"] == "The dataset contains no rows."
+        assert "action" in result
 
     def test_generic_exception_returns_error_string(self):
         @handle_tool_errors
@@ -295,9 +313,11 @@ class TestHandleToolErrorsExceptions:
             raise RuntimeError("something went wrong")
 
         result = generic_tool()
-        assert isinstance(result, str)
-        assert "Error" in result
-        assert "something went wrong" in result
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["operation"] == "generic_tool"
+        assert result["reason"] == "An unexpected data-processing failure occurred."
+        assert "Retry the operation" in result["action"]
 
 
 # ---------------------------------------------------------------------------

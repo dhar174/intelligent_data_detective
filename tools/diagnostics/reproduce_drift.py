@@ -580,7 +580,8 @@ def probe_claim_6() -> ClaimResult:
     title = "Structured tool error schema divergence"
     subsystem = "Tool Error Handling Framework (@handle_tool_errors)"
     locators = [
-        {"file": "idd_core.py", "lines": "1169-1215", "symbol": "handle_tool_errors (returns str 'Error: ...')"},
+        {"file": "idd_tools.py", "lines": "30-65", "symbol": "_tool_error / _tool_failure / @handle_tool_errors"},
+        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
         {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "7-25", "symbol": "_tool_error / _tool_failure (returns dict with operation, reason, action)"},
     ]
     expected = "Tool errors must return standardized dictionary: {'status': 'error', 'operation': str, 'reason': str, 'action': str} with sanitized internal exceptions."
@@ -588,7 +589,7 @@ def probe_claim_6() -> ClaimResult:
     if not HAS_IDD_CORE:
         return ClaimResult(6, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
 
-    # 1. Dynamic test of idd_core decorator
+    # 1. Dynamic test of canonical decorator
     prev_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
     try:
@@ -600,6 +601,13 @@ def probe_claim_6() -> ClaimResult:
     finally:
         logging.disable(prev_level)
 
+    core_is_dict = (
+        isinstance(res_core, dict)
+        and res_core.get("status") == "error"
+        and "operation" in res_core
+        and "reason" in res_core
+        and "action" in res_core
+    )
     core_is_str = isinstance(res_core, str) and res_core.startswith("Error:")
 
     # 2. Static inspection of notebook Cell 32 structured error implementation
@@ -608,16 +616,22 @@ def probe_claim_6() -> ClaimResult:
     has_sanitization = "logging.exception" in nb_src and "An unexpected data-processing failure occurred." in nb_src
 
     observed = (
-        f"Dynamic test on idd_core: returns raw string ({core_is_str}): \"{res_core}\". "
+        f"Dynamic test on canonical idd_core: returns structured error dict ({core_is_dict}): {res_core}. "
         f"Static inspection of notebook Cell 32: implements structured error dictionary={has_tool_error_dict} with exception sanitization={has_sanitization}."
     )
 
-    if core_is_str and has_tool_error_dict:
+    if core_is_dict and has_tool_error_dict:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
+        explanation = "Canonical tool error framework in idd_tools/idd_core implements the standardized 4-field error dictionary matching notebook Cell 32."
+    elif core_is_str:
         classification = "REPRODUCED"
         is_defect = True
+        explanation = "idd_core returns plain error strings, breaking the production dictionary contract {'status': 'error', 'operation': ..., 'reason': ..., 'action': ...}."
     else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
+        classification = "BLOCKED"
+        is_defect = True
+        explanation = f"Unexpected response format from handle_tool_errors: {type(res_core)}."
 
     return ClaimResult(
         claim_id=6,
@@ -628,7 +642,7 @@ def probe_claim_6() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation="idd_core returns plain error strings, breaking the production dictionary contract {'status': 'error', 'operation': ..., 'reason': ..., 'action': ...}.",
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 
@@ -638,9 +652,9 @@ def probe_claim_7() -> ClaimResult:
     title = "Signature-aware df_id extraction in tool decorator"
     subsystem = "Tool Error Handling Framework (@handle_tool_errors)"
     locators = [
-        {"file": "idd_core.py", "lines": "1176-1186", "symbol": "handle_tool_errors (blind args[0] check)"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "90-100", "symbol": "handle_tool_errors (blind args[0] check)"},
-        {"file": "test_error_handling_framework.py", "lines": "324-355", "symbol": "test_integration_with_different_function_signatures"},
+        {"file": "idd_tools.py", "lines": "85-180", "symbol": "@handle_tool_errors signature-aware binding"},
+        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
+        {"file": "test_error_handling_framework.py", "lines": "246-277", "symbol": "test_integration_with_different_function_signatures"},
     ]
     expected = "Decorator must inspect signature to identify df_id; functions without df_id parameter must not have their first argument treated as a DataFrame ID."
 
@@ -659,21 +673,30 @@ def probe_claim_7() -> ClaimResult:
                 return f"{message}: {count}"
 
             res = tool_without_df_id("hello", 42)
-            broken_by_first_arg = isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res
+            broken_by_first_arg = isinstance(res, (str, dict)) and (
+                (isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res)
+                or (isinstance(res, dict) and "hello" in str(res.get("reason", "")) and res.get("status") == "error")
+            )
+            success_without_df_id = (res == "hello: 42")
     finally:
         logging.disable(prev_level)
 
     observed = (
-        f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Broken by args[0] assumption: {broken_by_first_arg}). "
-        f"String argument 'hello' was incorrectly treated as df_id because args[0] is inspected without signature checks."
+        f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Signature-aware success: {success_without_df_id}, Broken by args[0] assumption: {broken_by_first_arg})."
     )
 
-    if broken_by_first_arg:
+    if success_without_df_id:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
+        explanation = "handle_tool_errors uses inspect.signature binding; functions without a df_id parameter execute normally without mistaking arguments for DataFrame IDs."
+    elif broken_by_first_arg:
         classification = "REPRODUCED"
         is_defect = True
+        explanation = "Blind args[0] check in handle_tool_errors breaks functions where df_id is not the first parameter and functions with non-df_id string parameters (root cause of test_error_handling_framework failure)."
     else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
+        classification = "BLOCKED"
+        is_defect = True
+        explanation = f"Unexpected result when testing signature binding: {res}."
 
     return ClaimResult(
         claim_id=7,
@@ -684,7 +707,7 @@ def probe_claim_7() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation="Blind args[0] check in handle_tool_errors breaks functions where df_id is not the first parameter and functions with non-df_id string parameters (root cause of test_error_handling_framework failure).",
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 
@@ -825,11 +848,16 @@ def probe_claim_9() -> ClaimResult:
     title = "Artifact-root containment & PR #149 multi-root protections"
     subsystem = "Artifact Management (_resolve_artifact_path)"
     locators = [
-        {"file": "idd_core.py", "lines": "1105-1135", "symbol": "_resolve_artifact_path / _is_subpath"},
+        {"file": "idd_tools.py", "lines": "190-270", "symbol": "_resolve_artifact_path / _is_subpath / is_safe_artifact_path"},
+        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
         {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "647-680", "symbol": "_resolve_artifact_path"},
         {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 57, "cell_id": "cell_57", "lines": "1000-1030", "symbol": "_allowed_roots multi-root containment"},
     ]
-    expected = "Strict path containment within allowed roots; path traversal attempts (../) and absolute escapes must be rejected."
+    expected = (
+        "Strict path containment within allowed roots; path traversal attempts (../), absolute escapes, "
+        "and symlink escapes must be rejected; delayed directory creation must ensure parents are not created on failure; "
+        "is_safe_artifact_path multi-root helper must validate against allowed roots and reject URI schemes."
+    )
 
     if not HAS_IDD_CORE:
         return ClaimResult(9, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
@@ -837,19 +865,37 @@ def probe_claim_9() -> ClaimResult:
     old_env = os.environ.get("IDD_ARTIFACTS_DIR")
     traversal_blocked = False
     safe_path_resolved = False
+    delayed_mkdir_verified = False
+    multi_root_helper_ok = False
 
     with tempfile.TemporaryDirectory(prefix="idd_art_test_") as temp_dir:
         os.environ["IDD_ARTIFACTS_DIR"] = temp_dir
         try:
-            # Safe path resolution
+            # 1. Safe path resolution
             safe_p = idd_core._resolve_artifact_path("report.html", config=None, subdir="reports")
-            safe_path_resolved = safe_p.exists() or safe_p.parent.exists()
+            safe_path_resolved = safe_p.parent.exists() and idd_core._is_subpath(safe_p, Path(temp_dir).resolve())
 
-            # Traversal attempt
+            # 2. Traversal attempt
             try:
                 idd_core._resolve_artifact_path("../../outside.txt", config=None)
             except ValueError:
                 traversal_blocked = True
+
+            # 3. Delayed directory creation: invalid path should not create directories
+            probe_dir = Path(temp_dir) / "should_not_exist_dir"
+            try:
+                idd_core._resolve_artifact_path("../../escape.txt", subdir="should_not_exist_dir")
+            except ValueError:
+                delayed_mkdir_verified = not probe_dir.exists()
+
+            # 4. Multi-root validation helper
+            if hasattr(idd_core, "is_safe_artifact_path"):
+                roots = [temp_dir]
+                c1 = idd_core.is_safe_artifact_path("report.html", roots)
+                c2 = not idd_core.is_safe_artifact_path("../../escape.txt", roots)
+                c3 = not idd_core.is_safe_artifact_path("https://evil.com/payload.png", roots)
+                multi_root_helper_ok = c1 and c2 and c3
+
         finally:
             if old_env is not None:
                 os.environ["IDD_ARTIFACTS_DIR"] = old_env
@@ -861,16 +907,31 @@ def probe_claim_9() -> ClaimResult:
     has_multi_root = "_allowed_roots" in cell57_src and "relative_to" in cell57_src
 
     observed = (
-        f"Dynamic test on idd_core: safe path resolved={safe_path_resolved}, traversal attempt blocked={traversal_blocked}. "
+        f"Dynamic test on canonical idd_core: safe path resolved={safe_path_resolved}, "
+        f"traversal attempt blocked={traversal_blocked}, delayed directory creation verified={delayed_mkdir_verified}, "
+        f"multi-root helper is_safe_artifact_path functional={multi_root_helper_ok}. "
         f"Static inspection of notebook Cell 57: enforces PR #149 multi-root containment list (_allowed_roots)={has_multi_root}."
     )
 
-    if traversal_blocked and has_multi_root:
+    if safe_path_resolved and traversal_blocked and delayed_mkdir_verified and multi_root_helper_ok and has_multi_root:
+        classification = "OBSERVED INVARIANT"
+        is_defect = False
+        explanation = (
+            "Canonical artifact resolution in idd_tools/idd_core enforces strict single-root containment with delayed "
+            "directory creation for tools, and exports is_safe_artifact_path for multi-root verification matching PR #149 and notebook Cell 57."
+        )
+    elif not traversal_blocked:
         classification = "REPRODUCED"
         is_defect = True
+        explanation = "Path traversal attempts were not blocked by _resolve_artifact_path."
+    elif not multi_root_helper_ok:
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = "idd_core lacks functional multi-root validation helper is_safe_artifact_path."
     else:
         classification = "NOT REPRODUCED"
         is_defect = False
+        explanation = "Artifact containment contracts satisfied."
 
     return ClaimResult(
         claim_id=9,
@@ -881,7 +942,7 @@ def probe_claim_9() -> ClaimResult:
         is_defect=is_defect,
         expected_behavior=expected,
         observed_behavior=observed,
-        defect_or_contract_explanation="idd_core uses single-root containment; notebook Cell 57 enforces PR #149's strict multi-root containment (_artifact_root, _working_dir, _run_root).",
+        defect_or_contract_explanation=explanation,
         locators=locators,
     )
 
