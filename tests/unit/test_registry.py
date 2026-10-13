@@ -9,6 +9,7 @@ Tests:
 - get_id_from_raw_path path normalization
 - capacity enforcement
 """
+import os
 import threading
 import tempfile
 import time
@@ -658,7 +659,7 @@ class TestExplicitSourceCopyOnWriteIntegrity:
         assert src_file.read_bytes() == original_bytes
 
         # Backing file on disk contains the transformed data
-        backed_df = pd.read_csv(backing_p)
+        backed_df = pd.read_pickle(backing_p)
         assert list(backed_df["value"]) == [100, 200, 300]
 
         # Evict dataset_1 by exceeding capacity
@@ -914,3 +915,242 @@ class TestDataFrameIdFilesystemContainment:
             reloaded = reg.get_dataframe(tid, load_if_not_exists=True)
             assert reloaded is not None
             assert list(reloaded["name"]) == [tid]
+
+
+class TestLosslessDataFramePersistence:
+    """Verify lossless DataFrame snapshot persistence across cache eviction (PR #157 P1)."""
+
+    def test_column_name_types_preserved_losslessly(self, core):
+        """Test A: Mixed column label types (int 0 vs str '0') preserved across cache eviction."""
+        reg = core.DataFrameRegistry(capacity=1)
+        original_df = pd.DataFrame(
+            [[10, 20, "text"]],
+            columns=[0, "0", "col_str"],
+        )
+        assert type(original_df.columns[0]) is int
+        assert type(original_df.columns[1]) is str
+
+        df_id = reg.register_dataframe(original_df, "mixed_cols")
+        assert df_id == "mixed_cols"
+
+        # Evict from in-memory cache
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+        assert reg.registry["mixed_cols"]["df"] is None
+
+        # Reload from backing snapshot
+        reloaded = reg.get_dataframe("mixed_cols", load_if_not_exists=True)
+        assert reloaded is not None
+        pd.testing.assert_frame_equal(original_df, reloaded, check_dtype=True, check_names=True)
+        assert type(reloaded.columns[0]) is int
+        assert type(reloaded.columns[1]) is str
+
+    def test_timezone_aware_datetimes_preserved_losslessly(self, core):
+        """Test B: Timezone-aware datetime columns preserved across cache eviction without coercion."""
+        reg = core.DataFrameRegistry(capacity=1)
+        original_df = pd.DataFrame({
+            "utc_time": pd.date_range("2026-01-01", periods=3, tz="UTC"),
+            "ny_time": pd.date_range("2026-06-01", periods=3, tz="America/New_York"),
+        })
+
+        df_id = reg.register_dataframe(original_df, "tz_dates")
+        assert df_id == "tz_dates"
+
+        # Evict
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+        assert reg.registry["tz_dates"]["df"] is None
+
+        # Reload
+        reloaded = reg.get_dataframe("tz_dates", load_if_not_exists=True)
+        assert reloaded is not None
+        pd.testing.assert_frame_equal(original_df, reloaded, check_dtype=True)
+        assert str(reloaded["utc_time"].dtype) == "datetime64[ns, UTC]"
+        assert "America/New_York" in str(reloaded["ny_time"].dtype)
+
+    def test_nontrivial_index_structures_preserved_losslessly(self, core):
+        """Test C: Custom index names and MultiIndexes preserved across cache eviction."""
+        reg = core.DataFrameRegistry(capacity=1)
+
+        # 1. Custom named index
+        custom_idx_df = pd.DataFrame(
+            {"val": [100, 200]},
+            index=pd.Index(["row_a", "row_b"], name="entity_id"),
+        )
+        reg.register_dataframe(custom_idx_df, "named_idx")
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor1")
+        assert reg.registry["named_idx"]["df"] is None
+
+        reloaded_idx = reg.get_dataframe("named_idx", load_if_not_exists=True)
+        assert reloaded_idx is not None
+        pd.testing.assert_frame_equal(custom_idx_df, reloaded_idx, check_index_type=True, check_names=True)
+
+        # 2. MultiIndex
+        tuples = [("region_1", 2024), ("region_1", 2025), ("region_2", 2024)]
+        multi_idx = pd.MultiIndex.from_tuples(tuples, names=["region", "year"])
+        multi_df = pd.DataFrame({"metric": [1.5, 2.5, 3.5]}, index=multi_idx)
+
+        reg.register_dataframe(multi_df, "multi_idx")
+        reg.register_dataframe(pd.DataFrame({"evict": [2]}), "evictor2")
+        assert reg.registry["multi_idx"]["df"] is None
+
+        reloaded_multi = reg.get_dataframe("multi_idx", load_if_not_exists=True)
+        assert reloaded_multi is not None
+        pd.testing.assert_frame_equal(multi_df, reloaded_multi, check_index_type=True, check_names=True)
+
+    def test_nullable_and_categorical_dtypes_preserved_losslessly(self, core):
+        """Test D: Nullable extension dtypes (Int64, boolean) and category dtypes preserved."""
+        reg = core.DataFrameRegistry(capacity=1)
+        original_df = pd.DataFrame({
+            "nullable_int": pd.Series([10, None, 30], dtype="Int64"),
+            "nullable_bool": pd.Series([True, False, None], dtype="boolean"),
+            "categorical_col": pd.Series(["alpha", "beta", "alpha"], dtype="category"),
+        })
+
+        reg.register_dataframe(original_df, "ext_dtypes")
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+        assert reg.registry["ext_dtypes"]["df"] is None
+
+        reloaded = reg.get_dataframe("ext_dtypes", load_if_not_exists=True)
+        assert reloaded is not None
+        pd.testing.assert_frame_equal(original_df, reloaded, check_dtype=True, check_categorical=True)
+
+    def test_initial_explicit_source_with_transformed_schema(self, core, tmp_path):
+        """Test E: Initial registration with explicit CSV source but transformed schema preserves both."""
+        src_file = tmp_path / "raw_user_input.csv"
+        src_file.write_text("a,b\n1,2\n3,4\n", encoding="utf-8")
+        original_bytes = src_file.read_bytes()
+
+        reg = core.DataFrameRegistry(capacity=1)
+        # Working DataFrame has rich schema with tz-aware timestamp and int column
+        transformed_df = pd.DataFrame(
+            [[10, pd.Timestamp("2026-03-15 12:00:00+0000", tz="UTC")]],
+            columns=[0, "tz_col"],
+        )
+
+        reg.register_dataframe(transformed_df, "trans_ds", raw_path=str(src_file))
+
+        # External source file must remain byte-for-byte untouched
+        assert src_file.read_bytes() == original_bytes
+
+        # Evict
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+        assert reg.registry["trans_ds"]["df"] is None
+
+        # Reload must come from lossless backing snapshot, NOT lossy/stale raw_path
+        reloaded = reg.get_dataframe("trans_ds", load_if_not_exists=True)
+        assert reloaded is not None
+        pd.testing.assert_frame_equal(transformed_df, reloaded, check_dtype=True, check_names=True)
+        assert src_file.read_bytes() == original_bytes
+
+    def test_reregistration_lossless_schema_update(self, core):
+        """Test F: Updating registered DataFrame updates backing snapshot with new rich schema."""
+        reg = core.DataFrameRegistry(capacity=1)
+        v1 = pd.DataFrame({"val": [1, 2]})
+        reg.register_dataframe(v1, "upd_key")
+
+        # Update with rich schema
+        v2 = pd.DataFrame(
+            [[999, "hello"]],
+            columns=[0, "str_0"],
+            index=pd.Index(["row_1"], name="custom_row"),
+        )
+        reg.register_dataframe(v2, "upd_key")
+
+        # Evict
+        reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+        assert reg.registry["upd_key"]["df"] is None
+
+        # Reload must yield v2 losslessly
+        reloaded = reg.get_dataframe("upd_key", load_if_not_exists=True)
+        assert reloaded is not None
+        pd.testing.assert_frame_equal(v2, reloaded, check_dtype=True, check_names=True)
+
+    def test_legacy_validation_maintains_lossless_schema_on_evicted_frame(self, core):
+        """Test G: validate_dataframe_exists restores evicted frame with full fidelity."""
+        reg = core.DataFrameRegistry(capacity=1)
+        with core.override_global_registry(reg):
+            df_rich = pd.DataFrame(
+                [[42, pd.Timestamp("2026-01-01T00:00:00Z")]],
+                columns=[0, "utc_col"],
+            )
+            reg.register_dataframe(df_rich, "val_ds")
+
+            # Evict
+            reg.register_dataframe(pd.DataFrame({"evict": [1]}), "evictor")
+            assert reg.registry["val_ds"]["df"] is None
+
+            # Validate exists
+            assert core.validate_dataframe_exists("val_ds") is True
+
+            # Working frame restored
+            working = reg.get_dataframe("val_ds")
+            assert working is not None
+            pd.testing.assert_frame_equal(df_rich, working, check_dtype=True, check_names=True)
+
+    def test_atomic_write_failure_simulation_on_pkl_backing_path(self, core, monkeypatch):
+        """Test H: Write failure during snapshot creation leaves temporary files cleaned up."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"col": [1, 2, 3]})
+
+        # Register v1 successfully
+        reg.register_dataframe(df, "atomic_df")
+        backing_path = Path(reg.get_backing_path_from_id("atomic_df"))
+        assert backing_path.exists()
+        original_mtime = backing_path.stat().st_mtime_ns
+
+        # Simulate failure during atomic os.replace on update
+        def mock_replace(src, dst):
+            raise OSError("Simulated disk replacement failure")
+
+        monkeypatch.setattr(os, "replace", mock_replace)
+
+        v2 = pd.DataFrame({"col": [99, 100]})
+        result = reg.register_dataframe(v2, "atomic_df")
+        assert result is None
+
+        # Existing snapshot remains unharmed and uncorrupted
+        assert backing_path.exists()
+        assert backing_path.stat().st_mtime_ns == original_mtime
+        backed_df = pd.read_pickle(backing_path)
+        pd.testing.assert_frame_equal(df, backed_df)
+
+        # No lingering temporary files in data_dir
+        tmp_files = [p for p in reg.data_dir.iterdir() if p.name.startswith(".tmp_")]
+        assert not tmp_files, f"Lingering tmp files found: {tmp_files}"
+
+    def test_format_compatibility_for_external_source_paths(self, core, tmp_path):
+        """Test I: External non-pickle sources (.csv, .json, optional .parquet) continue to load seamlessly."""
+        reg = core.DataFrameRegistry(capacity=1)
+
+        # CSV source
+        csv_file = tmp_path / "ext.csv"
+        pd.DataFrame({"x": [1]}).to_csv(csv_file, index=False)
+        reg.register_dataframe(df=None, df_id="from_csv", raw_path=str(csv_file))
+
+        # JSON source
+        json_file = tmp_path / "ext.json"
+        pd.DataFrame({"z": [3]}).to_json(json_file, orient="records")
+        reg.register_dataframe(df=None, df_id="from_json", raw_path=str(json_file))
+
+        assert reg.get_dataframe("from_csv", load_if_not_exists=True)["x"].iloc[0] == 1
+        assert reg.get_dataframe("from_json", load_if_not_exists=True)["z"].iloc[0] == 3
+
+        # Parquet source (optional dependency pyarrow/fastparquet)
+        try:
+            import pyarrow  # noqa: F401
+            pq_file = tmp_path / "ext.parquet"
+            pd.DataFrame({"y": [2]}).to_parquet(pq_file, index=False)
+            reg.register_dataframe(df=None, df_id="from_pq", raw_path=str(pq_file))
+            assert reg.get_dataframe("from_pq", load_if_not_exists=True)["y"].iloc[0] == 2
+        except ImportError:
+            pass
+
+    def test_backing_snapshot_extension_is_pkl_and_strictly_contained(self, core):
+        """Test J: Generated backing paths always end with .pkl and are contained in data_dir."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"a": [1]})
+        reg.register_dataframe(df, "check_ext")
+
+        backing_path = Path(reg.get_backing_path_from_id("check_ext"))
+        assert backing_path.suffix == ".pkl"
+        assert backing_path.is_relative_to(reg.data_dir.resolve())
+        assert backing_path.exists()

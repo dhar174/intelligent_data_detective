@@ -121,7 +121,7 @@ class TestValidateDataframeExists:
             # Owned backing file must contain updated data
             backing_path = reg.get_backing_path_from_id("dataset_1")
             assert backing_path is not None
-            backed_df = pd.read_csv(backing_path)
+            backed_df = pd.read_pickle(backing_path)
             assert list(backed_df["value"]) == [100, 200, 300]
 
             # Original source file must remain byte-for-byte unchanged

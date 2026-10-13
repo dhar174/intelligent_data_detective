@@ -78,8 +78,10 @@ class DataFrameRegistry:
          NEVER modified or overwritten on DataFrame updates.
        - Registry-owned backing storage (`reload_path`): Bounded persisted representation
          in self.data_dir used to restore working DataFrames after cache eviction.
-         When a DataFrame is updated, it is persisted to registry-owned storage,
-         leaving external source files byte-for-byte unchanged.
+         Persisted losslessly as `.pkl` snapshots within trusted owned storage to ensure
+         exact round-trip fidelity for column label types, non-default indexes, timezone
+         metadata, and nullable/categorical dtypes. When a DataFrame is updated, it is persisted
+         to registry-owned storage, leaving external source files byte-for-byte unchanged.
        - Published artifacts: Output documents/charts created via _resolve_artifact_path().
     6. Filesystem Security & Containment:
        - Logical `df_id` strings are decoupled from physical filenames using deterministic
@@ -120,12 +122,18 @@ class DataFrameRegistry:
         traversal escapes across POSIX and Windows conventions. Uses surrogatepass encoding
         so distinct Python strings containing surrogate characters do not collapse into
         the same digest.
+
+        Uses the `.pkl` extension for internal registry-owned backing snapshots in self.data_dir
+        so that cache eviction and subsequent reload losslessly preserve all pandas DataFrame
+        types, index structures, timezone metadata, and nullable dtypes across round-trips.
+        Internal backing storage is strictly contained within the registry's private data directory;
+        user-supplied external files continue to use their respective external formats.
         """
         digest = hashlib.sha256(df_id.encode("utf-8", errors="surrogatepass")).hexdigest()
         safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", df_id)[:24].strip("_")
         if safe_prefix:
-            return f"{safe_prefix}_{digest[:16]}.csv"
-        return f"df_{digest[:24]}.csv"
+            return f"{safe_prefix}_{digest[:16]}.pkl"
+        return f"df_{digest[:24]}.pkl"
 
     def _get_owned_backing_path(self, df_id: str) -> Path:
         """Return and validate a strictly contained backing file path in self.data_dir."""

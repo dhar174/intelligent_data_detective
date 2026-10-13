@@ -27,6 +27,9 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
   - Cache evictions reload from the registry-owned backing path (`reload_path`), guaranteeing data freshness without corrupting external inputs or discarding in-memory transformations.
   - Atomic staged writes (`.tmp` + `os.replace`) ensure registry state is never corrupted if persistence fails.
   - Explicit accessors: `get_source_path_from_id()` and `get_backing_path_from_id()`, with legacy `get_raw_path_from_id()` returning source path if explicit, else reload path.
+- **Lossless Backing Persistence & Representation Fidelity**:
+  - Uses `.pkl` snapshots for internal registry-owned backing storage in `self.data_dir` (`_safe_backing_filename`), guaranteeing exact round-trip fidelity for mixed column label types (`0: int` vs `"0": str`), timezone-aware datetimes (`datetime64[ns, UTC]`), nontrivial indexes (MultiIndex, custom named indexes), and nullable/categorical dtypes across cache eviction and reload.
+  - External user-supplied files (`raw_path`) retain their caller-specified format (.csv, .json, .parquet) and remain byte-for-byte untouched.
 - **Directory Containment & Unicode Safety**:
   - Logical `df_id` values are decoupled from physical filenames via deterministic SHA-256 digest + alphanumeric sanitization (`_safe_backing_filename`), preventing path injection.
   - Uses `errors='surrogatepass'` encoding so distinct Python strings containing Unicode surrogate code points (e.g. `\ud800` vs `\udc00`) never collapse to identical digest filenames.
@@ -52,10 +55,10 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 - **Regression Tests**: Added simulated regression tests for broken restore, broken new-plan allocation, broken high-water advancement (Claim 2), and broken non-CSV validation fallback (Claim 8) to `test_cp0_diagnostics.py`.
 
 ### 5. Verification Results
-- **Unit & Integration Suite**: 518 passed, 9 skipped in 39.75s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
+- **Unit & Integration Suite**: 528 passed, 9 skipped in 27.48s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
 - **Models Test Suite**: 29 passed in 2.36s (`tests/unit/test_models.py`).
-- **Registry Test Suite**: 60 passed, 1 skipped in 8.80s (`tests/unit/test_registry.py`).
-- **Tool Error Handling Suite**: 24 passed in 10.69s (`tests/unit/test_handle_tool_errors.py`).
+- **Registry Test Suite**: 70 passed, 1 skipped in 4.33s (`tests/unit/test_registry.py` including 10 lossless persistence tests in `TestLosslessDataFramePersistence`).
+- **Tool Error Handling Suite**: 24 passed in 3.65s (`tests/unit/test_handle_tool_errors.py`).
 - **CP0 Diagnostics Suite**: 17 passed in 25.02s (`tools/diagnostics/test_cp0_diagnostics.py`).
 - **Drift Probes**: 12/12 evaluated cleanly (`tools/diagnostics/reproduce_drift.py --json`: 5 reproduced, 6 observed invariants, 1 static only, 0 blocked).
 - **Core & Memory Suites**: 110 passed in 5.81s (`test_intelligent_data_detective.py`, `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py`, `test_validate_notebook_integrity.py`).
