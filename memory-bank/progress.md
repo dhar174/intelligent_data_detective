@@ -120,11 +120,17 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
 - Established comprehensive parity inventory (`docs/architecture/idd-core-parity-inventory.md`) and migration specification (`docs/plans/idd-canonical-core-migration.md`).
 - Established 12-probe automated diagnostic suite (`tools/diagnostics/reproduce_drift.py` and `test_cp0_diagnostics.py`).
 
-### Checkpoint 1 (CP1) — Implemented (Under Review)
+### Checkpoint 1 (CP1) — Implemented & Corrective Pass Completed
 - Branch: `antigravity/issue-156-canonical-models-registry`.
 - Draft PR: [PR #157](https://github.com/dhar174/intelligent_data_detective/pull/157).
 - Canonical planning models (`idd_models.py`) with explicit Plan lifecycle semantics (new vs. restore) and RC-2 deduplication.
 - Canonical thread-safe `DataFrameRegistry` (`idd_registry.py`) with `ContextVar` override engine and user-file safety.
 - Atomic bridge in `idd_core.py` with `__getattr__` dynamic delegation and migrated callers in fixtures/diagnostics.
+- **CP1 Corrective Pass (2026-10-12)**:
+  - Resolved P1 finding from independent review `pullrequestreview-5497205553` regarding representation fidelity across cache eviction.
+  - Transitioned internal backing snapshots from `.csv` to `.pkl` (`idd_registry.py`), losslessly preserving mixed integer column names, timezones, MultiIndexes, and nullable dtypes.
+  - Preserved strict trusted storage boundary (internal `.pkl` in `self.data_dir`; external `raw_path` formats untouched).
+  - Added 10 comprehensive regression tests (Tests A–J) in `TestLosslessDataFramePersistence` (`tests/unit/test_registry.py`).
+  - GitHub Actions CI `No-key validation` passed cleanly (1m53s).
 - Zero notebook churn across 99 cells and full baseline quality gate compliance.
-- Status: **STOPPED FOR INDEPENDENT CP1 CODE REVIEW**.
+- Status: **CP1 CORRECTIVE PASS VERIFIED — READY FOR MERGE**.

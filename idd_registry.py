@@ -18,6 +18,7 @@ import contextvars
 import hashlib
 import os
 import re
+import stat
 import tempfile
 import threading
 import uuid
@@ -69,10 +70,17 @@ class DataFrameRegistry:
     1. Single Source of Truth: All datasets are referenced strictly by string df_id.
     2. LRU In-Memory Caching: Bounded by `capacity`; evictions remain loadable from disk.
     3. Multi-Format Reload: Supports .csv, .parquet, .pkl, .pickle, .json.
-    4. Per-Instance Storage Isolation: When data_dir is not explicitly specified,
-       each DataFrameRegistry instance allocates an isolated storage directory
-       (WORKING_DIRECTORY / f"idd_registry_{instance_id}") so independent registries
-       registering identical df_ids never collide or overwrite each other's backing files.
+    4. Per-Instance Storage Isolation & Secure Private Storage:
+       - Default storage (`data_dir` is None): Allocates an exclusively owned private
+         directory via `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))`
+         with restrictive 0700 permissions (drwx------) on POSIX. On Windows, relies on NTFS
+         DACL inheritance within %TEMP%, ensuring independent registries registering identical
+         df_ids never collide and private snapshots cannot be accessed by unauthorized local users.
+       - Configured storage (`data_dir` is provided): Validated against untrusted locations.
+         Rejects filesystem volume roots, non-directories, and on POSIX systems, rejects directories
+         that are world-writable (S_IWOTH) or not owned by the current process UID.
+         On Windows, filesystem security relies on NTFS Access Control Lists (ACLs); when configuring
+         custom multi-user storage, administrators must ensure NTFS DACLs exclude unauthorized principals.
     5. Storage Ownership & Copy-on-Write Model:
        - External source provenance (`source_path`): Original user-supplied file path;
          NEVER modified or overwritten on DataFrame updates.
@@ -83,11 +91,13 @@ class DataFrameRegistry:
          metadata, and nullable/categorical dtypes. When a DataFrame is updated, it is persisted
          to registry-owned storage, leaving external source files byte-for-byte unchanged.
        - Published artifacts: Output documents/charts created via _resolve_artifact_path().
-    6. Filesystem Security & Containment:
+    6. Filesystem Security, Containment & Permission Discipline:
        - Logical `df_id` strings are decoupled from physical filenames using deterministic
          cryptographic digests and path sanitation.
        - Automatically generated backing paths are strictly verified to reside within
          self.data_dir, preventing path traversal across POSIX and Windows conventions.
+       - Staging files and backing snapshots are created with restrictive permissions
+         (mode 0600 on POSIX where supported) to guarantee confidentiality and integrity.
     7. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
        deletes user files or published artifacts from disk.
     """
@@ -102,14 +112,87 @@ class DataFrameRegistry:
         self.df_id_to_raw_path: Dict[str, str] = {}
         self.cache: OrderedDict[str, pd.DataFrame] = OrderedDict()
         self.capacity: int = capacity
-        if data_dir is not None:
-            self.data_dir: Path = self._norm_path(data_dir)
-            self._is_owned_storage: bool = False
-        else:
-            instance_id = uuid.uuid4().hex[:12]
-            self.data_dir = (WORKING_DIRECTORY / f"idd_registry_{instance_id}").resolve()
+        self.data_dir: Path = self._validate_and_secure_data_dir(data_dir)
+
+    def _validate_and_secure_data_dir(
+        self, data_dir: Optional[Union[str, Path]]
+    ) -> Path:
+        """Establish or validate a secure, private storage directory.
+
+        Security Policy:
+        1. Default storage (data_dir is None):
+           Creates an exclusively owned private directory via `tempfile.mkdtemp`
+           with permissions 0700 (drwx------) on POSIX. On Windows, relies on NTFS
+           DACL inheritance within %TEMP% restricting access to the current user principal.
+        2. Explicitly configured storage (data_dir is provided):
+           - Rejects filesystem volume roots (e.g. '/' or 'C:\\').
+           - If directory does not exist, creates it and enforces 0700 permissions on POSIX.
+           - If directory exists, verifies it is a directory. On POSIX, validates that:
+             a. It is owned by the current process UID (rejects unowned/shared dirs).
+             b. It is NOT world-writable (rejects world-writable dirs like shared /tmp).
+             c. If group-writable, it belongs to the current process GID.
+           - On Windows, verifies the directory is valid and not a volume root. Documents
+             trust assumptions: filesystem security relies on NTFS ACLs protecting the caller's
+             configured location.
+        """
+        if data_dir is None:
+            WORKING_DIRECTORY.mkdir(parents=True, exist_ok=True)
+            created = tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))
+            resolved = Path(created).resolve()
+            if os.name == "posix":
+                try:
+                    os.chmod(resolved, 0o700)
+                except OSError:
+                    pass
             self._is_owned_storage = True
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+            return resolved
+
+        path = self._norm_path(data_dir)
+        self._is_owned_storage = False
+
+        # Reject filesystem root (e.g. "/" on POSIX, "C:\" on Windows)
+        if path == path.parent:
+            raise DataFrameRegistryError(
+                f"Configured data_dir cannot be a filesystem root: '{path}'"
+            )
+
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                try:
+                    os.chmod(path, 0o700)
+                except OSError:
+                    pass
+        else:
+            if not path.is_dir():
+                raise DataFrameRegistryError(
+                    f"Configured data_dir is not a directory: '{path}'"
+                )
+            if os.name == "posix":
+                st = path.stat()
+                # 1. Ownership check: Must be owned by current user
+                current_uid = os.getuid()
+                if st.st_uid != current_uid:
+                    raise DataFrameRegistryError(
+                        f"Unsafe data_dir: directory '{path}' is owned by UID {st.st_uid}, "
+                        f"expected current UID {current_uid}. Refusing to trust shared directory."
+                    )
+                # 2. World-writable check: Must NOT be world-writable
+                if st.st_mode & stat.S_IWOTH:
+                    raise DataFrameRegistryError(
+                        f"Unsafe data_dir: directory '{path}' is world-writable (mode {oct(st.st_mode)}). "
+                        f"Refusing to trust shared writable directory for pickle storage."
+                    )
+                # 3. Group-writable check: If group-writable, must match current GID
+                if (st.st_mode & stat.S_IWGRP) and hasattr(os, "getgid"):
+                    current_gid = os.getgid()
+                    if st.st_gid != current_gid:
+                        raise DataFrameRegistryError(
+                            f"Unsafe data_dir: directory '{path}' is group-writable by GID {st.st_gid}, "
+                            f"expected current GID {current_gid}. Refusing to trust shared writable directory."
+                        )
+
+        return path
 
     def _norm_path(self, p: Union[str, Path]) -> Path:
         """Resolve and expand path."""
@@ -169,6 +252,11 @@ class DataFrameRegistry:
                 df.to_json(tmp_path, orient="records")
             else:
                 df.to_csv(tmp_path, index=False)
+            if os.name == "posix":
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass
             os.replace(tmp_path, path)
             return True
         except Exception as e:
@@ -408,6 +496,14 @@ class DataFrameRegistry:
                 if not reload_p:
                     return None
                 path = self._norm_path(str(reload_p))
+                if path.suffix.lower() in (".pkl", ".pickle"):
+                    resolved_path = path.resolve()
+                    resolved_data_dir = self.data_dir.resolve()
+                    if resolved_path.is_relative_to(resolved_data_dir):
+                        if resolved_path == resolved_data_dir:
+                            raise DataFrameRegistryError(
+                                f"Security violation: reload path cannot be storage directory itself: '{resolved_path}'"
+                            )
                 try:
                     loaded = self._read_df(path)
                 except FileNotFoundError:

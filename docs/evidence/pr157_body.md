@@ -30,6 +30,12 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 - **Lossless Backing Persistence & Representation Fidelity**:
   - Uses `.pkl` snapshots for internal registry-owned backing storage in `self.data_dir` (`_safe_backing_filename`), guaranteeing exact round-trip fidelity for mixed column label types (`0: int` vs `"0": str`), timezone-aware datetimes (`datetime64[ns, UTC]`), nontrivial indexes (MultiIndex, custom named indexes), and nullable/categorical dtypes across cache eviction and reload.
   - External user-supplied files (`raw_path`) retain their caller-specified format (.csv, .json, .parquet) and remain byte-for-byte untouched.
+- **Private Storage Security Boundary & Permissions**:
+  - Secure default directory creation uses `tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))` with explicit `0700` (`drwx------`) directory permissions on POSIX, eliminating shared/world-accessible defaults and umask race conditions.
+  - Staging files and finalized `.pkl` snapshots are set to restrictive `0600` (`-rw-------`) permissions on POSIX before atomic rename (`os.replace`), ensuring private snapshots cannot be read or modified by other unprivileged users.
+  - Configured directory validation (`_validate_and_secure_data_dir`) rejects filesystem volume roots (`/`, `C:\`), non-directory files, world-writable directories (`stat.S_IWOTH`), and unowned directories (`st.st_uid != os.getuid()`) on POSIX.
+  - Confined pickle deserialization: internal unpickling is strictly restricted to verified files contained within `self.data_dir.resolve()`.
+  - Windows security model: relies on NTFS Discretionary Access Control Lists (DACLs) inherited from user `%TEMP%` / `%USERPROFILE%`, documented explicitly in class contracts.
 - **Directory Containment & Unicode Safety**:
   - Logical `df_id` values are decoupled from physical filenames via deterministic SHA-256 digest + alphanumeric sanitization (`_safe_backing_filename`), preventing path injection.
   - Uses `errors='surrogatepass'` encoding so distinct Python strings containing Unicode surrogate code points (e.g. `\ud800` vs `\udc00`) never collapse to identical digest filenames.
@@ -55,9 +61,9 @@ Implements Checkpoint 1 (CP1) and resolves all P1/P2 findings from independent r
 - **Regression Tests**: Added simulated regression tests for broken restore, broken new-plan allocation, broken high-water advancement (Claim 2), and broken non-CSV validation fallback (Claim 8) to `test_cp0_diagnostics.py`.
 
 ### 5. Verification Results
-- **Unit & Integration Suite**: 528 passed, 9 skipped in 27.48s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
+- **Unit & Integration Suite**: 533 passed, 13 skipped in 27.81s (`test_validate_run.py`, `tests/unit`, `tests/integration`).
 - **Models Test Suite**: 29 passed in 2.36s (`tests/unit/test_models.py`).
-- **Registry Test Suite**: 70 passed, 1 skipped in 4.33s (`tests/unit/test_registry.py` including 10 lossless persistence tests in `TestLosslessDataFramePersistence`).
+- **Registry Test Suite**: 75 passed, 5 skipped in 4.52s (`tests/unit/test_registry.py` including 9 private storage security tests in `TestPrivateStorageSecurity` and 10 lossless persistence tests in `TestLosslessDataFramePersistence`).
 - **Tool Error Handling Suite**: 24 passed in 3.65s (`tests/unit/test_handle_tool_errors.py`).
 - **CP0 Diagnostics Suite**: 17 passed in 25.02s (`tools/diagnostics/test_cp0_diagnostics.py`).
 - **Drift Probes**: 12/12 evaluated cleanly (`tools/diagnostics/reproduce_drift.py --json`: 5 reproduced, 6 observed invariants, 1 static only, 0 blocked).

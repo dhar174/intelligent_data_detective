@@ -197,3 +197,15 @@ If any fail, route to a remediation node (or fail loudly) — **not** to FINAL w
 The managed block above (line 50–52) still says "Always use `MyChatOpenai`". As of 2026-04-23 the user has marked `MyChatOpenai` as **legacy** and prefers `ChatOpenAI` direct (see `decisionLog.md` ADR). The managed block is intentionally NOT edited. Treat the ADR as authoritative for new code; treat the managed block as the regenerable scaffold contract.
 <!-- session-curated:2026-04-23-phase6:end -->
 
+<!-- session-curated:2026-10-12-cp1-corrective-pass:start -->
+### Pattern: Lossless DataFrameRegistry Backing Persistence (CP1 Corrective Pass)
+**Pattern:** Internal backing snapshots in `DataFrameRegistry` must strictly use `.pkl` for disk serialization on LRU cache eviction, while external files (`raw_path`) preserve user formats.
+```python
+# Internal backing files in self.data_dir:
+filename = f"{safe_prefix}_{digest[:16]}.pkl"
+# Saved via pd.to_pickle(df, path) and reloaded via pd.read_pickle(path)
+```
+**Why:** CSV serialization silently discards integer column name types (`0` stringified to `'0'`), timezone metadata on datetimes, MultiIndex column/row hierarchies, and nullable dtypes (`pd.NA`, `Int64`, `boolean`). Using `.pkl` provides 100% lossless representation fidelity across cache eviction while keeping unpickling strictly confined to verified paths within `self.data_dir` (`_get_owned_backing_path`).
+<!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
+
+

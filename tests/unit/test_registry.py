@@ -10,6 +10,7 @@ Tests:
 - capacity enforcement
 """
 import os
+import stat
 import threading
 import tempfile
 import time
@@ -1156,3 +1157,105 @@ class TestLosslessDataFramePersistence:
         assert backing_path.suffix == ".pkl"
         assert backing_path.is_relative_to(reg.data_dir.resolve())
         assert backing_path.exists()
+
+
+class TestPrivateStorageSecurity:
+    """Verify private storage boundary and permissions for registry-owned snapshots (PR #157 P1)."""
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits test")
+    def test_default_storage_permissions_posix(self, core):
+        """Test 1: Default registry directory is created with restrictive 0700 permissions on POSIX."""
+        reg = core.DataFrameRegistry(capacity=5)
+        st = reg.data_dir.stat()
+        mode = stat.S_IMODE(st.st_mode)
+        assert mode == 0o700, f"Expected 0700 permissions for data_dir, got {oct(mode)}"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits test")
+    def test_internal_pickle_snapshots_have_restrictive_permissions_posix(self, core):
+        """Test 2: Internal pickle snapshots are created with mode 0600 on POSIX."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"secret": ["confidential_data"]})
+        reg.register_dataframe(df, "secret_df")
+
+        backing_path = Path(reg.get_backing_path_from_id("secret_df"))
+        assert backing_path.exists()
+        file_mode = stat.S_IMODE(backing_path.stat().st_mode)
+        assert file_mode == 0o600, f"Expected 0600 permissions for snapshot, got {oct(file_mode)}"
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits test")
+    def test_unsafe_world_writable_configured_dir_rejected_posix(self, core, tmp_path):
+        """Test 3: Intentionally unsafe world-writable configured directory is rejected with DataFrameRegistryError."""
+        unsafe_dir = tmp_path / "shared_world_writable"
+        unsafe_dir.mkdir()
+        os.chmod(unsafe_dir, 0o777)
+
+        with pytest.raises(core.DataFrameRegistryError, match="world-writable"):
+            core.DataFrameRegistry(capacity=5, data_dir=unsafe_dir)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership test")
+    def test_unowned_configured_dir_rejected_posix(self, core, tmp_path, monkeypatch):
+        """Test 4: Directory owned by a different UID is rejected as an untrusted shared root."""
+        test_dir = tmp_path / "other_user_dir"
+        test_dir.mkdir()
+
+        monkeypatch.setattr(os, "getuid", lambda: 99999)
+
+        with pytest.raises(core.DataFrameRegistryError, match="owned by UID"):
+            core.DataFrameRegistry(capacity=5, data_dir=test_dir)
+
+    def test_secure_configured_dir_accepted_and_usable(self, core, tmp_path):
+        """Test 5: Secure explicitly configured directory remains usable and stores backing files."""
+        custom_dir = tmp_path / "valid_custom_dir"
+        reg = core.DataFrameRegistry(capacity=2, data_dir=custom_dir)
+        assert reg.data_dir == custom_dir.resolve()
+
+        df = pd.DataFrame({"data": [10, 20]})
+        reg.register_dataframe(df, "custom_df")
+
+        # Evict and reload
+        reg.register_dataframe(pd.DataFrame({"x": [1]}), "evictor1")
+        reg.register_dataframe(pd.DataFrame({"x": [2]}), "evictor2")
+        assert reg.registry["custom_df"]["df"] is None
+
+        reloaded = reg.get_dataframe("custom_df", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["data"]) == [10, 20]
+
+    def test_filesystem_root_rejected_as_data_dir(self, core):
+        """Test 6: Filesystem root (e.g. / or C:\\) cannot be configured as data_dir."""
+        root_path = Path("/").resolve()
+        with pytest.raises(core.DataFrameRegistryError, match="filesystem root"):
+            core.DataFrameRegistry(data_dir=root_path)
+
+    def test_non_directory_file_rejected_as_data_dir(self, core, tmp_path):
+        """Test 7: Regular file cannot be configured as data_dir."""
+        regular_file = tmp_path / "not_a_dir.txt"
+        regular_file.write_text("file content")
+        with pytest.raises(core.DataFrameRegistryError, match="not a directory"):
+            core.DataFrameRegistry(data_dir=regular_file)
+
+    def test_pickle_deserialization_confined_to_verified_storage(self, core, tmp_path):
+        """Test 8: Reloading evicted pickle snapshots is confined to verified registry storage."""
+        reg = core.DataFrameRegistry(capacity=1)
+        df = pd.DataFrame({"key": ["value"]})
+        reg.register_dataframe(df, "verified_ds")
+
+        # Evict
+        reg.register_dataframe(pd.DataFrame({"x": [0]}), "evictor")
+        assert reg.registry["verified_ds"]["df"] is None
+
+        # Verify reload path is strictly within reg.data_dir
+        reload_p = Path(reg.registry["verified_ds"]["reload_path"])
+        assert reload_p.is_relative_to(reg.data_dir.resolve())
+        assert reload_p.suffix == ".pkl"
+
+        reloaded = reg.get_dataframe("verified_ds", load_if_not_exists=True)
+        assert reloaded is not None
+        assert list(reloaded["key"]) == ["value"]
+
+    def test_windows_security_model_assumptions_documented(self):
+        """Test 9: Assert documentation of Windows NTFS ACL security model."""
+        import idd_registry
+        doc = idd_registry.DataFrameRegistry.__doc__
+        assert "NTFS" in doc
+        assert "ACL" in doc or "DACL" in doc

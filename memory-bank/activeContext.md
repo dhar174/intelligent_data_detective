@@ -566,4 +566,46 @@ This is now the strongest completion baseline:
 - Status: **STOPPED FOR INDEPENDENT CP1 CODE REVIEW**.
 <!-- session-curated:2026-10-11-cp1-canonical-models-registry:end -->
 
+<!-- session-curated:2026-10-12-cp1-corrective-pass:start -->
+## 2026-10-12 — CP1 Corrective Pass: Lossless DataFrame Persistence Across Cache Eviction (Issue #156, PR #157)
+
+### Context & Independent Review Resolution
+- **Review Finding**: Independent review `pullrequestreview-5497205553` on PR #157 flagged a Priority 1 (P1) defect regarding internal backing snapshot fidelity across LRU cache eviction and reload.
+- **Root Cause**: `_safe_backing_filename(df_id)` in `idd_registry.py` generated backing filenames with `.csv` extension. While CSV was functional for simple tabular data, CSV serialization is inherently lossy for pandas DataFrames:
+  1. Integer column labels (`0`) silently converted to string `'0'` (or `'0.1'` on collisions).
+  2. Timezone-aware datetimes lost timezone metadata or coerced to naive strings.
+  3. Non-trivial indexes (MultiIndex, named indexes) flattened to default ranges.
+  4. Nullable and categorical dtypes (`Int64`, `boolean`, `category`) degraded to float64 or object.
+
+### Solution Delivered
+1. **Transitioned Backing Storage to `.pkl`:**
+   - Modified `_safe_backing_filename()` in `idd_registry.py` to use `.pkl` (`{safe_prefix}_{digest[:16]}.pkl` or `df_{digest[:24]}.pkl`).
+   - `_write_df()` and `_read_df()` utilize `pd.to_pickle()` and `pd.read_pickle()` for internal backing storage, preserving complete DataFrame representation losslessly.
+2. **Clarified Trusted Storage Boundary:**
+   - Internal snapshots reside strictly within the registry's private, verified directory (`self.data_dir`), protected by `_get_owned_backing_path()` path-containment assertions.
+   - External user files (`raw_path`) are never modified or rewritten to `.pkl`; they retain caller-specified formats (`.csv`, `.parquet`, `.json`) byte-for-byte untouched.
+3. **Comprehensive Regression Suite:**
+   - Added `TestLosslessDataFramePersistence` with 10 comprehensive tests (Tests A–J) in `tests/unit/test_registry.py`:
+     - Test A: Mixed column label types (int `0` vs str `'0'`).
+     - Test B: Timezone-aware datetimes across timezones (UTC, America/New_York) without coercion.
+     - Test C: MultiIndex columns.
+     - Test D: MultiIndex rows.
+     - Test E: Named index preservation.
+     - Test F: Nullable dtypes (`Int64`, `boolean`) and `pd.NA` retention without float64 casting.
+     - Test G: Categorical dtypes and category order.
+     - Test H: Large/empty DataFrames and edge-case schemas.
+     - Test I: User file format safety (external `.csv`/`.parquet` files never rewritten to `.pkl`).
+     - Test J: Deterministic reload identity across multiple eviction-reload cycles.
+   - Relaxed datetime timezone unit check in tests (`check_freq=False`, cross-version unit compatibility ns vs us) for robust cross-pandas environment support.
+4. **Zero Notebook Churn:**
+   - 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
+
+### Verification Baseline
+- GitHub Actions CI `No-key validation` passed cleanly (1m53s).
+- Full local test suite: **367+ passed, 0 failures**.
+- PR #157 description updated with latest evidence and test results.
+- Status: **CP1 Corrective Pass complete; PR #157 verified and ready for merge**.
+<!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
+
+
 
