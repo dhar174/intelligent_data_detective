@@ -1259,3 +1259,272 @@ class TestPrivateStorageSecurity:
         doc = idd_registry.DataFrameRegistry.__doc__
         assert "NTFS" in doc
         assert "ACL" in doc or "DACL" in doc
+
+
+class TestFinalCP1PickleSecurityCorrections:
+    """PR #157 review 5498283747: group-writable storage, fail-closed unpickling, secure staging."""
+
+    # ------------------------------------------------------------------
+    # Fix 1: group-writable configured storage
+    # ------------------------------------------------------------------
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits test")
+    def test_group_writable_dir_with_current_uid_and_gid_rejected_posix(self, core, tmp_path):
+        """A 0770 dir owned by the current UID and current GID is still rejected."""
+        shared_dir = tmp_path / "group_writable_same_gid"
+        shared_dir.mkdir()
+        os.chown(shared_dir, -1, os.getgid())
+        os.chmod(shared_dir, 0o770)
+        st = shared_dir.stat()
+        assert st.st_uid == os.getuid()
+        assert st.st_gid == os.getgid()
+        assert stat.S_IMODE(st.st_mode) == 0o770
+
+        with pytest.raises(core.DataFrameRegistryError, match="group-writable"):
+            core.DataFrameRegistry(capacity=5, data_dir=shared_dir)
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits test")
+    def test_owner_only_0700_configured_dir_accepted_posix(self, core, tmp_path):
+        """A 0700 dir owned by the current UID remains accepted and usable."""
+        private_dir = tmp_path / "owner_only"
+        private_dir.mkdir()
+        os.chmod(private_dir, 0o700)
+
+        reg = core.DataFrameRegistry(capacity=5, data_dir=private_dir)
+        assert reg.data_dir == private_dir.resolve()
+        assert reg.register_dataframe(pd.DataFrame({"a": [1]}), "ok_df") == "ok_df"
+
+    # ------------------------------------------------------------------
+    # Fix 2: fail-closed pickle deserialization
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _forbid_read_pickle(monkeypatch):
+        """Replace pd.read_pickle with a spy that records calls and never unpickles."""
+        calls = []
+
+        def _spy(*args, **kwargs):
+            calls.append(args)
+            raise AssertionError("pd.read_pickle must not be invoked for rejected paths")
+
+        monkeypatch.setattr(pd, "read_pickle", _spy)
+        return calls
+
+    @staticmethod
+    def _evict(reg, df_id):
+        reg.cache.pop(df_id, None)
+        reg.registry[df_id]["df"] = None
+
+    def test_valid_internal_pickle_reload_succeeds(self, core, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"k": [1, 2, 3]})
+        reg.register_dataframe(df, "internal_ok")
+        self._evict(reg, "internal_ok")
+
+        real_read_pickle = pd.read_pickle
+        calls = []
+
+        def _tracking(path, *args, **kwargs):
+            calls.append(Path(path))
+            return real_read_pickle(path, *args, **kwargs)
+
+        monkeypatch.setattr(pd, "read_pickle", _tracking)
+        reloaded = reg.get_dataframe("internal_ok", load_if_not_exists=True)
+        pd.testing.assert_frame_equal(reloaded, df)
+        assert calls == [Path(reg.get_backing_path_from_id("internal_ok"))]
+
+    def test_injected_external_reload_path_rejected_before_read_pickle(self, core, tmp_path, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(pd.DataFrame({"k": [1]}), "victim")
+        self._evict(reg, "victim")
+
+        external = tmp_path / "attacker_controlled.pkl"
+        pd.DataFrame({"benign": [0]}).to_pickle(external)  # benign stand-in; never unpickled
+        reg.registry["victim"]["reload_path"] = str(external)
+
+        calls = self._forbid_read_pickle(monkeypatch)
+        with pytest.raises(core.DataFrameRegistryError, match="refusing to unpickle"):
+            reg.get_dataframe("victim", load_if_not_exists=True)
+        assert calls == []
+        assert reg.registry["victim"]["df"] is None
+
+    def test_traversal_and_foreign_in_boundary_reload_paths_rejected(self, core, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(pd.DataFrame({"k": [1]}), "victim")
+        reg.register_dataframe(pd.DataFrame({"other": [2]}), "other")
+        self._evict(reg, "victim")
+        calls = self._forbid_read_pickle(monkeypatch)
+
+        candidates = [
+            reg.get_backing_path_from_id("other"),  # inside data_dir, but not victim's snapshot
+            str(reg.data_dir / ".." / "escape.pkl"),  # traversal out of data_dir
+            str(reg.data_dir / "nested" / ".." / "unexpected.pkl"),
+            "relative_snapshot.pkl",
+        ]
+        for candidate in candidates:
+            reg.registry["victim"]["reload_path"] = candidate
+            with pytest.raises(core.DataFrameRegistryError):
+                reg.get_dataframe("victim", load_if_not_exists=True)
+        assert calls == []
+
+    def test_symlinked_snapshot_escape_rejected_before_read_pickle(self, core, tmp_path, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(pd.DataFrame({"k": [1]}), "victim")
+        self._evict(reg, "victim")
+
+        backing = Path(reg.get_backing_path_from_id("victim"))
+        external = tmp_path / "outside.pkl"
+        pd.DataFrame({"benign": [0]}).to_pickle(external)
+        backing.unlink()
+        try:
+            os.symlink(external, backing)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation not permitted on this platform: {exc}")
+
+        calls = self._forbid_read_pickle(monkeypatch)
+        with pytest.raises(core.DataFrameRegistryError):
+            reg.get_dataframe("victim", load_if_not_exists=True)
+        assert calls == []
+
+    def test_untrusted_external_pickle_import_rejected(self, core, tmp_path, monkeypatch):
+        external = tmp_path / "untrusted.pkl"
+        pd.DataFrame({"benign": [0]}).to_pickle(external)
+        reg = core.DataFrameRegistry(capacity=5)
+        calls = self._forbid_read_pickle(monkeypatch)
+
+        with pytest.raises(core.DataFrameRegistryError, match="trust_external_pickle"):
+            reg.register_dataframe(df=None, df_id="ext", raw_path=str(external))
+        assert not reg.has_df("ext")
+
+        # Re-registration of an existing entry from an untrusted pickle is also rejected.
+        reg.register_dataframe(pd.DataFrame({"k": [1]}), "existing")
+        with pytest.raises(core.DataFrameRegistryError, match="trust_external_pickle"):
+            reg.register_dataframe(df=None, df_id="existing", raw_path=str(external))
+        assert calls == []
+        assert list(reg.get_dataframe("existing")["k"]) == [1]
+
+    def test_explicitly_trusted_external_pickle_import_supported(self, core, tmp_path):
+        external = tmp_path / "trusted.pickle"
+        df = pd.DataFrame({"v": [10, 20]})
+        df.to_pickle(external)
+        reg = core.DataFrameRegistry(capacity=5)
+
+        assert reg.register_dataframe(
+            df=None, df_id="ext", raw_path=str(external), trust_external_pickle=True
+        ) == "ext"
+        entry = reg.registry["ext"]
+        assert entry["trusted_external_pickle"] is True
+        assert entry["reload_is_owned_snapshot"] is False  # never labelled registry-owned
+
+        self._evict(reg, "ext")
+        pd.testing.assert_frame_equal(reg.get_dataframe("ext", load_if_not_exists=True), df)
+
+    def test_trusted_external_decision_not_transferable_to_other_path(self, core, tmp_path, monkeypatch):
+        trusted = tmp_path / "trusted.pkl"
+        pd.DataFrame({"v": [1]}).to_pickle(trusted)
+        other = tmp_path / "other.pkl"
+        pd.DataFrame({"v": [2]}).to_pickle(other)
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(df=None, df_id="ext", raw_path=str(trusted), trust_external_pickle=True)
+        self._evict(reg, "ext")
+        reg.registry["ext"]["reload_path"] = str(other)
+
+        calls = self._forbid_read_pickle(monkeypatch)
+        with pytest.raises(core.DataFrameRegistryError, match="refusing to unpickle"):
+            reg.get_dataframe("ext", load_if_not_exists=True)
+        assert calls == []
+
+    def test_new_external_pickle_export_reloads_from_owned_snapshot(self, core, tmp_path):
+        """A df written to a new external .pkl path reloads from the private snapshot, not the export."""
+        export = tmp_path / "export.pkl"
+        df = pd.DataFrame({"v": [5]})
+        reg = core.DataFrameRegistry(capacity=5)
+        reg.register_dataframe(df, "exp", raw_path=str(export))
+        assert export.exists()
+        entry = reg.registry["exp"]
+        assert entry["source_path"] == str(export.resolve())
+        assert Path(entry["reload_path"]).parent == reg.data_dir
+        assert entry["reload_is_owned_snapshot"] is True
+
+        self._evict(reg, "exp")
+        pd.testing.assert_frame_equal(reg.get_dataframe("exp", load_if_not_exists=True), df)
+
+    def test_csv_json_parquet_imports_unaffected_by_pickle_policy(self, core, tmp_path):
+        reg = core.DataFrameRegistry(capacity=1)
+        csv_file = tmp_path / "in.csv"
+        json_file = tmp_path / "in.json"
+        pd.DataFrame({"x": [1]}).to_csv(csv_file, index=False)
+        pd.DataFrame({"z": [3]}).to_json(json_file, orient="records")
+        assert reg.register_dataframe(df=None, df_id="c", raw_path=str(csv_file)) == "c"
+        assert reg.register_dataframe(df=None, df_id="j", raw_path=str(json_file)) == "j"
+        assert reg.get_dataframe("c", load_if_not_exists=True)["x"].iloc[0] == 1
+        assert reg.get_dataframe("j", load_if_not_exists=True)["z"].iloc[0] == 3
+
+        pytest.importorskip("pyarrow", reason="pyarrow not installed")
+        pq_file = tmp_path / "in.parquet"
+        pd.DataFrame({"y": [2]}).to_parquet(pq_file, index=False)
+        assert reg.register_dataframe(df=None, df_id="p", raw_path=str(pq_file)) == "p"
+        reg.get_dataframe("c", load_if_not_exists=True)  # evict "p"
+        assert reg.get_dataframe("p", load_if_not_exists=True)["y"].iloc[0] == 2
+
+    # ------------------------------------------------------------------
+    # Fix 3: staging files secured before serialization
+    # ------------------------------------------------------------------
+    def test_staging_file_is_0600_during_serialization(self, core, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        observed = []
+        real_to_pickle = pd.DataFrame.to_pickle
+
+        def _inspecting_to_pickle(self_df, path, *args, **kwargs):
+            staging = [p for p in reg.data_dir.iterdir() if p.name.startswith(".tmp_")]
+            assert len(staging) == 1, f"expected exactly one staging file, got {staging}"
+            assert staging[0].stat().st_size == 0  # nothing serialized yet
+            observed.append(stat.S_IMODE(staging[0].stat().st_mode))
+            return real_to_pickle(self_df, path, *args, **kwargs)
+
+        monkeypatch.setattr(pd.DataFrame, "to_pickle", _inspecting_to_pickle)
+        old_umask = os.umask(0) if os.name == "posix" else None  # most permissive umask
+        try:
+            assert reg.register_dataframe(pd.DataFrame({"secret": ["x"]}), "staged") == "staged"
+        finally:
+            if old_umask is not None:
+                os.umask(old_umask)
+
+        assert len(observed) == 1
+        if os.name == "posix":
+            assert observed[0] == 0o600, f"staging file mode during serialization: {oct(observed[0])}"
+            final = Path(reg.get_backing_path_from_id("staged"))
+            assert stat.S_IMODE(final.stat().st_mode) == 0o600
+        assert not [p for p in reg.data_dir.iterdir() if p.name.startswith(".tmp_")]
+
+    def test_failed_serialization_removes_staging_and_preserves_snapshot(self, core, monkeypatch):
+        reg = core.DataFrameRegistry(capacity=5)
+        v1 = pd.DataFrame({"col": [1, 2, 3]})
+        reg.register_dataframe(v1, "atomic")
+        backing = Path(reg.get_backing_path_from_id("atomic"))
+        original_bytes = backing.read_bytes()
+
+        def _partial_then_fail(self_df, path, *args, **kwargs):
+            path.write(b"partial-garbage")
+            raise RuntimeError("simulated serialization failure")
+
+        monkeypatch.setattr(pd.DataFrame, "to_pickle", _partial_then_fail)
+        assert reg.register_dataframe(pd.DataFrame({"col": [9]}), "atomic") is None
+        monkeypatch.undo()
+
+        assert backing.read_bytes() == original_bytes
+        assert not [p for p in reg.data_dir.iterdir() if p.name.startswith(".tmp_")]
+        self._evict(reg, "atomic")
+        pd.testing.assert_frame_equal(reg.get_dataframe("atomic", load_if_not_exists=True), v1)
+
+    def test_staging_preserves_text_and_binary_extensions(self, core, tmp_path):
+        """CSV/JSON (text) and pickle (binary) staging round-trips via write_dataframe_to_file."""
+        reg = core.DataFrameRegistry(capacity=5)
+        df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
+        for name, reader in (
+            ("out.csv", pd.read_csv),
+            ("out.json", lambda p: pd.read_json(p, orient="records")),
+            ("out.pkl", pd.read_pickle),
+        ):
+            target = tmp_path / name
+            assert reg.write_dataframe_to_file(df, str(target)) is True
+            pd.testing.assert_frame_equal(reader(target), df)
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".tmp_")]

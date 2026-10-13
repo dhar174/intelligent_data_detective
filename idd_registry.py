@@ -78,7 +78,8 @@ class DataFrameRegistry:
          df_ids never collide and private snapshots cannot be accessed by unauthorized local users.
        - Configured storage (`data_dir` is provided): Validated against untrusted locations.
          Rejects filesystem volume roots, non-directories, and on POSIX systems, rejects directories
-         that are world-writable (S_IWOTH) or not owned by the current process UID.
+         that are group-writable (S_IWGRP), world-writable (S_IWOTH), or not owned by the current
+         process UID.
          On Windows, filesystem security relies on NTFS Access Control Lists (ACLs); when configuring
          custom multi-user storage, administrators must ensure NTFS DACLs exclude unauthorized principals.
     5. Storage Ownership & Copy-on-Write Model:
@@ -96,9 +97,24 @@ class DataFrameRegistry:
          cryptographic digests and path sanitation.
        - Automatically generated backing paths are strictly verified to reside within
          self.data_dir, preventing path traversal across POSIX and Windows conventions.
-       - Staging files and backing snapshots are created with restrictive permissions
-         (mode 0600 on POSIX where supported) to guarantee confidentiality and integrity.
-    7. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
+       - Staging files are created exclusively (O_CREAT | O_EXCL) with mode 0600 from the
+         moment of creation on POSIX, before any DataFrame bytes are serialized, and are then
+         atomically renamed over the target with os.replace(). On Windows the POSIX mode bits
+         are not meaningful; confidentiality relies on the NTFS ACLs inherited from the
+         containing (private) directory.
+    7. Pickle Deserialization Trust Policy (fail closed):
+       - Internal snapshots: a `.pkl`/`.pickle` reload is only performed when the entry is
+         registry-owned AND its recorded reload path resolves (following symlinks) to exactly
+         the expected digest-derived backing file inside the validated self.data_dir. Any
+         other path (injected/tampered `reload_path`, symlink escapes, a swapped data_dir) is
+         rejected with DataFrameRegistryError BEFORE `pd.read_pickle()` is invoked.
+       - External pickle imports: unpickling can execute arbitrary code, so importing a
+         user-supplied `.pkl`/`.pickle` file via `register_dataframe(df=None, raw_path=...)`
+         is rejected by default. Callers that trust the file's provenance must opt in
+         explicitly with `trust_external_pickle=True`; that trust decision is recorded on the
+         entry and required again for any later reload from the same external path.
+       - CSV, JSON, and Parquet sources are not affected by this policy.
+    8. File Safety Invariant: `clear()` resets in-memory cache and tracking maps, but NEVER
        deletes user files or published artifacts from disk.
     """
 
@@ -130,7 +146,8 @@ class DataFrameRegistry:
            - If directory exists, verifies it is a directory. On POSIX, validates that:
              a. It is owned by the current process UID (rejects unowned/shared dirs).
              b. It is NOT world-writable (rejects world-writable dirs like shared /tmp).
-             c. If group-writable, it belongs to the current process GID.
+             c. It is NOT group-writable (S_IWGRP), even when its GID matches the
+                current process GID, because other group members could replace snapshots.
            - On Windows, verifies the directory is valid and not a volume root. Documents
              trust assumptions: filesystem security relies on NTFS ACLs protecting the caller's
              configured location.
@@ -183,14 +200,14 @@ class DataFrameRegistry:
                         f"Unsafe data_dir: directory '{path}' is world-writable (mode {oct(st.st_mode)}). "
                         f"Refusing to trust shared writable directory for pickle storage."
                     )
-                # 3. Group-writable check: If group-writable, must match current GID
-                if (st.st_mode & stat.S_IWGRP) and hasattr(os, "getgid"):
-                    current_gid = os.getgid()
-                    if st.st_gid != current_gid:
-                        raise DataFrameRegistryError(
-                            f"Unsafe data_dir: directory '{path}' is group-writable by GID {st.st_gid}, "
-                            f"expected current GID {current_gid}. Refusing to trust shared writable directory."
-                        )
+                # 3. Group-writable check: Must NOT be group-writable, regardless of
+                #    whether the directory GID matches the process GID. Any other member
+                #    of that group could otherwise replace trusted pickle snapshots.
+                if st.st_mode & stat.S_IWGRP:
+                    raise DataFrameRegistryError(
+                        f"Unsafe data_dir: directory '{path}' is group-writable (mode {oct(st.st_mode)}). "
+                        f"Refusing to trust shared writable directory for pickle storage."
+                    )
 
         return path
 
@@ -235,33 +252,107 @@ class DataFrameRegistry:
             )
         return candidate
 
+    @staticmethod
+    def _is_pickle_path(path: Union[str, Path]) -> bool:
+        """Return True when the path uses a pickle serialization extension."""
+        return Path(path).suffix.lower() in (".pkl", ".pickle")
+
+    def _validate_internal_snapshot_path(self, df_id: str, reload_p: Union[str, Path]) -> Path:
+        """Verify a recorded reload path is this registry's expected owned snapshot.
+
+        Fails closed (raises DataFrameRegistryError) unless ALL of the following hold:
+        - The registry data_dir still resolves to the directory validated at construction
+          (detects a data_dir swapped for a symlink after initialization).
+        - The recorded path resolves (following symlinks) to exactly the digest-derived
+          backing file for ``df_id`` inside self.data_dir. Arbitrary in-boundary paths,
+          traversal, and out-of-boundary paths are all rejected.
+        - The expected backing file entry is not itself a symlink.
+        - On POSIX, the snapshot file is owned by the current UID and is not group- or
+          world-writable.
+        Called BEFORE any pickle deserialization.
+        """
+        if self.data_dir.resolve() != self.data_dir:
+            raise DataFrameRegistryError(
+                f"Security violation: registry storage directory '{self.data_dir}' no longer "
+                f"resolves to the validated location; refusing to unpickle."
+            )
+        expected_unresolved = self.data_dir / self._safe_backing_filename(df_id)
+        expected = self._get_owned_backing_path(df_id)
+        supplied = Path(reload_p)
+        if not supplied.is_absolute() or supplied.resolve() != expected or expected != expected_unresolved:
+            raise DataFrameRegistryError(
+                f"Security violation: pickle reload path '{supplied}' for df_id '{df_id}' is not "
+                f"the expected registry-owned snapshot '{expected_unresolved}'; refusing to unpickle."
+            )
+        if expected_unresolved.is_symlink():
+            raise DataFrameRegistryError(
+                f"Security violation: registry-owned snapshot '{expected_unresolved}' is a symlink; "
+                f"refusing to unpickle."
+            )
+        if os.name == "posix" and expected_unresolved.exists():
+            st = expected_unresolved.lstat()
+            if st.st_uid != os.getuid() or st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise DataFrameRegistryError(
+                    f"Security violation: registry-owned snapshot '{expected_unresolved}' has unsafe "
+                    f"ownership or permissions (uid {st.st_uid}, mode {oct(st.st_mode)}); refusing to unpickle."
+                )
+        return expected_unresolved
+
+    @staticmethod
+    def _reject_untrusted_external_pickle(path: Path) -> None:
+        """Raise for an external pickle import lacking an explicit trust decision."""
+        raise DataFrameRegistryError(
+            f"Refusing to unpickle untrusted external file '{path}': pickle deserialization can "
+            f"execute arbitrary code. Pass trust_external_pickle=True to register_dataframe() only "
+            f"if the file's provenance is trusted, or import a CSV/JSON/Parquet file instead."
+        )
+
     def _write_df(self, df: pd.DataFrame, path: Path) -> bool:
-        """Write DataFrame to disk atomically based on file extension."""
+        """Write DataFrame to disk atomically based on file extension.
+
+        The staging file is created exclusively (O_CREAT | O_EXCL, plus O_NOFOLLOW where
+        available) with mode 0600 on POSIX *before* any bytes are serialized, so DataFrame
+        contents are never readable by other local users, even transiently. Serialization
+        writes into the already-open descriptor, after which the staging file is atomically
+        moved over ``path`` with os.replace(). On any failure the staging file is removed and
+        any existing file at ``path`` is left untouched.
+
+        Windows: POSIX mode bits are not meaningful on NTFS (0600 only controls the read-only
+        attribute); confidentiality of staging files relies on the NTFS ACLs inherited from
+        the containing directory (for default storage, the per-user %TEMP% location).
+        """
         tmp_path: Optional[Path] = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = path.parent / f".tmp_{uuid.uuid4().hex[:12]}_{path.name}"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+            fd = os.open(tmp_path, flags, 0o600)
+            try:
+                if os.name == "posix" and hasattr(os, "fchmod"):
+                    # Normalise to exactly 0600 regardless of the process umask.
+                    os.fchmod(fd, 0o600)
+            except BaseException:
+                os.close(fd)
+                raise
             suf = path.suffix.lower()
-            if suf == ".csv":
-                df.to_csv(tmp_path, index=False)
-            elif suf == ".parquet":
-                df.to_parquet(tmp_path, index=False)
-            elif suf in (".pkl", ".pickle"):
-                df.to_pickle(tmp_path)
-            elif suf == ".json":
-                df.to_json(tmp_path, orient="records")
+            if suf in (".parquet", ".pkl", ".pickle"):
+                with os.fdopen(fd, "wb") as fh:
+                    if suf == ".parquet":
+                        df.to_parquet(fh, index=False)
+                    else:
+                        df.to_pickle(fh)
             else:
-                df.to_csv(tmp_path, index=False)
-            if os.name == "posix":
-                try:
-                    os.chmod(tmp_path, 0o600)
-                except OSError:
-                    pass
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                    if suf == ".json":
+                        df.to_json(fh, orient="records")
+                    else:
+                        df.to_csv(fh, index=False)
             os.replace(tmp_path, path)
             return True
         except Exception as e:
             print(f"Error writing DataFrame to {path}: {e}")
-            if tmp_path is not None and tmp_path.exists():
+            if tmp_path is not None and (tmp_path.exists() or tmp_path.is_symlink()):
                 try:
                     tmp_path.unlink()
                 except Exception:
@@ -269,7 +360,12 @@ class DataFrameRegistry:
             return False
 
     def _read_df(self, path: Path) -> pd.DataFrame:
-        """Read DataFrame from disk based on file extension."""
+        """Read DataFrame from disk based on file extension.
+
+        Callers are responsible for enforcing the pickle trust policy (see
+        `_validate_internal_snapshot_path` / `trust_external_pickle`) BEFORE invoking this
+        method on a `.pkl`/`.pickle` path.
+        """
         suf = path.suffix.lower()
         if suf == ".csv":
             return pd.read_csv(path)
@@ -335,8 +431,17 @@ class DataFrameRegistry:
         df: Optional[pd.DataFrame] = None,
         df_id: Optional[str] = None,
         raw_path: str = "",
+        trust_external_pickle: bool = False,
     ) -> Optional[str]:
-        """Register a DataFrame or a reference to a disk file."""
+        """Register a DataFrame or a reference to a disk file.
+
+        Pickle trust policy: when ``df`` is None and ``raw_path`` names an external
+        ``.pkl``/``.pickle`` file, the file is only deserialized if the caller explicitly
+        passes ``trust_external_pickle=True`` (unpickling untrusted data can execute arbitrary
+        code). Without that opt-in, DataFrameRegistryError is raised before any read. The trust
+        decision is recorded on the entry; the external path is never labelled registry-owned.
+        CSV, JSON, and Parquet imports are unaffected.
+        """
         with self._lock:
             if df_id is None:
                 df_id = str(uuid.uuid4())
@@ -361,6 +466,8 @@ class DataFrameRegistry:
                     # Backing write succeeded; update metadata and in-memory cache atomically
                     entry["df"] = df
                     entry["reload_path"] = str(backing_path)
+                    entry["reload_is_owned_snapshot"] = True
+                    entry["trusted_external_pickle"] = False
                     if raw_path:
                         norm_user_path = str(self._norm_path(raw_path))
                         entry["source_path"] = norm_user_path
@@ -379,6 +486,9 @@ class DataFrameRegistry:
                     if not norm_path.exists():
                         print(f"File {raw_path} does not exist")
                         return None
+                    is_pickle = self._is_pickle_path(norm_path)
+                    if is_pickle and not trust_external_pickle:
+                        self._reject_untrusted_external_pickle(norm_path)
                     try:
                         loaded = self._read_df(norm_path)
                     except Exception as e:
@@ -388,6 +498,8 @@ class DataFrameRegistry:
                     entry["source_path"] = str(norm_path)
                     entry["reload_path"] = str(norm_path)
                     entry["raw_path"] = str(norm_path)
+                    entry["reload_is_owned_snapshot"] = False
+                    entry["trusted_external_pickle"] = bool(is_pickle and trust_external_pickle)
                     self.df_id_to_raw_path[df_id] = str(norm_path)
                     self._touch_cache(df_id, loaded)
                     return df_id
@@ -403,6 +515,9 @@ class DataFrameRegistry:
                     if not norm_path.exists():
                         print(f"File {raw_path} does not exist")
                         return None
+                    is_pickle = self._is_pickle_path(norm_path)
+                    if is_pickle and not trust_external_pickle:
+                        self._reject_untrusted_external_pickle(norm_path)
                     try:
                         df = self._read_df(norm_path)
                     except Exception as e:
@@ -415,6 +530,8 @@ class DataFrameRegistry:
                         "source_path": str(norm_path),
                         "reload_path": str(norm_path),
                         "raw_path": str(norm_path),
+                        "reload_is_owned_snapshot": False,
+                        "trusted_external_pickle": bool(is_pickle and trust_external_pickle),
                     }
                     self.df_id_to_raw_path[df_id] = str(norm_path)
                     self._touch_cache(df_id, df)
@@ -434,6 +551,8 @@ class DataFrameRegistry:
                             "source_path": str(norm_path),
                             "reload_path": str(backing_path),
                             "raw_path": str(norm_path),
+                            "reload_is_owned_snapshot": True,
+                            "trusted_external_pickle": False,
                         }
                         self.df_id_to_raw_path[df_id] = str(norm_path)
                         self._touch_cache(df_id, df)
@@ -442,11 +561,25 @@ class DataFrameRegistry:
                         # Explicit new file path supplied; persist df to that path
                         if not self._write_df(df, norm_path):
                             return None
+                        reload_path = str(norm_path)
+                        reload_is_owned = False
+                        if self._is_pickle_path(norm_path):
+                            # A pickle written outside private storage could later be
+                            # replaced by another principal, so it is never trusted for
+                            # reload. Reload from a registry-owned snapshot instead.
+                            backing_path = self._get_owned_backing_path(df_id)
+                            if not self._write_df(df, backing_path):
+                                print(f"Error: failed to persist initial DataFrame '{df_id}' to backing storage")
+                                return None
+                            reload_path = str(backing_path)
+                            reload_is_owned = True
                         self.registry[df_id] = {
                             "df": df,
                             "source_path": str(norm_path),
-                            "reload_path": str(norm_path),
+                            "reload_path": reload_path,
                             "raw_path": str(norm_path),
+                            "reload_is_owned_snapshot": reload_is_owned,
+                            "trusted_external_pickle": False,
                         }
                         self.df_id_to_raw_path[df_id] = str(norm_path)
                         self._touch_cache(df_id, df)
@@ -468,6 +601,8 @@ class DataFrameRegistry:
                 "source_path": None,
                 "reload_path": str(backing_path),
                 "raw_path": str(backing_path),
+                "reload_is_owned_snapshot": True,
+                "trusted_external_pickle": False,
             }
             self.df_id_to_raw_path[df_id] = str(backing_path)
             self._touch_cache(df_id, df)
@@ -476,7 +611,13 @@ class DataFrameRegistry:
     def get_dataframe(
         self, df_id: str, load_if_not_exists: bool = False
     ) -> Optional[pd.DataFrame]:
-        """Retrieve a DataFrame by df_id, optionally reloading from disk if evicted."""
+        """Retrieve a DataFrame by df_id, optionally reloading from disk if evicted.
+
+        Pickle reloads fail closed: a `.pkl`/`.pickle` reload path is deserialized only if
+        it is this entry's validated registry-owned snapshot, or an external pickle whose
+        import was explicitly trusted via ``trust_external_pickle=True``. Anything else raises
+        DataFrameRegistryError before `pd.read_pickle()` is called.
+        """
         with self._lock:
             if df_id in self.cache:
                 self.cache.move_to_end(df_id)
@@ -496,14 +637,17 @@ class DataFrameRegistry:
                 if not reload_p:
                     return None
                 path = self._norm_path(str(reload_p))
-                if path.suffix.lower() in (".pkl", ".pickle"):
-                    resolved_path = path.resolve()
-                    resolved_data_dir = self.data_dir.resolve()
-                    if resolved_path.is_relative_to(resolved_data_dir):
-                        if resolved_path == resolved_data_dir:
-                            raise DataFrameRegistryError(
-                                f"Security violation: reload path cannot be storage directory itself: '{resolved_path}'"
-                            )
+                if self._is_pickle_path(path):
+                    if info.get("reload_is_owned_snapshot"):
+                        path = self._validate_internal_snapshot_path(df_id, str(reload_p))
+                    elif info.get("trusted_external_pickle") and str(path) == str(info.get("source_path")):
+                        pass  # Explicit caller trust decision recorded at import time.
+                    else:
+                        raise DataFrameRegistryError(
+                            f"Security violation: refusing to unpickle '{path}' for df_id '{df_id}': "
+                            f"it is neither the registry-owned snapshot nor an explicitly trusted "
+                            f"external pickle import."
+                        )
                 try:
                     loaded = self._read_df(path)
                 except FileNotFoundError:
