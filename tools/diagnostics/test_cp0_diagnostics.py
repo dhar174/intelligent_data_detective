@@ -50,7 +50,9 @@ def test_claim_2_simulated_broken_restore_returns_reproduced(monkeypatch):
         object.__setattr__(p, "plan_version", 1)
         return p
 
-    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+    monkeypatch.setattr(
+        idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore)
+    )
 
     res = probe_claim_2()
     assert res.classification == "REPRODUCED"
@@ -76,7 +78,9 @@ def test_claim_2_simulated_broken_new_plan_allocation_returns_reproduced(monkeyp
     assert "new_allocated=False" in res.defect_or_contract_explanation
 
 
-def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(monkeypatch):
+def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(
+    monkeypatch,
+):
     """Verify that restoration failing to advance allocator high-water mark reports REPRODUCED."""
     import idd_core
 
@@ -89,7 +93,9 @@ def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(monk
         cls.reset_counter(prev_version)
         return p
 
-    monkeypatch.setattr(idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore))
+    monkeypatch.setattr(
+        idd_core.Plan, "from_persisted_snapshot", classmethod(broken_restore)
+    )
 
     res = probe_claim_2()
     assert res.classification == "REPRODUCED"
@@ -116,6 +122,7 @@ def test_missing_prerequisites_return_blocked(monkeypatch):
 
 def test_claim_12_historical_integer_defect_returns_reproduced(monkeypatch):
     """Verify that if historical integer-column query defect reoccurs (Case A fails), Claim 12 reports REPRODUCED."""
+
     def broken_delete_rows(df_id, conditions, inplace=True):
         if "0" in conditions and inplace:
             return "0 rows deleted"  # Fails case A expectation
@@ -135,6 +142,7 @@ def test_claim_12_historical_integer_defect_returns_reproduced(monkeypatch):
 
 def test_claim_12_historical_collision_defect_returns_reproduced(monkeypatch):
     """Verify that if integer/string column label collision reoccurs (Case B fails), Claim 12 reports REPRODUCED."""
+
     def broken_collision_tool(df_id, conditions, inplace=True):
         if df_id == "df_b":
             # Simulate column confusion: drops wrong row or returns 0 rows
@@ -165,7 +173,9 @@ def test_claim_12_unexpected_non_integer_failure_returns_blocked(monkeypatch):
                 return "2 rows deleted"
             if df_id == "df_b":
                 # Case B passes
-                reg.register_dataframe(pd.DataFrame({0: [10], "0": [100], "name": ["a"]}), "df_b")
+                reg.register_dataframe(
+                    pd.DataFrame({0: [10], "0": [100], "name": ["a"]}), "df_b"
+                )
                 return "2 rows deleted"
             if df_id == "df_c":
                 # Case C fails: returns 0 rows deleted
@@ -173,8 +183,12 @@ def test_claim_12_unexpected_non_integer_failure_returns_blocked(monkeypatch):
             if df_id == "df_d":
                 return '{"x": [1, 2]}'
             if df_id == "df_e":
-                return {"status": "error", "reason": "UndefinedVariableError: invalid_col"}
+                return {
+                    "status": "error",
+                    "reason": "UndefinedVariableError: invalid_col",
+                }
             return "2 rows deleted"
+
         return (broken_tool, None)
 
     monkeypatch.setattr(
@@ -272,7 +286,10 @@ def test_claim_8_all_formats_succeed_returns_observed_invariant():
     assert res.classification == "OBSERVED INVARIANT"
     assert res.is_defect is False
     assert res.evidence_type == "DYNAMIC"
-    assert "Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded" in res.observed_behavior
+    assert (
+        "Both get_dataframe(load_if_not_exists=True) and validate_dataframe_exists succeeded"
+        in res.observed_behavior
+    )
     assert "registered=True" in res.observed_behavior
     assert "reload_path=True" in res.observed_behavior
 
@@ -306,6 +323,7 @@ def test_claim_8_broken_json_reader_detected(monkeypatch):
 def test_claim_8_registration_failure_not_counted_as_success(monkeypatch):
     """Verify that registration failures cannot silently count as successful evidence in Claim 8."""
     import idd_core
+
     orig_reg = idd_core.DataFrameRegistry.register_dataframe
 
     def failing_register(self, df=None, df_id=None, raw_path="", **kwargs):
@@ -313,7 +331,9 @@ def test_claim_8_registration_failure_not_counted_as_success(monkeypatch):
             return None  # Simulate silent registration failure
         return orig_reg(self, df=df, df_id=df_id, raw_path=raw_path, **kwargs)
 
-    monkeypatch.setattr(idd_core.DataFrameRegistry, "register_dataframe", failing_register)
+    monkeypatch.setattr(
+        idd_core.DataFrameRegistry, "register_dataframe", failing_register
+    )
     res = probe_claim_8()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
@@ -323,6 +343,7 @@ def test_claim_8_untrusted_pickle_rejected_by_default(tmp_path):
     """Verify that untrusted external pickle imports remain rejected by default without trust_external_pickle."""
     import idd_core
     import pandas as pd
+
     reg = idd_core.DataFrameRegistry(capacity=5)
     pkl_file = tmp_path / "external.pkl"
     pd.DataFrame({"x": [1]}).to_pickle(pkl_file)
@@ -334,6 +355,7 @@ def test_claim_8_untrusted_pickle_rejected_by_default(tmp_path):
 def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):
     """Verify that if validation fails on non-CSV formats, Claim 8 reports REPRODUCED."""
     import idd_core
+
     orig_validate = idd_core.validate_dataframe_exists
 
     def broken_validate(df_id: str) -> bool:
@@ -346,7 +368,10 @@ def test_claim_8_simulated_broken_validation_returns_reproduced(monkeypatch):
     res = probe_claim_8()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
-    assert "validate_dataframe_exists fails on cache-evicted non-CSV" in res.defect_or_contract_explanation
+    assert (
+        "validate_dataframe_exists fails on cache-evicted non-CSV"
+        in res.defect_or_contract_explanation
+    )
 
 
 def test_claim_6_structured_tool_error_returns_observed_invariant():
@@ -355,7 +380,8 @@ def test_claim_6_structured_tool_error_returns_observed_invariant():
     assert res.classification == "OBSERVED INVARIANT"
     assert res.is_defect is False
     assert res.evidence_type == "BOTH"
-    assert "returns structured error dict (True)" in res.observed_behavior
+    assert "known error dict=True" in res.observed_behavior
+    assert "unexpected error sanitized dict=True" in res.observed_behavior
 
 
 def test_claim_6_simulated_string_error_returns_reproduced(monkeypatch):
@@ -365,6 +391,7 @@ def test_claim_6_simulated_string_error_returns_reproduced(monkeypatch):
     def broken_decorator(func):
         def wrapper(*args, **kwargs):
             return "Error: Simulated legacy plain string error"
+
         return wrapper
 
     monkeypatch.setattr(idd_core, "handle_tool_errors", broken_decorator)
@@ -394,6 +421,7 @@ def test_claim_7_simulated_blind_args0_returns_reproduced(monkeypatch):
                 if not idd_core.validate_dataframe_exists(df_id):
                     return f"Error: DataFrame with ID '{df_id}' not found"
             return func(*args, **kwargs)
+
         return wrapper
 
     monkeypatch.setattr(idd_core, "handle_tool_errors", legacy_handle_tool_errors)
@@ -412,30 +440,159 @@ def test_claim_9_artifact_containment_returns_observed_invariant():
     assert "safe path resolved=True" in res.observed_behavior
     assert "traversal attempt blocked=True" in res.observed_behavior
     assert "delayed directory creation verified=True" in res.observed_behavior
-    assert "multi-root helper is_safe_artifact_path functional=True" in res.observed_behavior
+    assert (
+        "multi-root helper is_safe_artifact_path functional=True"
+        in res.observed_behavior
+    )
 
 
 def test_claim_9_simulated_traversal_leak_returns_reproduced(monkeypatch):
     """Verify that failure to block traversal is detected as a defect (Claim 9 REPRODUCED)."""
     import idd_core
+    import idd_tools
     from pathlib import Path
 
     def leaking_resolve(file_name, config=None, subdir=None, create_parents=True):
         return Path("/unauthorized/escape") / file_name
 
     monkeypatch.setattr(idd_core, "_resolve_artifact_path", leaking_resolve)
+    monkeypatch.setattr(idd_tools, "_resolve_artifact_path", leaking_resolve)
     res = probe_claim_9()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
-    assert "Path traversal attempts were not blocked" in res.defect_or_contract_explanation
+    assert "path traversal attempts not blocked" in res.defect_or_contract_explanation
 
 
 def test_claim_9_simulated_missing_multi_root_helper_returns_reproduced(monkeypatch):
     """Verify that a broken or missing multi-root helper is detected as a defect (Claim 9 REPRODUCED)."""
     import idd_core
+    import idd_tools
 
-    monkeypatch.setattr(idd_core, "is_safe_artifact_path", lambda candidate, roots: False)
+    monkeypatch.setattr(
+        idd_core, "is_safe_artifact_path", lambda candidate, roots: False
+    )
+    monkeypatch.setattr(
+        idd_tools, "is_safe_artifact_path", lambda candidate, roots: False
+    )
     res = probe_claim_9()
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
-    assert "multi-root validation helper" in res.defect_or_contract_explanation
+    assert (
+        "multi-root helper is_safe_artifact_path broken or missing"
+        in res.defect_or_contract_explanation
+    )
+
+
+def test_claim_6_simulated_broken_sanitizer_returns_reproduced(monkeypatch):
+    """Verify that a broken unexpected error sanitizer is detected (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def broken_failure(operation, action, exc=None):
+        return {"status": "broken"}
+
+    monkeypatch.setattr(idd_core, "_tool_failure", broken_failure)
+    monkeypatch.setattr(idd_tools, "_tool_failure", broken_failure)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Unexpected exception did not return the standardized 4-field error response"
+        in res.defect_or_contract_explanation
+    )
+
+
+def test_claim_6_simulated_canary_leak_returns_reproduced(monkeypatch):
+    """Verify that leaking unexpected exception canary is detected (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def leaking_failure(operation, action, exc=None):
+        return {
+            "status": "error",
+            "operation": operation,
+            "reason": f"Internal failure: {exc}",
+            "action": action,
+        }
+
+    monkeypatch.setattr(idd_core, "_tool_failure", leaking_failure)
+    monkeypatch.setattr(idd_tools, "_tool_failure", leaking_failure)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Sanitizer leaked unexpected exception details"
+        in res.defect_or_contract_explanation
+    )
+
+
+def test_claim_6_simulated_missing_schema_fields_returns_reproduced(monkeypatch):
+    """Verify that missing schema fields in tool error are detected (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def broken_tool_error(operation, reason, action):
+        return {"status": "error"}  # Missing operation, reason, action
+
+    monkeypatch.setattr(idd_core, "_tool_error", broken_tool_error)
+    monkeypatch.setattr(idd_tools, "_tool_error", broken_tool_error)
+    res = probe_claim_6()
+    assert res.classification in ("REPRODUCED", "BLOCKED")
+    assert res.is_defect is True
+
+
+def test_claim_9_simulated_broken_safe_path_returns_reproduced(monkeypatch):
+    """Verify that failure to resolve safe path reports REPRODUCED (fail-closed)."""
+    import idd_core
+    import idd_tools
+
+    orig_is_subpath = idd_tools._is_subpath
+
+    def broken_subpath(cand, root):
+        if "report.html" in str(cand):
+            return False
+        return orig_is_subpath(cand, root)
+
+    monkeypatch.setattr(idd_core, "_is_subpath", broken_subpath)
+    monkeypatch.setattr(idd_tools, "_is_subpath", broken_subpath)
+    res = probe_claim_9()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "safe path resolution failed" in res.defect_or_contract_explanation
+
+
+def test_claim_9_simulated_premature_mkdir_returns_reproduced(monkeypatch):
+    """Verify that premature directory creation on traversal attempts reports REPRODUCED."""
+    import os
+    from pathlib import Path
+    import idd_core
+    import idd_tools
+
+    orig_resolve = idd_tools._resolve_artifact_path
+
+    def leaking_mkdir_resolve(file_name, config=None, subdir=None, create_parents=True):
+        if subdir == "should_not_exist_dir":
+            env_dir = os.environ.get("IDD_ARTIFACTS_DIR")
+            if env_dir:
+                (Path(env_dir) / subdir).mkdir(parents=True, exist_ok=True)
+        return orig_resolve(
+            file_name, config=config, subdir=subdir, create_parents=create_parents
+        )
+
+    monkeypatch.setattr(idd_core, "_resolve_artifact_path", leaking_mkdir_resolve)
+    monkeypatch.setattr(idd_tools, "_resolve_artifact_path", leaking_mkdir_resolve)
+    res = probe_claim_9()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "delayed directory creation failed" in res.defect_or_contract_explanation
+
+
+def test_claim_9_simulated_missing_notebook_guard_returns_reproduced(monkeypatch):
+    """Verify that absence of notebook multi-root guard reports REPRODUCED."""
+    monkeypatch.setattr(
+        reproduce_drift, "_extract_notebook_cell_source", lambda idx: "# no guards"
+    )
+    res = probe_claim_9()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "notebook Cell 57 lacks PR #149" in res.defect_or_contract_explanation

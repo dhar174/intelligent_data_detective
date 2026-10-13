@@ -10,7 +10,9 @@ Validates:
 """
 
 import inspect
+import sys
 import types
+from typing import Optional
 import pandas as pd
 import pytest
 
@@ -129,6 +131,7 @@ class TestSignatureAwareDecorator:
 
     def test_function_without_df_id_executes_normally_with_string_args(self):
         """Claim 7 resolution: String arguments in functions without df_id must NOT trigger validation."""
+
         @idd_tools.handle_tool_errors
         def echo_message(message: str, count: int) -> str:
             return f"{message}: {count}"
@@ -160,6 +163,124 @@ class TestSignatureAwareDecorator:
             assert isinstance(err, dict)
             assert err["status"] == "error"
             assert "missing_obj" in err["reason"]
+
+    def test_parameter_object_descriptor_exception_sanitized_and_logged(self, caplog):
+        """Test A, B, C: Descriptor raising unexpected exception produces sanitized error and logs locally."""
+
+        class MaliciousRequest:
+            @property
+            def df_id(self):
+                raise RuntimeError("internal secret connection key: 0xDEADBEEF")
+
+        @idd_tools.handle_tool_errors
+        def process_request(req: MaliciousRequest) -> str:
+            return "ok"
+
+        with caplog.at_level("ERROR"):
+            result = process_request(MaliciousRequest())
+
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert result["reason"] == "An unexpected data-processing failure occurred."
+        assert "0xDEADBEEF" not in str(result)
+        assert any("0xDEADBEEF" in r.message for r in caplog.records)
+
+    def test_registry_runtime_error_sanitized_not_misclassified(
+        self, monkeypatch, caplog
+    ):
+        """Test D: Unexpected registry failure produces sanitized unexpected-error, not missing-data."""
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+
+            def broken_get_dataframe(df_id, load_if_not_exists=True):
+                raise RuntimeError("registry disk failure: sector corrupted")
+
+            monkeypatch.setattr(reg, "get_dataframe", broken_get_dataframe)
+
+            @idd_tools.handle_tool_errors
+            def inspect_tool(df_id: str) -> str:
+                return "ok"
+
+            with caplog.at_level("ERROR"):
+                result = inspect_tool("test_df")
+
+            assert isinstance(result, dict)
+            assert result["status"] == "error"
+            assert result["reason"] == "An unexpected data-processing failure occurred."
+            # Must NOT be misclassified as missing/empty DataFrame
+            assert "was not found" not in result["reason"]
+            assert "sector corrupted" not in str(result)
+            assert any("sector corrupted" in r.message for r in caplog.records)
+
+    def test_missing_dataframe_produces_missing_data_error(self):
+        """Test E: A genuinely missing DataFrame produces the correct missing-data response."""
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+
+            @idd_tools.handle_tool_errors
+            def inspect_tool(df_id: str) -> str:
+                return "ok"
+
+            result = inspect_tool("definitely_not_registered_df")
+            assert isinstance(result, dict)
+            assert result["status"] == "error"
+            assert "definitely_not_registered_df" in result["reason"]
+            assert "was not found or is empty" in result["reason"]
+
+    def test_empty_dataframe_produces_validation_error(self):
+        """Test F: An empty DataFrame produces the correct validation response."""
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            empty_df = pd.DataFrame()
+            reg.register_dataframe(empty_df, "empty_registered_df")
+
+            @idd_tools.handle_tool_errors
+            def inspect_tool(df_id: str) -> str:
+                return "ok"
+
+            result = inspect_tool("empty_registered_df")
+            assert isinstance(result, dict)
+            assert result["status"] == "error"
+            assert "empty_registered_df" in result["reason"]
+            assert "was not found or is empty" in result["reason"]
+
+    def test_optional_defaulted_df_id_semantics(self):
+        """Test I: Optional/defaulted df_id parameter semantics."""
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+            df = pd.DataFrame({"a": [1, 2]})
+            reg.register_dataframe(df, "valid_opt_df")
+
+            @idd_tools.handle_tool_errors
+            def tool_with_optional_df(message: str, df_id: Optional[str] = None) -> str:
+                return f"{message}:{df_id}"
+
+            # Omitted optional df_id: executes normally without validation
+            assert tool_with_optional_df("hello") == "hello:None"
+
+            # Explicit positional None: executes normally without validation
+            assert tool_with_optional_df("hello", None) == "hello:None"
+
+            # Explicit keyword None: executes normally without validation
+            assert tool_with_optional_df("hello", df_id=None) == "hello:None"
+
+            # Explicit valid df_id: validated and passes
+            assert (
+                tool_with_optional_df("hello", df_id="valid_opt_df")
+                == "hello:valid_opt_df"
+            )
+
+            # Explicit invalid df_id: validated and returns structured error
+            err_missing = tool_with_optional_df("hello", df_id="nonexistent_opt_df")
+            assert isinstance(err_missing, dict)
+            assert err_missing["status"] == "error"
+            assert "nonexistent_opt_df" in err_missing["reason"]
+
+            # Explicit non-string df_id: validated and returns structured error
+            err_type = tool_with_optional_df("hello", df_id=999)
+            assert isinstance(err_type, dict)
+            assert err_type["status"] == "error"
+            assert "DataFrame ID must be a non-empty string." in err_type["reason"]
 
     def test_empty_or_non_string_df_id_fails_gracefully(self):
         @idd_tools.handle_tool_errors
@@ -228,7 +349,9 @@ class TestSignatureAwareDecorator:
         def raise_empty():
             raise pd.errors.EmptyDataError("empty data")
 
-        assert raise_fnf()["reason"] == "The dataset or required file could not be found."
+        assert (
+            raise_fnf()["reason"] == "The dataset or required file could not be found."
+        )
         assert raise_ke()["reason"] == "A requested column or key does not exist."
         assert raise_ve()["reason"] == "One or more inputs are invalid."
         assert raise_empty()["reason"] == "The dataset contains no rows."
@@ -285,7 +408,9 @@ class TestValidateDataFrameExistsCanonical:
 class TestArtifactPathResolution:
     def test_valid_relative_path_and_creation(self, tmp_path):
         cfg = types.SimpleNamespace(
-            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(tmp_path / "art"))}
+            configurable={
+                "runtime": types.SimpleNamespace(artifacts_dir=str(tmp_path / "art"))
+            }
         )
         resolved = idd_tools._resolve_artifact_path("report.html", config=cfg)
         assert resolved == (tmp_path / "art" / "report.html").resolve()
@@ -365,6 +490,72 @@ class TestArtifactPathResolution:
         assert idd_tools.is_safe_artifact_path(chart_in_work, allowed_roots) is True
         assert idd_tools.is_safe_artifact_path(outside_file, allowed_roots) is False
 
+    def test_uri_schemes_rejected_in_is_safe_artifact_path(self, tmp_path):
+        """Reject all recognized RFC URI schemes before filesystem resolution."""
+        allowed_roots = [tmp_path]
+        schemes_to_test = [
+            "javascript:alert(1)",
+            "vbscript:execute",
+            "mailto:user@example.com",
+            "ftp:example.com/file",
+            "data:image/png;base64,AAAA",
+            "file:///etc/passwd",
+            "custom+scheme:payload",
+            "http://example.com/image.png",
+            "https://example.com/image.png",
+        ]
+        for uri in schemes_to_test:
+            assert (
+                idd_tools.is_safe_artifact_path(uri, allowed_roots) is False
+            ), f"Failed to reject: {uri}"
+
+    def test_uri_schemes_rejected_in_resolve_artifact_path(self):
+        """Reject URI schemes in _resolve_artifact_path with ValueError."""
+        with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+            idd_tools._resolve_artifact_path("javascript:alert(1)")
+
+        with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+            idd_tools._resolve_artifact_path("http://evil.com/malicious.png")
+
+        with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+            idd_tools._resolve_artifact_path("file:///etc/passwd")
+
+    def test_windows_drive_letter_paths(self, tmp_path):
+        """Verify Windows drive-letter paths are distinguished from URI schemes and checked for containment."""
+        art_root = tmp_path / "artifacts"
+        art_root.mkdir()
+        valid_file = art_root / "chart.png"
+        valid_file.write_bytes(b"chart")
+
+        allowed_roots = [art_root]
+        # Valid path within allowed root succeeds
+        assert idd_tools.is_safe_artifact_path(str(valid_file), allowed_roots) is True
+        # Legitimate Windows drive path outside allowed root is rejected by containment, not false scheme match
+        outside_drive_path = "Z:/unauthorized/outside.png"
+        assert (
+            idd_tools.is_safe_artifact_path(outside_drive_path, allowed_roots) is False
+        )
+
+    def test_global_runtime_artifact_precedence(self, tmp_path, monkeypatch):
+        """Verify __main__.RUNTIME.artifacts_dir takes precedence over env var and fallback."""
+        global_art = tmp_path / "global_runtime_artifacts"
+        env_art = tmp_path / "env_artifacts"
+        monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(env_art))
+
+        main_mod = sys.modules["__main__"]
+        orig_runtime = getattr(main_mod, "RUNTIME", None)
+        try:
+            main_mod.RUNTIME = types.SimpleNamespace(artifacts_dir=str(global_art))
+            resolved = idd_tools._resolve_artifact_path(
+                "global_report.html", config=None
+            )
+            assert resolved == (global_art / "global_report.html").resolve()
+        finally:
+            if orig_runtime is not None:
+                main_mod.RUNTIME = orig_runtime
+            else:
+                delattr(main_mod, "RUNTIME")
+
 
 # ---------------------------------------------------------------------------
 # 5. Compatibility Façade Identity
@@ -380,3 +571,5 @@ class TestCoreFacadeIdentity:
         assert idd_core._tool_failure is idd_tools._tool_failure
         assert idd_core._is_subpath is idd_tools._is_subpath
         assert idd_core._get_artifacts_base is idd_tools._get_artifacts_base
+        assert idd_core.is_safe_artifact_path is idd_tools.is_safe_artifact_path
+        assert idd_core.WORKING_DIRECTORY is idd_tools.WORKING_DIRECTORY

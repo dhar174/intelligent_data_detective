@@ -327,6 +327,7 @@ class TestFrameworkDocumentation(unittest.TestCase):
 
     def test_documentation_example_decorator(self):
         """Test the example from handle_tool_errors docstring."""
+
         @self.handle_tool_errors
         def my_tool(df_id: str) -> str:
             # tool implementation

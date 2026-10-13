@@ -280,6 +280,37 @@ def is_safe_artifact_path(candidate, allowed_roots, require_file=False):
     # Verifies candidate is within at least one authorized root and rejects URI schemes
 ```
 **Why:** Single-root containment protects against path traversal attacks (`../`), absolute path escapes, and symlink escapes, ensuring tool artifacts are written strictly into the designated run directory. Delayed directory creation prevents malicious or malformed paths from creating directories before validation. Multi-root read verification allows downstream publication nodes to verify images across artifacts, working directories, and run directories without weakening write containment.
+
+### Pattern: Exception Boundary, Diagnostic Integrity & RFC URI Rejection (CP2 Corrective Pass)
+**Pattern:** Enclose pre-execution reflection in exception-safe boundaries and reject remote RFC URI schemes while honoring Windows paths:
+```python
+# 1. Closed decorator boundary:
+@wraps(func)
+def wrapper(*args, **kwargs):
+    try:
+        # Pre-execution: signature binding, parameter property access, DataFrame validation
+        ...
+        return func(*args, **kwargs)
+    except Exception as e:
+        # Unexpected descriptor / infrastructure exceptions logged locally with traceback
+        # but sanitized to user-safe dictionary without leaking secret canaries
+        return _tool_failure(func.__name__, e)
+
+# 2. Strict DataFrame validation vs infrastructure error separation:
+def _validate_dataframe_for_tool(df_id: str):
+    # Distinguishes genuine missing/empty DataFrame from unexpected registry RuntimeError.
+    # Registry errors re-raise to propagate cleanly to _tool_failure sanitization.
+
+# 3. RFC URI scheme rejection:
+_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+def _is_rfc_uri(path_str: str) -> bool:
+    # Rejects remote schemes (http:, https:, data:, etc.) or :// before path resolution
+    # Safely distinguishes single-letter Windows drive letters (C:\ or C:/)
+```
+**Why:** 
+1. If a caller passes an object whose attribute descriptor (like `.df_id`) raises `RuntimeError`, or if argument binding fails unexpectedly, raw exceptions could bypass `@handle_tool_errors`, crash the agent node, or leak confidential canaries in prompt context. Enclosing all wrapper operations in a unified `try...except` guarantees complete sanitization.
+2. In `_validate_dataframe_for_tool`, treating an unexpected registry crash as a missing dataframe misinforms the agent to "check the dataframe ID". Propagating unexpected errors to `_tool_failure` yields a system error response with local diagnostic logging.
+3. Rejecting RFC URI schemes before `resolve()` prevents remote network URLs from bypassing path normalization, while preserving absolute Windows local paths (`C:\...`).
 <!-- session-curated:2026-10-13-cp2-canonical-tools:end -->
 
 

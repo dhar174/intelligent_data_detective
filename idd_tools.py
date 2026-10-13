@@ -12,6 +12,7 @@ import functools
 import inspect
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path as PathlibPath
 from typing import Any, Callable, Optional, Sequence, Union
@@ -21,6 +22,9 @@ import pandas as pd
 from idd_registry import get_global_registry
 
 logger = logging.getLogger(__name__)
+
+# RFC-compliant URI scheme detection: ^[A-Za-z][A-Za-z0-9+.-]*:
+_URI_SCHEME_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 
 # Default working directory fallback
 _DEFAULT_WORKING_DIR = PathlibPath(tempfile.mkdtemp(prefix="idd_tools_"))
@@ -92,6 +96,34 @@ def validate_dataframe_exists(df_id: str) -> bool:
         return False
 
 
+def _validate_dataframe_for_tool(
+    operation: str, df_id: Any
+) -> Optional[dict[str, str]]:
+    """Validate DataFrame existence in registry strictly for tool execution.
+
+    Distinguishes genuine validation failures (missing/empty DataFrame, invalid ID)
+    from unexpected infrastructure/registry exceptions (e.g. RuntimeError).
+    Genuine validation failures return a structured _tool_error dictionary.
+    Unexpected infrastructure exceptions propagate to caller so they can be
+    sanitized and logged via _tool_failure.
+    """
+    if not isinstance(df_id, str) or not df_id.strip():
+        return _tool_error(
+            operation,
+            "DataFrame ID must be a non-empty string.",
+            "Provide the ID of a registered, non-empty DataFrame.",
+        )
+    registry = get_global_registry()
+    df = registry.get_dataframe(df_id, load_if_not_exists=True)
+    if df is None or df.empty:
+        return _tool_error(
+            operation,
+            f"DataFrame '{df_id}' was not found or is empty.",
+            "Provide the ID of a registered, non-empty DataFrame.",
+        )
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Signature-Aware @handle_tool_errors Decorator
 # ---------------------------------------------------------------------------
@@ -104,11 +136,12 @@ def handle_tool_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     - Signature-aware argument binding using inspect.signature.
     - Accurately binds declared 'df_id' parameter regardless of positional or keyword order.
     - Extracts .df_id attribute from bound parameter objects.
-    - Never misidentifies unrelated string arguments in functions lacking a df_id parameter.
+    - Preserves optional/defaulted df_id parameter semantics (omitted/None bypasses validation).
+    - Entire execution path (binding, extraction, validation, invocation) within exception boundary.
     - Emits structured error dictionary for argument binding mismatches.
     - Preserves function name, docstring, annotations, and inspectable signature.
     - Standardizes known exceptions (FileNotFoundError, KeyError, ValueError, pandas errors).
-    - Sanitizes unexpected exceptions via _tool_failure.
+    - Sanitizes unexpected exceptions via _tool_failure with local diagnostic logging.
     """
     try:
         func_signature = inspect.signature(func)
@@ -117,56 +150,67 @@ def handle_tool_errors(func: Callable[..., Any]) -> Callable[..., Any]:
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        bound_args = None
-        if func_signature is not None:
-            try:
-                bound_args = func_signature.bind(*args, **kwargs)
-                bound_args.apply_defaults()
-            except TypeError as exc:
-                return _tool_error(
-                    func.__name__,
-                    f"Invalid arguments: {exc}",
-                    "Check the operation parameters and try again.",
-                )
-
-        # Signature-aware df_id extraction
-        df_id = None
-        df_id_supplied = False
-
-        if bound_args is not None and "df_id" in bound_args.arguments:
-            df_id = bound_args.arguments["df_id"]
-            df_id_supplied = True
-        elif "df_id" in kwargs:
-            df_id = kwargs["df_id"]
-            df_id_supplied = True
-        elif args and hasattr(args[0], "df_id"):
-            df_id = args[0].df_id
-            df_id_supplied = True
-        elif bound_args is not None:
-            for val in bound_args.arguments.values():
-                if hasattr(val, "df_id"):
-                    df_id = getattr(val, "df_id")
-                    df_id_supplied = True
-                    break
-
-        # Validate DataFrame for declared or supplied df_id
-        if df_id_supplied:
-            if not isinstance(df_id, str) or not df_id.strip():
-                return _tool_error(
-                    func.__name__,
-                    "DataFrame ID must be a non-empty string.",
-                    "Provide the ID of a registered, non-empty DataFrame.",
-                )
-            if not validate_dataframe_exists(df_id):
-                return _tool_error(
-                    func.__name__,
-                    f"DataFrame '{df_id}' was not found or is empty.",
-                    "Provide the ID of a registered, non-empty DataFrame.",
-                )
-
-        # Call original function with standardized error handling
         try:
+            # 1. Signature-aware argument binding
+            bound_args = None
+            if func_signature is not None:
+                try:
+                    bound_args = func_signature.bind(*args, **kwargs)
+                except TypeError as exc:
+                    return _tool_error(
+                        func.__name__,
+                        f"Invalid arguments: {exc}",
+                        "Check the operation parameters and try again.",
+                    )
+
+            # 2. Signature-aware df_id extraction
+            df_id = None
+            df_id_supplied = False
+
+            if bound_args is not None and "df_id" in bound_args.arguments:
+                val = bound_args.arguments["df_id"]
+                param = func_signature.parameters.get("df_id")
+                # Optional df_id with default None: if explicitly passed None, treat as no df_id supplied
+                if (
+                    param is not None
+                    and param.default is not inspect.Parameter.empty
+                    and param.default is None
+                    and val is None
+                ):
+                    df_id_supplied = False
+                else:
+                    df_id = val
+                    df_id_supplied = True
+            elif "df_id" in kwargs:
+                df_id = kwargs["df_id"]
+                df_id_supplied = True
+            else:
+                # Check for parameter object containing .df_id
+                target_obj = None
+                if args:
+                    target_obj = args[0]
+                elif bound_args is not None:
+                    for arg_val in bound_args.arguments.values():
+                        target_obj = arg_val
+                        break
+
+                if target_obj is not None:
+                    # In Python, hasattr(o, name) can propagate non-AttributeError exceptions
+                    # from descriptor/property getters. Since wrapper is enclosed in a try/except,
+                    # any unexpected exception will be safely caught and sanitized by _tool_failure.
+                    if hasattr(target_obj, "df_id"):
+                        df_id = getattr(target_obj, "df_id")
+                        df_id_supplied = True
+
+            # 3. Validate DataFrame for declared or supplied df_id
+            if df_id_supplied:
+                validation_err = _validate_dataframe_for_tool(func.__name__, df_id)
+                if validation_err is not None:
+                    return validation_err
+
+            # 4. Invoke wrapped function with standardized error handling
             return func(*args, **kwargs)
+
         except FileNotFoundError:
             return _tool_error(
                 func.__name__,
@@ -207,7 +251,7 @@ def handle_tool_errors(func: Callable[..., Any]) -> Callable[..., Any]:
             return _tool_failure(
                 func.__name__,
                 "Retry the operation; if it continues, check the dataset and logs.",
-                exc,
+                exc=exc,
             )
 
     return wrapper
@@ -289,6 +333,32 @@ def _get_artifacts_base(
     return base
 
 
+def _is_uri_scheme(path_str: str) -> bool:
+    """Return True if path_str begins with an RFC-compliant URI scheme or contains '://'.
+
+    Safely distinguishes Windows drive-letter paths (e.g., 'C:\\path' or 'C:/path')
+    which have a single-letter prefix.
+    """
+    if not path_str or not isinstance(path_str, str):
+        return False
+    s = path_str.strip()
+    if not s:
+        return False
+    if "://" in s:
+        return True
+    if s.lower().startswith("data:"):
+        return True
+    match = _URI_SCHEME_PATTERN.match(s)
+    if match:
+        scheme = match.group(1)
+        if len(scheme) == 1:
+            rest = s[2:]
+            if rest.startswith(("\\", "/")) or (len(rest) > 0 and rest[0].isalnum()):
+                return False
+        return True
+    return False
+
+
 def _resolve_artifact_path(
     file_name: str,
     config: Optional[Any] = None,
@@ -300,6 +370,7 @@ def _resolve_artifact_path(
     Guarantees:
     - Path traversal attacks (../) and absolute path escapes raise ValueError.
     - Symlink escapes raise ValueError.
+    - URI schemes (javascript:, data:, file:, etc.) raise ValueError.
     - Subdirectory escapes raise ValueError.
     - Targeting the artifacts root directory directly raises ValueError.
     - Directories are created ONLY after successful validation (never on rejected paths).
@@ -318,6 +389,11 @@ def _resolve_artifact_path(
     """
     if not file_name or not isinstance(file_name, str) or not file_name.strip():
         raise ValueError("file_name must be a non-empty string.")
+
+    if _is_uri_scheme(file_name):
+        raise ValueError(
+            f"Refusing to resolve URI scheme as artifact path: {file_name}"
+        )
 
     base = _get_artifacts_base(config, create=False)
     if subdir:
@@ -364,12 +440,8 @@ def is_safe_artifact_path(
     if not candidate:
         return False
     try:
-        cand_str = str(candidate).strip().replace("\\", "/")
-        cand_lower = cand_str.lower()
-        if (
-            cand_lower.startswith(("data:", "http://", "https://", "file:"))
-            or "://" in cand_lower
-        ):
+        cand_str = str(candidate).strip()
+        if _is_uri_scheme(cand_str):
             return False
 
         cand_obj = PathlibPath(candidate)

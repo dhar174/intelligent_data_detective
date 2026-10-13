@@ -34,17 +34,16 @@ from __future__ import annotations
 import argparse
 import ast
 import functools
-import inspect
+import io
 import itertools
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -59,13 +58,14 @@ if str(REPO_ROOT) not in sys.path:
 # Import idd_core (guarded)
 try:
     import idd_core
+
     HAS_IDD_CORE = True
 except ImportError:
     HAS_IDD_CORE = False
 
 import pandas as pd
 import pydantic
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 
 @dataclass
@@ -119,7 +119,10 @@ def _extract_notebook_cell_source(cell_idx: int) -> str:
 def _compile_notebook_models_namespace() -> dict:
     """Safely compile Cell 16 models in an isolated namespace with typing and pydantic."""
     import typing
-    cell16_code = "from __future__ import annotations\n" + _extract_notebook_cell_source(16)
+
+    cell16_code = (
+        "from __future__ import annotations\n" + _extract_notebook_cell_source(16)
+    )
     ns = {k: v for k, v in typing.__dict__.items()}
     ns.update({k: v for k, v in pydantic.__dict__.items()})
     ns.update({"itertools": itertools, "threading": threading})
@@ -137,26 +140,72 @@ def _compile_notebook_models_namespace() -> dict:
 # Claim Probes
 # ---------------------------------------------------------------------------
 
+
 def probe_claim_1() -> ClaimResult:
     """Claim 1: Plan counter sharing and concurrency."""
     title = "Plan counter sharing & thread-safe monotonic allocation"
     subsystem = "Pydantic Planning Models (Plan._counter)"
     locators = [
-        {"file": "idd_core.py", "lines": "613-642", "symbol": "Plan._counter / Plan._counter_lock"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "235-265", "symbol": "Plan._next / Plan._lock"},
+        {
+            "file": "idd_core.py",
+            "lines": "613-642",
+            "symbol": "Plan._counter / Plan._counter_lock",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 16,
+            "cell_id": "cell_16",
+            "lines": "235-265",
+            "symbol": "Plan._next / Plan._lock",
+        },
     ]
     expected = "Globally monotonic, thread-safe plan version allocation across Plan instances (intentional fix for per-instance reset problem in #140)."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(1, title, subsystem, "BLOCKED", "STATIC", False, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            1,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            False,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
+    base_agent = {
+        "reply_msg_to_supervisor": "ok",
+        "finished_this_task": True,
+        "expect_reply": False,
+    }
 
     # 1. Sequential monotonicity verification in single thread
-    step_seq = idd_core.PlanStep(step_number=1, step_name="seq", step_description="d", is_step_complete=True, plan_version=1, **base_agent)
-    p_seq1 = idd_core.Plan(plan_title="Seq 1", plan_summary="s", plan_steps=[step_seq], plan_version=1, **base_agent)
-    p_seq2 = idd_core.Plan(plan_title="Seq 2", plan_summary="s", plan_steps=[step_seq], plan_version=1, **base_agent)
-    sequential_monotonic = (p_seq2.plan_version > p_seq1.plan_version)
+    step_seq = idd_core.PlanStep(
+        step_number=1,
+        step_name="seq",
+        step_description="d",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    p_seq1 = idd_core.Plan(
+        plan_title="Seq 1",
+        plan_summary="s",
+        plan_steps=[step_seq],
+        plan_version=1,
+        **base_agent,
+    )
+    p_seq2 = idd_core.Plan(
+        plan_title="Seq 2",
+        plan_summary="s",
+        plan_steps=[step_seq],
+        plan_version=1,
+        **base_agent,
+    )
+    sequential_monotonic = p_seq2.plan_version > p_seq1.plan_version
 
     # 2. Concurrent allocation & collision avoidance across 5 worker threads
     created_versions: List[int] = []
@@ -165,8 +214,21 @@ def probe_claim_1() -> ClaimResult:
 
     def make_plan(num: int):
         try:
-            step = idd_core.PlanStep(step_number=1, step_name=f"s{num}", step_description="d", is_step_complete=True, plan_version=1, **base_agent)
-            p = idd_core.Plan(plan_title=f"Plan {num}", plan_summary="s", plan_steps=[step], plan_version=1, **base_agent)
+            step = idd_core.PlanStep(
+                step_number=1,
+                step_name=f"s{num}",
+                step_description="d",
+                is_step_complete=True,
+                plan_version=1,
+                **base_agent,
+            )
+            p = idd_core.Plan(
+                plan_title=f"Plan {num}",
+                plan_summary="s",
+                plan_steps=[step],
+                plan_version=1,
+                **base_agent,
+            )
             with lock:
                 created_versions.append(p.plan_version)
         except Exception as exc:
@@ -193,8 +255,10 @@ def probe_claim_1() -> ClaimResult:
             locators=locators,
         )
 
-    all_unique = (len(set(created_versions)) == len(created_versions) == 5)
-    contiguous_range = (len(created_versions) == 5 and (max(created_versions) - min(created_versions) == 4))
+    all_unique = len(set(created_versions)) == len(created_versions) == 5
+    contiguous_range = len(created_versions) == 5 and (
+        max(created_versions) - min(created_versions) == 4
+    )
     observed = (
         f"Sequential monotonic increment: {sequential_monotonic} (v{p_seq1.plan_version} -> v{p_seq2.plan_version}). "
         f"Concurrent versions across 5 threads: {created_versions}. "
@@ -202,7 +266,9 @@ def probe_claim_1() -> ClaimResult:
     )
 
     if not all_unique:
-        classification = "REPRODUCED"  # Defect reproduced if concurrency collision occurs
+        classification = (
+            "REPRODUCED"  # Defect reproduced if concurrency collision occurs
+        )
         is_defect = True
     elif sequential_monotonic and all_unique and contiguous_range:
         classification = "OBSERVED INVARIANT"
@@ -227,12 +293,28 @@ def probe_claim_1() -> ClaimResult:
 
 def probe_claim_2() -> ClaimResult:
     """Claim 2: Explicit Plan version lifecycle (NEW allocation vs. RESTORE preservation)."""
-    title = "Plan version lifecycle: explicit new-plan allocation vs. snapshot restoration"
+    title = (
+        "Plan version lifecycle: explicit new-plan allocation vs. snapshot restoration"
+    )
     subsystem = "Pydantic Planning Models (Plan lifecycle)"
     locators = [
-        {"file": "idd_models.py", "lines": "172-296", "symbol": "Plan._sync_steps_and_assert_increasing & from_persisted_snapshot"},
-        {"file": "idd_core.py", "lines": "30-44", "symbol": "Plan re-export from idd_models"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "250-265", "symbol": "Historical Plan._sync_steps_and_assert_increasing"},
+        {
+            "file": "idd_models.py",
+            "lines": "172-296",
+            "symbol": "Plan._sync_steps_and_assert_increasing & from_persisted_snapshot",
+        },
+        {
+            "file": "idd_core.py",
+            "lines": "30-44",
+            "symbol": "Plan re-export from idd_models",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 16,
+            "cell_id": "cell_16",
+            "lines": "250-265",
+            "symbol": "Historical Plan._sync_steps_and_assert_increasing",
+        },
     ]
     expected = (
         "NEW plan creation (Plan(...)) must allocate a fresh monotonic version even if draft version was provided; "
@@ -242,63 +324,125 @@ def probe_claim_2() -> ClaimResult:
     )
 
     if not HAS_IDD_CORE:
-        return ClaimResult(2, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            2,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
+    base_agent = {
+        "reply_msg_to_supervisor": "ok",
+        "finished_this_task": True,
+        "expect_reply": False,
+    }
 
     try:
         if not hasattr(idd_core.Plan, "from_persisted_snapshot"):
             return ClaimResult(
-                2, title, subsystem, "BLOCKED", "DYNAMIC", True, expected,
+                2,
+                title,
+                subsystem,
+                "BLOCKED",
+                "DYNAMIC",
+                True,
+                expected,
                 "Plan.from_persisted_snapshot restoration API is missing",
-                "idd_core.Plan missing from_persisted_snapshot", locators, "Missing lifecycle API",
+                "idd_core.Plan missing from_persisted_snapshot",
+                locators,
+                "Missing lifecycle API",
             )
 
         # 1. NEW Plan Creation:
         # Normal construction allocates fresh version even if draft input supplied plan_version=1
         new_plan_1 = idd_core.Plan(
-            plan_title="New Plan 1", plan_summary="S1",
-            plan_steps=[idd_core.PlanStep(step_number=1, step_name="s1", step_description="d1", is_step_complete=False, plan_version=1, **base_agent)],
-            plan_version=1, **base_agent
+            plan_title="New Plan 1",
+            plan_summary="S1",
+            plan_steps=[
+                idd_core.PlanStep(
+                    step_number=1,
+                    step_name="s1",
+                    step_description="d1",
+                    is_step_complete=False,
+                    plan_version=1,
+                    **base_agent,
+                )
+            ],
+            plan_version=1,
+            **base_agent,
         )
         v1 = new_plan_1.plan_version
         step_v1 = new_plan_1.plan_steps[0].plan_version
 
         new_plan_2 = idd_core.Plan(
-            plan_title="New Plan 2", plan_summary="S2",
-            plan_steps=[idd_core.PlanStep(step_number=1, step_name="s2", step_description="d2", is_step_complete=False, plan_version=1, **base_agent)],
-            plan_version=1, **base_agent
+            plan_title="New Plan 2",
+            plan_summary="S2",
+            plan_steps=[
+                idd_core.PlanStep(
+                    step_number=1,
+                    step_name="s2",
+                    step_description="d2",
+                    is_step_complete=False,
+                    plan_version=1,
+                    **base_agent,
+                )
+            ],
+            plan_version=1,
+            **base_agent,
         )
         v2 = new_plan_2.plan_version
 
-        new_plan_allocated = (v2 > v1 and step_v1 == v1)
+        new_plan_allocated = v2 > v1 and step_v1 == v1
 
         # 2. RESTORE Snapshot:
         # Establish controlled baseline: snapshot version must strictly exceed current allocator high-water mark (v2)
         target_restore_v = v2 + 100
         snapshot = {
-            "plan_title": f"Restored {target_restore_v}", "plan_summary": "S_restored",
-            "plan_steps": [{"step_number": 1, "step_name": "sr", "step_description": "dr", "is_step_complete": True, "plan_version": 999, **base_agent}],
-            "plan_version": target_restore_v, **base_agent
+            "plan_title": f"Restored {target_restore_v}",
+            "plan_summary": "S_restored",
+            "plan_steps": [
+                {
+                    "step_number": 1,
+                    "step_name": "sr",
+                    "step_description": "dr",
+                    "is_step_complete": True,
+                    "plan_version": 999,
+                    **base_agent,
+                }
+            ],
+            "plan_version": target_restore_v,
+            **base_agent,
         }
         restored_plan = idd_core.Plan.from_persisted_snapshot(snapshot)
         v_restored = restored_plan.plan_version
         step_v_restored = restored_plan.plan_steps[0].plan_version
-        restore_preserved = (v_restored == target_restore_v and step_v_restored == target_restore_v)
+        restore_preserved = (
+            v_restored == target_restore_v and step_v_restored == target_restore_v
+        )
 
         # 3. High-Water Mark Advancement:
         # Subsequent new plan after restoring target_restore_v must receive version > target_restore_v
         new_plan_after_restore = idd_core.Plan(
-            plan_title="New Plan After Restore", plan_summary="S_after",
-            plan_steps=[], plan_version=1, **base_agent
+            plan_title="New Plan After Restore",
+            plan_summary="S_after",
+            plan_steps=[],
+            plan_version=1,
+            **base_agent,
         )
         v_after = new_plan_after_restore.plan_version
-        high_water_advanced = (v_after > target_restore_v)
+        high_water_advanced = v_after > target_restore_v
 
         # 4. Idempotence:
         # Revalidating existing plan instance does not allocate another version
         revalidated = idd_core.Plan.model_validate(restored_plan)
-        idempotent_revalidation = (revalidated.plan_version == target_restore_v)
+        idempotent_revalidation = revalidated.plan_version == target_restore_v
 
         all_lifecycle_ok = (
             new_plan_allocated
@@ -345,9 +489,17 @@ def probe_claim_2() -> ClaimResult:
 
     except Exception as e:
         return ClaimResult(
-            2, title, subsystem, "BLOCKED", "DYNAMIC", True, expected,
+            2,
+            title,
+            subsystem,
+            "BLOCKED",
+            "DYNAMIC",
+            True,
+            expected,
             f"Diagnostic execution raised unexpected exception: {e}",
-            str(e), locators, "Lifecycle probe failed with exception",
+            str(e),
+            locators,
+            "Lifecycle probe failed with exception",
         )
 
 
@@ -356,19 +508,66 @@ def probe_claim_3() -> ClaimResult:
     title = "Completed-step sorting split-brain (RC-2 defect)"
     subsystem = "Pydantic Planning Models (CompletedStepsAndTasks)"
     locators = [
-        {"file": "idd_core.py", "lines": "683-686", "symbol": "CompletedStepsAndTasks._inject_and_dedupe (returns dedup_list)"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "314-325", "symbol": "CompletedStepsAndTasks._inject_and_dedupe (returns list(seen.values()))"},
+        {
+            "file": "idd_core.py",
+            "lines": "683-686",
+            "symbol": "CompletedStepsAndTasks._inject_and_dedupe (returns dedup_list)",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 16,
+            "cell_id": "cell_16",
+            "lines": "314-325",
+            "symbol": "CompletedStepsAndTasks._inject_and_dedupe (returns list(seen.values()))",
+        },
     ]
     expected = "CompletedStepsAndTasks should sort incoming unsorted steps [3, 1, 2] to [1, 2, 3] without crashing."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(3, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            3,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
     # 1. Test idd_core
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
-    s3_core = idd_core.PlanStep(step_number=3, step_name="c", step_description="c", is_step_complete=True, plan_version=1, **base_agent)
-    s1_core = idd_core.PlanStep(step_number=1, step_name="a", step_description="a", is_step_complete=True, plan_version=1, **base_agent)
-    s2_core = idd_core.PlanStep(step_number=2, step_name="b", step_description="b", is_step_complete=True, plan_version=1, **base_agent)
+    base_agent = {
+        "reply_msg_to_supervisor": "ok",
+        "finished_this_task": True,
+        "expect_reply": False,
+    }
+    s3_core = idd_core.PlanStep(
+        step_number=3,
+        step_name="c",
+        step_description="c",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s1_core = idd_core.PlanStep(
+        step_number=1,
+        step_name="a",
+        step_description="a",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s2_core = idd_core.PlanStep(
+        step_number=2,
+        step_name="b",
+        step_description="b",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
     pr_core = idd_core.ProgressReport(latest_progress="working", **base_agent)
 
     res_core = idd_core.CompletedStepsAndTasks(
@@ -378,7 +577,7 @@ def probe_claim_3() -> ClaimResult:
         **base_agent,
     )
     core_sorted_nums = [s.step_number for s in res_core.completed_steps]
-    core_sorted = (core_sorted_nums == [1, 2, 3])
+    core_sorted = core_sorted_nums == [1, 2, 3]
 
     # 2. Test notebook Cell 16 extracted model
     nb_ns = _compile_notebook_models_namespace()
@@ -386,15 +585,36 @@ def probe_claim_3() -> ClaimResult:
     ProgressReport_nb = nb_ns["ProgressReport"]
     CompletedStepsAndTasks_nb = nb_ns["CompletedStepsAndTasks"]
 
-    s3_nb = PlanStep_nb(step_number=3, step_name="c", step_description="c", is_step_complete=True, plan_version=1, **base_agent)
-    s1_nb = PlanStep_nb(step_number=1, step_name="a", step_description="a", is_step_complete=True, plan_version=1, **base_agent)
-    s2_nb = PlanStep_nb(step_number=2, step_name="b", step_description="b", is_step_complete=True, plan_version=1, **base_agent)
+    s3_nb = PlanStep_nb(
+        step_number=3,
+        step_name="c",
+        step_description="c",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s1_nb = PlanStep_nb(
+        step_number=1,
+        step_name="a",
+        step_description="a",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s2_nb = PlanStep_nb(
+        step_number=2,
+        step_name="b",
+        step_description="b",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
     pr_nb = ProgressReport_nb(latest_progress="working", **base_agent)
 
     nb_crashed = False
     nb_error_msg = ""
     try:
-        res_nb = CompletedStepsAndTasks_nb(
+        _ = CompletedStepsAndTasks_nb(
             completed_steps=[s3_nb, s1_nb, s2_nb],
             finished_tasks=["t1"],
             progress_report=pr_nb,
@@ -438,19 +658,59 @@ def probe_claim_4() -> ClaimResult:
     title = "Duplicate numeric step numbers in CompletedStepsAndTasks"
     subsystem = "Pydantic Planning Models (CompletedStepsAndTasks)"
     locators = [
-        {"file": "idd_core.py", "lines": "670-680", "symbol": "CompletedStepsAndTasks (checks duplicate step_number)"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "298-317", "symbol": "CompletedStepsAndTasks (seen by Triplet)"},
+        {
+            "file": "idd_core.py",
+            "lines": "670-680",
+            "symbol": "CompletedStepsAndTasks (checks duplicate step_number)",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 16,
+            "cell_id": "cell_16",
+            "lines": "298-317",
+            "symbol": "CompletedStepsAndTasks (seen by Triplet)",
+        },
     ]
     expected = "Duplicate step numbers (e.g. step_number=2 on two steps with different names) should be rejected."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(4, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            4,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
+    base_agent = {
+        "reply_msg_to_supervisor": "ok",
+        "finished_this_task": True,
+        "expect_reply": False,
+    }
 
     # 1. Test idd_core
-    s2a_core = idd_core.PlanStep(step_number=2, step_name="X", step_description="X", is_step_complete=True, plan_version=1, **base_agent)
-    s2b_core = idd_core.PlanStep(step_number=2, step_name="Y", step_description="Y", is_step_complete=True, plan_version=1, **base_agent)
+    s2a_core = idd_core.PlanStep(
+        step_number=2,
+        step_name="X",
+        step_description="X",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s2b_core = idd_core.PlanStep(
+        step_number=2,
+        step_name="Y",
+        step_description="Y",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
     pr_core = idd_core.ProgressReport(latest_progress="working", **base_agent)
 
     core_rejected = False
@@ -466,8 +726,22 @@ def probe_claim_4() -> ClaimResult:
 
     # 2. Test notebook
     nb_ns = _compile_notebook_models_namespace()
-    s2a_nb = nb_ns["PlanStep"](step_number=2, step_name="X", step_description="X", is_step_complete=True, plan_version=1, **base_agent)
-    s2b_nb = nb_ns["PlanStep"](step_number=2, step_name="Y", step_description="Y", is_step_complete=True, plan_version=1, **base_agent)
+    s2a_nb = nb_ns["PlanStep"](
+        step_number=2,
+        step_name="X",
+        step_description="X",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s2b_nb = nb_ns["PlanStep"](
+        step_number=2,
+        step_name="Y",
+        step_description="Y",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
     pr_nb = nb_ns["ProgressReport"](latest_progress="working", **base_agent)
 
     nb_accepted = False
@@ -480,7 +754,9 @@ def probe_claim_4() -> ClaimResult:
             **base_agent,
         )
         nb_accepted = True
-        nb_result_tuples = [(s.step_number, s.step_name) for s in res_nb.completed_steps]
+        nb_result_tuples = [
+            (s.step_number, s.step_name) for s in res_nb.completed_steps
+        ]
     except ValidationError:
         nb_accepted = False
 
@@ -518,28 +794,77 @@ def probe_claim_5() -> ClaimResult:
     title = "Validation context and subset-of-plan enforcement"
     subsystem = "Pydantic Planning Models (CompletedStepsAndTasks)"
     locators = [
-        {"file": "idd_core.py", "lines": "695-702", "symbol": "CompletedStepsAndTasks._sorted_no_dups_and_subset"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 16, "cell_id": "cell_16", "lines": "328-335", "symbol": "CompletedStepsAndTasks._sorted_no_dups_and_subset"},
+        {
+            "file": "idd_core.py",
+            "lines": "695-702",
+            "symbol": "CompletedStepsAndTasks._sorted_no_dups_and_subset",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 16,
+            "cell_id": "cell_16",
+            "lines": "328-335",
+            "symbol": "CompletedStepsAndTasks._sorted_no_dups_and_subset",
+        },
     ]
     expected = "When ValidationInfo context contains a Plan, completed steps must be a subset of that plan. When context is absent, validation allows unconstrained steps."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(5, title, subsystem, "BLOCKED", "STATIC", False, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            5,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            False,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
-    base_agent = {"reply_msg_to_supervisor": "ok", "finished_this_task": True, "expect_reply": False}
-    s1 = idd_core.PlanStep(step_number=1, step_name="a", step_description="a", is_step_complete=True, plan_version=1, **base_agent)
-    s3 = idd_core.PlanStep(step_number=3, step_name="c", step_description="c", is_step_complete=True, plan_version=1, **base_agent)
-    plan1 = idd_core.Plan(plan_title="T", plan_summary="S", plan_steps=[s1], plan_version=1, **base_agent)
+    base_agent = {
+        "reply_msg_to_supervisor": "ok",
+        "finished_this_task": True,
+        "expect_reply": False,
+    }
+    s1 = idd_core.PlanStep(
+        step_number=1,
+        step_name="a",
+        step_description="a",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    s3 = idd_core.PlanStep(
+        step_number=3,
+        step_name="c",
+        step_description="c",
+        is_step_complete=True,
+        plan_version=1,
+        **base_agent,
+    )
+    plan1 = idd_core.Plan(
+        plan_title="T", plan_summary="S", plan_steps=[s1], plan_version=1, **base_agent
+    )
     pr = idd_core.ProgressReport(latest_progress="working", **base_agent)
 
     # Dynamic test on idd_core
-    m_no_ctx = idd_core.CompletedStepsAndTasks(completed_steps=[s3], finished_tasks=["t1"], progress_report=pr, **base_agent)
-    accepted_no_ctx = (len(m_no_ctx.completed_steps) == 1)
+    m_no_ctx = idd_core.CompletedStepsAndTasks(
+        completed_steps=[s3], finished_tasks=["t1"], progress_report=pr, **base_agent
+    )
+    accepted_no_ctx = len(m_no_ctx.completed_steps) == 1
 
     rejected_with_ctx = False
     try:
         idd_core.CompletedStepsAndTasks.model_validate(
-            {"completed_steps": [s3], "finished_tasks": ["t1"], "progress_report": pr, **base_agent},
+            {
+                "completed_steps": [s3],
+                "finished_tasks": ["t1"],
+                "progress_report": pr,
+                **base_agent,
+            },
             context={"plan": plan1},
         )
     except ValidationError:
@@ -580,58 +905,150 @@ def probe_claim_6() -> ClaimResult:
     title = "Structured tool error schema divergence"
     subsystem = "Tool Error Handling Framework (@handle_tool_errors)"
     locators = [
-        {"file": "idd_tools.py", "lines": "30-65", "symbol": "_tool_error / _tool_failure / @handle_tool_errors"},
-        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "7-25", "symbol": "_tool_error / _tool_failure (returns dict with operation, reason, action)"},
+        {
+            "file": "idd_tools.py",
+            "lines": "30-65",
+            "symbol": "_tool_error / _tool_failure / @handle_tool_errors",
+        },
+        {
+            "file": "idd_core.py",
+            "lines": "690-715",
+            "symbol": "re-exports from idd_tools",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 32,
+            "cell_id": "cell_32",
+            "lines": "7-25",
+            "symbol": "_tool_error / _tool_failure (returns dict with operation, reason, action)",
+        },
     ]
-    expected = "Tool errors must return standardized dictionary: {'status': 'error', 'operation': str, 'reason': str, 'action': str} with sanitized internal exceptions."
+    expected = (
+        "Tool errors must return standardized dictionary: {'status': 'error', 'operation': str, 'reason': str, 'action': str} "
+        "with sanitized internal exceptions (canary secret absent from response and present in local diagnostic log)."
+    )
 
     if not HAS_IDD_CORE:
-        return ClaimResult(6, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            6,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
-    # 1. Dynamic test of canonical decorator
-    prev_level = logging.root.manager.disable
-    logging.disable(logging.CRITICAL)
-    try:
-        @idd_core.handle_tool_errors
-        def failing_core_tool():
-            raise KeyError("missing_col")
+    # 1. Dynamic test 1: Known exception (KeyError)
+    @idd_core.handle_tool_errors
+    def failing_core_tool():
+        raise KeyError("missing_col")
 
-        res_core = failing_core_tool()
-    finally:
-        logging.disable(prev_level)
-
-    core_is_dict = (
+    res_core = failing_core_tool()
+    known_is_dict = (
         isinstance(res_core, dict)
         and res_core.get("status") == "error"
-        and "operation" in res_core
-        and "reason" in res_core
+        and res_core.get("operation") == "failing_core_tool"
+        and "column or key" in str(res_core.get("reason", ""))
         and "action" in res_core
     )
     core_is_str = isinstance(res_core, str) and res_core.startswith("Error:")
 
-    # 2. Static inspection of notebook Cell 32 structured error implementation
-    nb_src = _extract_notebook_cell_source(32)
-    has_tool_error_dict = "def _tool_error" in nb_src and ("'status': 'error'" in nb_src or '"status": "error"' in nb_src)
-    has_sanitization = "logging.exception" in nb_src and "An unexpected data-processing failure occurred." in nb_src
+    # 2. Dynamic test 2: Unexpected exception with canary secret
+    canary_secret = "INTERNAL_CANARY_SECRET_XYZ"
+    log_capture = io.StringIO()
+    handler = logging.StreamHandler(log_capture)
+    target_logger = logging.getLogger("idd_tools")
+    target_logger.addHandler(handler)
+    try:
 
-    observed = (
-        f"Dynamic test on canonical idd_core: returns structured error dict ({core_is_dict}): {res_core}. "
-        f"Static inspection of notebook Cell 32: implements structured error dictionary={has_tool_error_dict} with exception sanitization={has_sanitization}."
+        @idd_core.handle_tool_errors
+        def unexpected_core_tool():
+            raise RuntimeError(canary_secret)
+
+        res_unexpected = unexpected_core_tool()
+    finally:
+        target_logger.removeHandler(handler)
+
+    unexpected_is_dict = (
+        isinstance(res_unexpected, dict)
+        and res_unexpected.get("status") == "error"
+        and res_unexpected.get("operation") == "unexpected_core_tool"
+        and res_unexpected.get("reason")
+        == "An unexpected data-processing failure occurred."
+        and "action" in res_unexpected
+    )
+    canary_leaked = isinstance(res_unexpected, dict) and (
+        canary_secret in str(res_unexpected.get("reason", ""))
+        or canary_secret in str(res_unexpected.get("action", ""))
+    )
+    canary_logged = canary_secret in log_capture.getvalue()
+
+    # 3. Static inspection of notebook Cell 32 structured error implementation
+    nb_src = _extract_notebook_cell_source(32)
+    has_tool_error_dict = "def _tool_error" in nb_src and (
+        "'status': 'error'" in nb_src or '"status": "error"' in nb_src
+    )
+    has_sanitization = (
+        "logging.exception" in nb_src
+        and "An unexpected data-processing failure occurred." in nb_src
     )
 
-    if core_is_dict and has_tool_error_dict:
+    observed = (
+        f"Dynamic test on canonical idd_core: known error dict={known_is_dict}, "
+        f"unexpected error sanitized dict={unexpected_is_dict}, canary leaked={canary_leaked}, "
+        f"canary logged locally={canary_logged}. "
+        f"Static inspection of notebook Cell 32: implements structured error dictionary={has_tool_error_dict} "
+        f"with exception sanitization={has_sanitization}."
+    )
+
+    if (
+        known_is_dict
+        and unexpected_is_dict
+        and not canary_leaked
+        and canary_logged
+        and has_tool_error_dict
+        and has_sanitization
+    ):
         classification = "OBSERVED INVARIANT"
         is_defect = False
-        explanation = "Canonical tool error framework in idd_tools/idd_core implements the standardized 4-field error dictionary matching notebook Cell 32."
+        explanation = (
+            "Canonical tool error framework in idd_tools/idd_core implements standardized 4-field error dictionary "
+            "with verified unexpected-exception sanitization (canary secret absent from agent response, recorded in diagnostic log), "
+            "matching notebook Cell 32 contract. (Note: Canonical Python implementation verified; notebook/runtime import parity deferred to CP4)."
+        )
     elif core_is_str:
         classification = "REPRODUCED"
         is_defect = True
         explanation = "idd_core returns plain error strings, breaking the production dictionary contract {'status': 'error', 'operation': ..., 'reason': ..., 'action': ...}."
+    elif canary_leaked:
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = "Sanitizer leaked unexpected exception details (canary secret appeared in agent-visible error response)."
+    elif not unexpected_is_dict:
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = f"Unexpected exception did not return the standardized 4-field error response: {res_unexpected}."
+    elif not canary_logged:
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = (
+            "Unexpected exception details were not recorded in local diagnostic logs."
+        )
+    elif not (has_tool_error_dict and has_sanitization):
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = "Notebook Cell 32 does not implement the required structured error dictionary or sanitization."
     else:
         classification = "BLOCKED"
         is_defect = True
-        explanation = f"Unexpected response format from handle_tool_errors: {type(res_core)}."
+        explanation = (
+            f"Unexpected response format from handle_tool_errors: {type(res_core)}."
+        )
 
     return ClaimResult(
         claim_id=6,
@@ -652,14 +1069,38 @@ def probe_claim_7() -> ClaimResult:
     title = "Signature-aware df_id extraction in tool decorator"
     subsystem = "Tool Error Handling Framework (@handle_tool_errors)"
     locators = [
-        {"file": "idd_tools.py", "lines": "85-180", "symbol": "@handle_tool_errors signature-aware binding"},
-        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
-        {"file": "test_error_handling_framework.py", "lines": "246-277", "symbol": "test_integration_with_different_function_signatures"},
+        {
+            "file": "idd_tools.py",
+            "lines": "85-180",
+            "symbol": "@handle_tool_errors signature-aware binding",
+        },
+        {
+            "file": "idd_core.py",
+            "lines": "690-715",
+            "symbol": "re-exports from idd_tools",
+        },
+        {
+            "file": "test_error_handling_framework.py",
+            "lines": "246-277",
+            "symbol": "test_integration_with_different_function_signatures",
+        },
     ]
     expected = "Decorator must inspect signature to identify df_id; functions without df_id parameter must not have their first argument treated as a DataFrame ID."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(7, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            7,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
     prev_level = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
@@ -674,16 +1115,21 @@ def probe_claim_7() -> ClaimResult:
 
             res = tool_without_df_id("hello", 42)
             broken_by_first_arg = isinstance(res, (str, dict)) and (
-                (isinstance(res, str) and "Error: DataFrame with ID 'hello' not found" in res)
-                or (isinstance(res, dict) and "hello" in str(res.get("reason", "")) and res.get("status") == "error")
+                (
+                    isinstance(res, str)
+                    and "Error: DataFrame with ID 'hello' not found" in res
+                )
+                or (
+                    isinstance(res, dict)
+                    and "hello" in str(res.get("reason", ""))
+                    and res.get("status") == "error"
+                )
             )
-            success_without_df_id = (res == "hello: 42")
+            success_without_df_id = res == "hello: 42"
     finally:
         logging.disable(prev_level)
 
-    observed = (
-        f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Signature-aware success: {success_without_df_id}, Broken by args[0] assumption: {broken_by_first_arg})."
-    )
+    observed = f"Calling tool_without_df_id('hello', 42) returned: \"{res}\" (Signature-aware success: {success_without_df_id}, Broken by args[0] assumption: {broken_by_first_arg})."
 
     if success_without_df_id:
         classification = "OBSERVED INVARIANT"
@@ -717,15 +1163,47 @@ def probe_claim_8() -> ClaimResult:
     title = "Registry reload formats and validate_dataframe_exists eviction fallback"
     subsystem = "DataFrame Registry (DataFrameRegistry / validate_dataframe_exists)"
     locators = [
-        {"file": "idd_core.py", "lines": "803-814", "symbol": "DataFrameRegistry._read_df"},
-        {"file": "idd_core.py", "lines": "1154-1162", "symbol": "validate_dataframe_exists (hardcodes pd.read_csv)"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 19, "cell_id": "cell_19", "lines": "70-95", "symbol": "DataFrameRegistry._read_df"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "50-60", "symbol": "validate_dataframe_exists (hardcodes pd.read_csv)"},
+        {
+            "file": "idd_core.py",
+            "lines": "803-814",
+            "symbol": "DataFrameRegistry._read_df",
+        },
+        {
+            "file": "idd_core.py",
+            "lines": "1154-1162",
+            "symbol": "validate_dataframe_exists (hardcodes pd.read_csv)",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 19,
+            "cell_id": "cell_19",
+            "lines": "70-95",
+            "symbol": "DataFrameRegistry._read_df",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 32,
+            "cell_id": "cell_32",
+            "lines": "50-60",
+            "symbol": "validate_dataframe_exists (hardcodes pd.read_csv)",
+        },
     ]
     expected = "Both get_dataframe and validate_dataframe_exists must support all registered formats (.csv, .pkl, .json, .parquet) upon cache eviction."
 
     if not HAS_IDD_CORE:
-        return ClaimResult(8, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            8,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
     results: Dict[str, Dict[str, bool]] = {}
     with tempfile.TemporaryDirectory(prefix="idd_reg_probe_") as tmp_dir:
@@ -763,7 +1241,10 @@ def probe_claim_8() -> ClaimResult:
                 if reg_ok:
                     info = reg.registry.get(df_id, {})
                     rec_reload = info.get("reload_path")
-                    if rec_reload and Path(rec_reload).resolve() == Path(file_p).resolve():
+                    if (
+                        rec_reload
+                        and Path(rec_reload).resolve() == Path(file_p).resolve()
+                    ):
                         reload_path_ok = True
 
                 # Force in-memory cache eviction
@@ -825,9 +1306,7 @@ def probe_claim_8() -> ClaimResult:
             f"validate_dataframe_exists or source reload failed on evicted formats: "
             f"csv={results['csv']}, pkl={results['pkl']}, json={results['json']}."
         )
-        explanation = (
-            "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames or format source loading failed upon cache eviction."
-        )
+        explanation = "validate_dataframe_exists fails on cache-evicted non-CSV DataFrames or format source loading failed upon cache eviction."
 
     return ClaimResult(
         claim_id=8,
@@ -848,10 +1327,30 @@ def probe_claim_9() -> ClaimResult:
     title = "Artifact-root containment & PR #149 multi-root protections"
     subsystem = "Artifact Management (_resolve_artifact_path)"
     locators = [
-        {"file": "idd_tools.py", "lines": "190-270", "symbol": "_resolve_artifact_path / _is_subpath / is_safe_artifact_path"},
-        {"file": "idd_core.py", "lines": "690-715", "symbol": "re-exports from idd_tools"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "647-680", "symbol": "_resolve_artifact_path"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 57, "cell_id": "cell_57", "lines": "1000-1030", "symbol": "_allowed_roots multi-root containment"},
+        {
+            "file": "idd_tools.py",
+            "lines": "190-270",
+            "symbol": "_resolve_artifact_path / _is_subpath / is_safe_artifact_path",
+        },
+        {
+            "file": "idd_core.py",
+            "lines": "690-715",
+            "symbol": "re-exports from idd_tools",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 32,
+            "cell_id": "cell_32",
+            "lines": "647-680",
+            "symbol": "_resolve_artifact_path",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 57,
+            "cell_id": "cell_57",
+            "lines": "1000-1030",
+            "symbol": "_allowed_roots multi-root containment",
+        },
     ]
     expected = (
         "Strict path containment within allowed roots; path traversal attempts (../), absolute escapes, "
@@ -860,7 +1359,19 @@ def probe_claim_9() -> ClaimResult:
     )
 
     if not HAS_IDD_CORE:
-        return ClaimResult(9, title, subsystem, "BLOCKED", "STATIC", True, expected, "idd_core not importable", "", locators, "idd_core missing")
+        return ClaimResult(
+            9,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "idd_core not importable",
+            "",
+            locators,
+            "idd_core missing",
+        )
 
     old_env = os.environ.get("IDD_ARTIFACTS_DIR")
     traversal_blocked = False
@@ -872,8 +1383,15 @@ def probe_claim_9() -> ClaimResult:
         os.environ["IDD_ARTIFACTS_DIR"] = temp_dir
         try:
             # 1. Safe path resolution
-            safe_p = idd_core._resolve_artifact_path("report.html", config=None, subdir="reports")
-            safe_path_resolved = safe_p.parent.exists() and idd_core._is_subpath(safe_p, Path(temp_dir).resolve())
+            try:
+                safe_p = idd_core._resolve_artifact_path(
+                    "report.html", config=None, subdir="reports"
+                )
+                safe_path_resolved = safe_p.parent.exists() and idd_core._is_subpath(
+                    safe_p, Path(temp_dir).resolve()
+                )
+            except ValueError:
+                safe_path_resolved = False
 
             # 2. Traversal attempt
             try:
@@ -884,7 +1402,9 @@ def probe_claim_9() -> ClaimResult:
             # 3. Delayed directory creation: invalid path should not create directories
             probe_dir = Path(temp_dir) / "should_not_exist_dir"
             try:
-                idd_core._resolve_artifact_path("../../escape.txt", subdir="should_not_exist_dir")
+                idd_core._resolve_artifact_path(
+                    "../../escape.txt", subdir="should_not_exist_dir"
+                )
             except ValueError:
                 delayed_mkdir_verified = not probe_dir.exists()
 
@@ -893,7 +1413,9 @@ def probe_claim_9() -> ClaimResult:
                 roots = [temp_dir]
                 c1 = idd_core.is_safe_artifact_path("report.html", roots)
                 c2 = not idd_core.is_safe_artifact_path("../../escape.txt", roots)
-                c3 = not idd_core.is_safe_artifact_path("https://evil.com/payload.png", roots)
+                c3 = not idd_core.is_safe_artifact_path(
+                    "https://evil.com/payload.png", roots
+                )
                 multi_root_helper_ok = c1 and c2 and c3
 
         finally:
@@ -913,25 +1435,40 @@ def probe_claim_9() -> ClaimResult:
         f"Static inspection of notebook Cell 57: enforces PR #149 multi-root containment list (_allowed_roots)={has_multi_root}."
     )
 
-    if safe_path_resolved and traversal_blocked and delayed_mkdir_verified and multi_root_helper_ok and has_multi_root:
+    if (
+        safe_path_resolved
+        and traversal_blocked
+        and delayed_mkdir_verified
+        and multi_root_helper_ok
+        and has_multi_root
+    ):
         classification = "OBSERVED INVARIANT"
         is_defect = False
         explanation = (
             "Canonical artifact resolution in idd_tools/idd_core enforces strict single-root containment with delayed "
             "directory creation for tools, and exports is_safe_artifact_path for multi-root verification matching PR #149 and notebook Cell 57."
         )
-    elif not traversal_blocked:
-        classification = "REPRODUCED"
-        is_defect = True
-        explanation = "Path traversal attempts were not blocked by _resolve_artifact_path."
-    elif not multi_root_helper_ok:
-        classification = "REPRODUCED"
-        is_defect = True
-        explanation = "idd_core lacks functional multi-root validation helper is_safe_artifact_path."
     else:
-        classification = "NOT REPRODUCED"
-        is_defect = False
-        explanation = "Artifact containment contracts satisfied."
+        classification = "REPRODUCED"
+        is_defect = True
+        failed_conditions = []
+        if not safe_path_resolved:
+            failed_conditions.append("safe path resolution failed")
+        if not traversal_blocked:
+            failed_conditions.append("path traversal attempts not blocked")
+        if not delayed_mkdir_verified:
+            failed_conditions.append(
+                "delayed directory creation failed (directory created for invalid path)"
+            )
+        if not multi_root_helper_ok:
+            failed_conditions.append(
+                "multi-root helper is_safe_artifact_path broken or missing"
+            )
+        if not has_multi_root:
+            failed_conditions.append("notebook Cell 57 lacks PR #149 multi-root guard")
+        explanation = (
+            f"Artifact containment contracts failed: {'; '.join(failed_conditions)}."
+        )
 
     return ClaimResult(
         claim_id=9,
@@ -952,10 +1489,24 @@ def probe_claim_10() -> ClaimResult:
     title = "LLM adapter identity (MyChatOpenai vs ChatOpenAI)"
     subsystem = "Model Adapters (MyChatOpenai)"
     locators = [
-        {"file": "idd_core.py", "lines": "341-370", "symbol": "MyChatOpenai (subclasses ChatOpenAI)"},
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 10, "cell_id": "cell_10", "lines": "130-170", "symbol": "MyChatOpenai"},
+        {
+            "file": "idd_core.py",
+            "lines": "341-370",
+            "symbol": "MyChatOpenai (subclasses ChatOpenAI)",
+        },
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 10,
+            "cell_id": "cell_10",
+            "lines": "130-170",
+            "symbol": "MyChatOpenai",
+        },
         {"file": "AGENTS.md", "lines": "79", "symbol": "MyChatOpenai convention"},
-        {"file": "tests/unit/test_mychatopenai.py", "lines": "1-50", "symbol": "MyChatOpenai payload tests"},
+        {
+            "file": "tests/unit/test_mychatopenai.py",
+            "lines": "1-50",
+            "symbol": "MyChatOpenai payload tests",
+        },
     ]
     expected = "MyChatOpenai is the documented production model adapter subclassing ChatOpenAI for OpenAI o-series and custom Responses payload support."
 
@@ -995,8 +1546,16 @@ def probe_claim_11() -> ClaimResult:
     title = "Skipped integration tests audit (reconciling root causes)"
     subsystem = "Integration Test Harness (test_graph_compile.py / test_routing.py)"
     locators = [
-        {"file": "tests/integration/test_graph_compile.py", "lines": "15-51", "symbol": "REQUIRED_NODES / api_key fixture / build_graph"},
-        {"file": "tests/integration/test_routing.py", "lines": "16-72", "symbol": "VALID_ROUTES / AGENT_MEMBERS / options / AgentMembers.next"},
+        {
+            "file": "tests/integration/test_graph_compile.py",
+            "lines": "15-51",
+            "symbol": "REQUIRED_NODES / api_key fixture / build_graph",
+        },
+        {
+            "file": "tests/integration/test_routing.py",
+            "lines": "16-72",
+            "symbol": "VALID_ROUTES / AGENT_MEMBERS / options / AgentMembers.next",
+        },
     ]
     expected = "Integration tests should execute meaningful assertions without live API keys against actual 15-node production topology and Router contracts."
 
@@ -1004,7 +1563,19 @@ def probe_claim_11() -> ClaimResult:
     routing_test_path = REPO_ROOT / "tests/integration/test_routing.py"
 
     if not graph_test_path.exists() or not routing_test_path.exists():
-        return ClaimResult(11, title, subsystem, "BLOCKED", "STATIC", True, expected, "Integration test files missing", "", locators, "Missing test files")
+        return ClaimResult(
+            11,
+            title,
+            subsystem,
+            "BLOCKED",
+            "STATIC",
+            True,
+            expected,
+            "Integration test files missing",
+            "",
+            locators,
+            "Missing test files",
+        )
 
     graph_src = graph_test_path.read_text(encoding="utf-8")
     routing_src = routing_test_path.read_text(encoding="utf-8")
@@ -1019,7 +1590,12 @@ def probe_claim_11() -> ClaimResult:
         f"test_routing skips 3 tests looking for lowercase core.options ({routing_looks_for_lowercase_options}) and AgentMembers.next ({routing_looks_for_next})."
     )
 
-    if graph_skips_on_api_key and graph_has_stale_node and routing_looks_for_lowercase_options and routing_looks_for_next:
+    if (
+        graph_skips_on_api_key
+        and graph_has_stale_node
+        and routing_looks_for_lowercase_options
+        and routing_looks_for_next
+    ):
         classification = "STATIC EVIDENCE ONLY"
         is_defect = True
     else:
@@ -1042,18 +1618,23 @@ def probe_claim_11() -> ClaimResult:
 
 class _InMemoryRegistry:
     """Minimal thread-safe in-memory registry harness for isolated tool execution."""
+
     def __init__(self):
         self.frames: Dict[str, pd.DataFrame] = {}
         self.paths: Dict[str, str] = {}
         self._lock = threading.Lock()
 
-    def register_dataframe(self, df: pd.DataFrame, df_id: str, raw_path: str = "") -> str:
+    def register_dataframe(
+        self, df: pd.DataFrame, df_id: str, raw_path: str = ""
+    ) -> str:
         with self._lock:
             self.frames[df_id] = df.copy(deep=False)
             self.paths[df_id] = raw_path
             return df_id
 
-    def get_dataframe(self, df_id: str, load_if_not_exists: bool = False) -> Optional[pd.DataFrame]:
+    def get_dataframe(
+        self, df_id: str, load_if_not_exists: bool = False
+    ) -> Optional[pd.DataFrame]:
         with self._lock:
             return self.frames.get(df_id)
 
@@ -1062,9 +1643,11 @@ class _InMemoryRegistry:
             return self.paths.get(df_id)
 
 
-def _extract_production_delete_rows_tool(registry: Any) -> Tuple[Optional[Any], Optional[str]]:
+def _extract_production_delete_rows_tool(
+    registry: Any,
+) -> Tuple[Optional[Any], Optional[str]]:
     """Extract and compile the actual production delete_rows tool from Notebook Cell 32.
-    
+
     Extracts the genuine AST nodes for _tool_error, _tool_failure, validate_dataframe_exists,
     handle_tool_errors, _build_query_view, and delete_rows from IntelligentDataDetective_beta_v5_patched.ipynb.
     Returns (delete_rows_callable, error_string).
@@ -1086,14 +1669,21 @@ def _extract_production_delete_rows_tool(registry: Any) -> Tuple[Optional[Any], 
             "_build_query_view",
             "delete_rows",
         ]
-        extracted_nodes = [n for n in tree.body if getattr(n, "name", None) in nodes_to_extract]
+        extracted_nodes = [
+            n for n in tree.body if getattr(n, "name", None) in nodes_to_extract
+        ]
         if len(extracted_nodes) < len(nodes_to_extract):
-            missing = set(nodes_to_extract) - {getattr(n, "name", None) for n in extracted_nodes}
+            missing = set(nodes_to_extract) - {
+                getattr(n, "name", None) for n in extracted_nodes
+            }
             return None, f"Missing required nodes in Cell 32: {missing}"
 
         code_chunks = []
         for n in extracted_nodes:
-            start_line = min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])]) - 1
+            start_line = (
+                min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])])
+                - 1
+            )
             end_line = n.end_lineno
             code_chunks.append("\n".join(lines[start_line:end_line]))
 
@@ -1118,16 +1708,31 @@ def _extract_production_delete_rows_tool(registry: Any) -> Tuple[Optional[Any], 
             return None, "delete_rows was not found in compiled Cell 32 namespace"
         return fn, None
     except Exception as exc:
-        return None, f"Extraction failed with exception: {type(exc).__name__}: {str(exc)}"
+        return (
+            None,
+            f"Extraction failed with exception: {type(exc).__name__}: {str(exc)}",
+        )
 
 
 def probe_claim_12() -> ClaimResult:
     """Claim 12: Integer column label regression (#147) and delete_rows."""
-    title = "Integer column label regression (#147) & delete_rows collision verification"
+    title = (
+        "Integer column label regression (#147) & delete_rows collision verification"
+    )
     subsystem = "Tool Layer (delete_rows / _build_query_view)"
     locators = [
-        {"file": "IntelligentDataDetective_beta_v5_patched.ipynb", "cell_idx": 32, "cell_id": "cell_32", "lines": "269-355", "symbol": "_build_query_view & delete_rows"},
-        {"file": "_patch_notebook.py", "lines": "13495-13575", "symbol": "PR #149 _build_query_view & delete_rows patch"},
+        {
+            "file": "IntelligentDataDetective_beta_v5_patched.ipynb",
+            "cell_idx": 32,
+            "cell_id": "cell_32",
+            "lines": "269-355",
+            "symbol": "_build_query_view & delete_rows",
+        },
+        {
+            "file": "_patch_notebook.py",
+            "lines": "13495-13575",
+            "symbol": "PR #149 _build_query_view & delete_rows patch",
+        },
     ]
     expected = (
         "delete_rows must query integer column labels without UndefinedVariableError, resolve integer/string collisions, "
@@ -1166,7 +1771,9 @@ def probe_claim_12() -> ClaimResult:
     )
 
     # Case B: Integer/string collision (integer 0 vs string '0')
-    df_b = pd.DataFrame({0: [10, 20, 30], "0": [100, 200, 300], "name": ["a", "b", "c"]})
+    df_b = pd.DataFrame(
+        {0: [10, 20, 30], "0": [100, 200, 300], "name": ["a", "b", "c"]}
+    )
     reg.register_dataframe(df_b, "df_b")
     res_b = delete_rows("df_b", "`0` >= 200", inplace=True)
     df_b_rem = reg.get_dataframe("df_b")
@@ -1281,9 +1888,15 @@ PROBES = {
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IDD Architectural Drift Reproduction Suite (CP0 / Issue #150).")
-    parser.add_argument("--claim", type=int, choices=range(1, 13), help="Run a specific claim (1-12)")
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON")
+    parser = argparse.ArgumentParser(
+        description="IDD Architectural Drift Reproduction Suite (CP0 / Issue #150)."
+    )
+    parser.add_argument(
+        "--claim", type=int, choices=range(1, 13), help="Run a specific claim (1-12)"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
     args = parser.parse_args()
 
     claims_to_run = [args.claim] if args.claim else sorted(PROBES.keys())
@@ -1299,6 +1912,7 @@ def main():
                 has_blocked = True
         except Exception as exc:
             import traceback
+
             tb = traceback.format_exc()
             results.append(
                 ClaimResult(
@@ -1323,7 +1937,11 @@ def main():
                 "python": sys.version,
                 "platform": sys.platform,
                 "git_commit": git_commit_sha,
-                "git_provenance": "verified" if git_commit_sha != "unknown" else "unknown (git discovery unavailable)",
+                "git_provenance": (
+                    "verified"
+                    if git_commit_sha != "unknown"
+                    else "unknown (git discovery unavailable)"
+                ),
                 "repo_root": str(REPO_ROOT),
                 "pandas": pd.__version__,
                 "pydantic": pydantic.__version__,
@@ -1331,10 +1949,18 @@ def main():
             "claims": [asdict(r) for r in results],
             "summary": {
                 "total": len(results),
-                "reproduced": sum(1 for r in results if r.classification == "REPRODUCED"),
-                "observed_invariants": sum(1 for r in results if r.classification == "OBSERVED INVARIANT"),
-                "static_only": sum(1 for r in results if r.classification == "STATIC EVIDENCE ONLY"),
-                "not_reproduced": sum(1 for r in results if r.classification == "NOT REPRODUCED"),
+                "reproduced": sum(
+                    1 for r in results if r.classification == "REPRODUCED"
+                ),
+                "observed_invariants": sum(
+                    1 for r in results if r.classification == "OBSERVED INVARIANT"
+                ),
+                "static_only": sum(
+                    1 for r in results if r.classification == "STATIC EVIDENCE ONLY"
+                ),
+                "not_reproduced": sum(
+                    1 for r in results if r.classification == "NOT REPRODUCED"
+                ),
                 "blocked": sum(1 for r in results if r.classification == "BLOCKED"),
             },
         }
@@ -1343,7 +1969,9 @@ def main():
 
     print("=" * 80)
     print("IDD ARCHITECTURAL DRIFT REPRODUCTION SUITE (CP0 / ISSUE #150)")
-    print(f"Python: {sys.version.split()[0]} | Platform: {sys.platform} | Pydantic: {pydantic.__version__}")
+    print(
+        f"Python: {sys.version.split()[0]} | Platform: {sys.platform} | Pydantic: {pydantic.__version__}"
+    )
     print("=" * 80)
 
     for r in results:
@@ -1351,7 +1979,9 @@ def main():
         defect_tag = "[DEFECT]" if r.is_defect else "[HEALTHY CONTRACT]"
         print(f"\n--- Claim {r.claim_id}: {r.title} ---")
         print(f"Subsystem:      {r.subsystem}")
-        print(f"Classification: {status_tag} {defect_tag} (Evidence: {r.evidence_type})")
+        print(
+            f"Classification: {status_tag} {defect_tag} (Evidence: {r.evidence_type})"
+        )
         print(f"Expected:       {r.expected_behavior}")
         print(f"Observed:       {r.observed_behavior}")
         if r.defect_or_contract_explanation:
@@ -1366,11 +1996,15 @@ def main():
     print("\n" + "=" * 80)
     print("SUMMARY OF EMPIRICAL FINDINGS")
     print("=" * 80)
-    print(f"{'Claim':<8} {'Classification':<22} {'Defect?':<10} {'Evidence':<10} {'Title'}")
+    print(
+        f"{'Claim':<8} {'Classification':<22} {'Defect?':<10} {'Evidence':<10} {'Title'}"
+    )
     print("-" * 80)
     for r in results:
         defect_str = "YES" if r.is_defect else "NO"
-        print(f"{r.claim_id:<8} {r.classification:<22} {defect_str:<10} {r.evidence_type:<10} {r.title[:30]}")
+        print(
+            f"{r.claim_id:<8} {r.classification:<22} {defect_str:<10} {r.evidence_type:<10} {r.title[:30]}"
+        )
     print("=" * 80)
 
     sys.exit(2 if has_blocked else 0)

@@ -159,12 +159,20 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Claim 6 (Structured tool error schema divergence): **OBSERVED INVARIANT**.
   - Claim 7 (Signature-aware df_id extraction): **OBSERVED INVARIANT**.
   - Claim 9 (Artifact path containment & multi-root protections): **OBSERVED INVARIANT**.
+- Corrective Review Pass Hardening (PR #159):
+  - Enclosed entire `@handle_tool_errors` execution in try-except boundary to sanitize property descriptor exceptions and log locally.
+  - Added internal `_validate_dataframe_for_tool` helper to prevent unexpected registry infrastructure errors (`RuntimeError`) from being misclassified as missing data.
+  - Preserved optional/defaulted `df_id=None` semantics.
+  - Implemented RFC URI scheme rejection in `_resolve_artifact_path` and `is_safe_artifact_path` while correctly allowing Windows drive letters.
+  - Strengthened `probe_claim_6` and `probe_claim_9` to eliminate false-green fallthrough and verify canary leak prevention.
+  - Configured `.github/workflows/copilot-setup-steps.yml` to make all 16 tests in `test_error_handling_framework.py` a mandatory blocking gate.
 - Verification Baseline:
   - `test_error_handling_framework.py`: **16/16 passed** without `--deselect`!
-  - `tests/unit/test_canonical_tools.py`: **24/24 passed** (new unit test suite).
+  - `tests/unit/test_canonical_tools.py`: **33/33 passed** (including descriptor exceptions, registry error handling, optional defaults, URI schemes, Windows drive letters, global runtime precedence, and facade identity).
   - `tests/unit/test_handle_tool_errors.py`: **24/24 passed** (migrated from string to dict assertions).
-  - `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **28/28 passed**, 12/12 evaluated cleanly with 0 blocked/failed.
-  - Full test suites: **574 unit/integration passed**, **110 core/memory passed**, **17 prompt passed**.
+  - `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **34/34 passed**, 12/12 evaluated cleanly with 0 blocked/failed.
+  - Full test suites: **583 unit/integration passed (16 skipped)**, **110 core/memory passed**, **17 prompt passed**.
+  - Linting & formatting: `black --check` 10/10 passed, `flake8` 0 warnings, `git diff --check` clean.
   - Zero notebook churn: 0 notebook lines modified, 99 cells intact, 15 nodes / 33 edges state graph verified.
-- Status: **CP2 COMPLETE & VERIFIED** (Issue #158).
+- Status: **CP2 CORRECTIVE REVIEW PASS COMPLETE — READY FOR INDEPENDENT RE-REVIEW** (Issue #158, PR #159).
 
