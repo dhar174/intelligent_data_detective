@@ -282,6 +282,30 @@ class TestSignatureAwareDecorator:
             assert err_type["status"] == "error"
             assert "DataFrame ID must be a non-empty string." in err_type["reason"]
 
+    def test_non_none_default_df_id_is_validated_when_omitted(self):
+        """An omitted non-None default is the effective dataset ID and must be validated."""
+        reg = DataFrameRegistry(capacity=5)
+        with override_global_registry(reg):
+
+            @idd_tools.handle_tool_errors
+            def tool_with_default(df_id: str = "default_df") -> str:
+                return f"used:{df_id}"
+
+            # Missing default IDs must not reach execution.
+            missing = tool_with_default()
+            assert isinstance(missing, dict)
+            assert missing["status"] == "error"
+            assert missing["operation"] == "tool_with_default"
+            assert "default_df" in missing["reason"]
+
+            # Omitted non-None defaults work when the frame exists.
+            reg.register_dataframe(pd.DataFrame({"value": [1]}), "default_df")
+            assert tool_with_default() == "used:default_df"
+
+            # Explicit alternatives still go through registry validation.
+            reg.register_dataframe(pd.DataFrame({"value": [2]}), "other_df")
+            assert tool_with_default(df_id="other_df") == "used:other_df"
+
     def test_empty_or_non_string_df_id_fails_gracefully(self):
         @idd_tools.handle_tool_errors
         def my_tool(df_id: str) -> str:

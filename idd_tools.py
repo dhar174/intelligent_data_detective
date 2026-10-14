@@ -138,7 +138,7 @@ def handle_tool_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     - Signature-aware argument binding using inspect.signature.
     - Accurately binds declared 'df_id' parameter regardless of positional or keyword order.
     - Extracts .df_id attribute from bound parameter objects.
-    - Preserves optional/defaulted df_id parameter semantics (omitted/None bypasses validation).
+    - Validates non-None defaulted df_id values; optional None bypasses validation.
     - Entire execution path (binding, extraction, validation, invocation) within exception boundary.
     - Emits structured error dictionary for argument binding mismatches.
     - Preserves function name, docstring, annotations, and inspectable signature.
@@ -158,6 +158,7 @@ def handle_tool_errors(func: Callable[..., Any]) -> Callable[..., Any]:
             if func_signature is not None:
                 try:
                     bound_args = func_signature.bind(*args, **kwargs)
+                    bound_args.apply_defaults()
                 except TypeError as exc:
                     return _tool_error(
                         func.__name__,
