@@ -23,6 +23,7 @@ from tools.diagnostics.reproduce_drift import (
     probe_claim_7,
     probe_claim_8,
     probe_claim_9,
+    probe_claim_10,
     probe_claim_11,
     probe_claim_12,
 )
@@ -103,12 +104,248 @@ def test_claim_2_simulated_broken_high_water_advancement_returns_reproduced(
     assert "high_water_advanced=False" in res.defect_or_contract_explanation
 
 
-def test_static_only_finding_not_promoted_to_dynamic():
-    """Verify that static inspection of test files returns STATIC EVIDENCE ONLY, not REPRODUCED."""
-    res = probe_claim_11()
-    assert res.classification == "STATIC EVIDENCE ONLY"
+def test_static_evidence_claim_returns_static_type():
+    """Verify that static-only inspection returns STATIC evidence type."""
+    res = probe_claim_10()
     assert res.evidence_type == "STATIC"
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.is_defect is False
+
+
+def test_claim_11_modernized_integration_and_graph_returns_observed_invariant():
+    """Verify that modernized integration test audit and canonical graph assembly return OBSERVED INVARIANT."""
+    res = probe_claim_11()
+    assert res.classification == "OBSERVED INVARIANT"
+    assert res.evidence_type == "BOTH"
+    assert res.is_defect is False
+    assert "Canonical State verified: 70 fields" in res.observed_behavior
+    assert "Canonical graph compiled OK: 15 nodes, 33 edges" in res.observed_behavior
+
+
+def test_claim_11_simulated_api_key_skip_returns_reproduced(monkeypatch):
+    """Verify that an integration test skipping on API keys is reported as a defect (Claim 11 REPRODUCED)."""
+    from pathlib import Path
+
+    orig_read_text = Path.read_text
+
+    def mock_read_text(self, *args, **kwargs):
+        if "test_graph_compile.py" in str(self):
+            return "import pytest\npytest.skip('OPENAI_API_KEY not set')"
+        return orig_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", mock_read_text)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
     assert res.is_defect is True
+    assert res.evidence_type == "STATIC"
+    assert "skips tests when OPENAI_API_KEY is unset" in res.observed_behavior
+
+
+def test_claim_11_simulated_stale_node_returns_reproduced(monkeypatch):
+    """Verify that asserting obsolete node names is reported as a defect (Claim 11 REPRODUCED)."""
+    from pathlib import Path
+
+    orig_read_text = Path.read_text
+
+    def mock_read_text(self, *args, **kwargs):
+        if "test_graph_compile.py" in str(self):
+            return "REQUIRED_NODES = ['supervisor', 'report_generator']"
+        return orig_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", mock_read_text)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert res.evidence_type == "STATIC"
+    assert "asserts legacy 'report_generator' node" in res.observed_behavior
+
+
+def test_claim_11_simulated_topology_mismatch_returns_reproduced(monkeypatch):
+    """Verify that a compiled graph topology mismatch is reported as a defect (Claim 11 REPRODUCED)."""
+    import idd_core
+
+    class MockGraph:
+        def get_graph(self):
+            class G:
+                nodes = {
+                    f"node_{i}": i for i in range(10)
+                }  # only 10 nodes instead of 15
+                edges = []
+
+            return G()
+
+    monkeypatch.setattr(idd_core, "build_graph", lambda: MockGraph())
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert res.evidence_type == "DYNAMIC"
+    assert "Compiled graph topology mismatch" in res.observed_behavior
+
+
+def test_claim_11_simulated_cond_edge_mismatch_returns_reproduced(monkeypatch):
+    """Verify that a mismatch in conditional edge count (not 21) is reported as a defect (Claim 11 REPRODUCED)."""
+    import idd_core
+
+    class MockGraph:
+        def get_graph(self):
+            class Edge:
+                def __init__(self, conditional=False):
+                    self.conditional = conditional
+
+            class G:
+                nodes = {f"node_{i}": i for i in range(15)}
+                # 33 edges total, but only 10 conditional (instead of 21)
+                edges = [Edge(conditional=True) for _ in range(10)] + [
+                    Edge(conditional=False) for _ in range(23)
+                ]
+
+            return G()
+
+    monkeypatch.setattr(idd_core, "build_graph", lambda: MockGraph())
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert res.evidence_type == "DYNAMIC"
+    assert "21 conditional" in res.observed_behavior
+
+
+def test_claim_11_simulated_state_field_mismatch_returns_reproduced(monkeypatch):
+    """Verify that a State field count mismatch is reported as a defect (Claim 11 REPRODUCED)."""
+    import typing
+    import idd_core
+
+    orig_get_type_hints = typing.get_type_hints
+
+    def mock_get_type_hints(obj, *args, **kwargs):
+        if obj is idd_core.State:
+            return {f"field_{i}": int for i in range(50)}  # 50 fields instead of 70
+        return orig_get_type_hints(obj, *args, **kwargs)
+
+    monkeypatch.setattr(typing, "get_type_hints", mock_get_type_hints)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert res.evidence_type == "DYNAMIC"
+    assert "State field count mismatch" in res.observed_behavior
+
+
+def test_claim_11_missing_state_or_build_graph_returns_reproduced(monkeypatch):
+    """Verify that missing State or build_graph exports report REPRODUCED."""
+    import idd_core
+
+    monkeypatch.delattr(idd_core, "State", raising=False)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "lacks State schema" in res.observed_behavior
+
+
+def test_claim_11_simulated_placeholder_executes_without_error_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that placeholder node not raising RuntimeError reports REPRODUCED (defect)."""
+    import idd_core
+
+    orig_build_graph = idd_core.build_graph
+
+    def mock_build_graph(node_overrides=None, structural_only=True, **kwargs):
+        g = orig_build_graph(
+            node_overrides=node_overrides, structural_only=structural_only, **kwargs
+        )
+        if structural_only:
+
+            class HarmlessRunnable:
+                def __call__(self, state, **kw):
+                    return {}
+
+                def invoke(self, state, **kw):
+                    return {}
+
+            g.nodes["initial_analysis"].bound = HarmlessRunnable()
+        return g
+
+    monkeypatch.setattr(idd_core, "build_graph", mock_build_graph)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Placeholder node invocation in structural graph did not raise RuntimeError"
+        in res.observed_behavior
+    )
+
+
+def test_claim_11_simulated_executable_missing_overrides_not_raising_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that executable mode without overrides not raising ValueError reports REPRODUCED."""
+    import idd_core
+
+    orig_build_graph = idd_core.build_graph
+
+    def mock_build_graph(node_overrides=None, structural_only=True, **kwargs):
+        if not structural_only:
+            return orig_build_graph(
+                node_overrides=node_overrides, structural_only=True, **kwargs
+            )
+        return orig_build_graph(
+            node_overrides=node_overrides, structural_only=structural_only, **kwargs
+        )
+
+    monkeypatch.setattr(idd_core, "build_graph", mock_build_graph)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "build_graph(structural_only=False) without overrides did not raise ValueError"
+        in res.observed_behavior
+    )
+
+
+def test_claim_11_simulated_supervisor_routing_invalid_not_raising_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that route_from_supervisor not raising on invalid route reports REPRODUCED."""
+    import idd_core
+
+    monkeypatch.setattr(
+        idd_core,
+        "route_from_supervisor",
+        lambda state: "supervisor",
+    )
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "route_from_supervisor" in res.observed_behavior
+
+
+def test_claim_11_simulated_agent_members_with_next_returns_reproduced(monkeypatch):
+    """Verify that AgentMembers declaring 'next' reports REPRODUCED."""
+    import idd_core
+
+    class LeakingAgentMembers:
+        model_fields = {"description": None, "agent_type": None, "next": None}
+
+    monkeypatch.setattr(idd_core, "AgentMembers", LeakingAgentMembers)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "AgentMembers fields mismatch" in res.observed_behavior
+
+
+def test_claim_11_simulated_router_optional_metadata_returns_reproduced(monkeypatch):
+    """Verify that Router omitting next_agent_metadata from required reports REPRODUCED."""
+    import idd_core
+
+    class BuggyRouter:
+        @classmethod
+        def model_json_schema(cls):
+            return {"required": ["next", "next_agent_prompt"]}
+
+    monkeypatch.setattr(idd_core, "Router", BuggyRouter)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "Router schema omits 'next_agent_metadata'" in res.observed_behavior
 
 
 def test_missing_prerequisites_return_blocked(monkeypatch):

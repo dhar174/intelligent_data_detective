@@ -178,3 +178,74 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Zero notebook churn: 0 notebook lines modified, 99 cells intact, 15 nodes / 33 edges state graph verified.
 - Status: **CP2 FINAL CORRECTIVE REVIEW PASS COMPLETE — PR #159 MAINTAINED IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW** (Issue #158, PR #159).
 
+### 2026-10-14 — Checkpoint 3 (CP3): Canonical State, Reducers, and LangGraph Assembly (Issue #160, PR #161)
+- Scope Delivered:
+  - Canonical state and reducers module: `idd_state.py`.
+  - Authoritative 70-field `State(TypedDict, total=False)` schema matching notebook Cell 22: 39 fields with custom/standard reducers, 31 plain fields.
+  - Enforced **BR-7 Invariant**: `State.messages` declared directly as `Annotated[list[AnyMessage], add_messages]`, never inheriting from LangChain `AgentState` base (avoids `remaining_steps` managed channel rejection in `InputSchema`).
+  - Enforced **W9-SR-DROP Invariant**: `structured_response` strictly NOT a channel on supervisor State. Subgraphs manage internal `AgentState[ResponseT]`, wrapper nodes extract from `agent.invoke()` Python dictionary return.
+  - Implemented `VizWorkerState` and all 15 reducers (`keep_first`, `_sr_reducer`, `_reduce_strs_resettable`, `_reduce_viz_results_resettable`, `_keep_last_or_clear`, `merge_int_sum`, safe `bool_or` handling `None` without bitwise crash, `dict_merge_shallow`, `merge_lists`, `merge_unique`, `merge_dicts`, `merge_dict`, `any_true`, `last_wins`, and re-exported `_reduce_plan_keep_sorted`).
+  - Strict architectural DAG: `idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`.
+  - Canonical graph assembly module: `idd_graph.py` with `build_graph()` constructing the authoritative 15-node, 33-edge (21 conditional) StateGraph matching `validate_graph.py`.
+  - Entry point `START -> initial_analysis`, 0 unreachable nodes, 0 dead ends. Preserves all barriers (`viz_join`, `report_join`, `EMERGENCY_MSG`).
+  - Supports offline pass-through nodes with optional node overrides; checkpointer defaults to None avoiding unintended SQLite database creation.
+  - Public routing constants and functions: `AGENT_MEMBERS`, `AGENT_OPTIONS`, `options`, `PRODUCTION_NODE_NAMES`, `Router`, `route_from_supervisor`, `route_to_writer`, `route_viz`, `write_output_to_file`, `assign_viz_workers`, `dispatch_sections`.
+  - Compatibility façade in `idd_core.py` updated with 100% symbol identity re-exports and explicit `__all__`.
+- Claim Resolutions:
+  - Claim 11 (Skipped integration tests audit & CP3 canonical graph enablement): **OBSERVED INVARIANT**.
+- Modernized Integration Tests:
+  - Modernized `tests/integration/test_graph_compile.py` (4 tests) and `tests/integration/test_routing.py` (3 tests) to run 100% offline with zero skips against the 15 production nodes.
+- Verification Baseline:
+  - `tests/unit/test_canonical_state_graph.py`: **35/35 passed**.
+  - `tools/diagnostics/test_cp0_diagnostics.py`: **43/43 passed**, 12/12 claims evaluated with 0 blocked/failed.
+  - Full test suites: **629 unit/integration passed**, **77 core/memory passed**, **17 prompt passed**, **16/16 error handling passed**, **33 notebook integrity passed**.
+  - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
+  - Code quality: `black --check` 100% clean, `flake8` 0 warnings.
+  - Hosted GitHub Actions CI run `#38598401721`: **100% green**.
+- Status: **CP3 INITIAL CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 OPENED IN DRAFT** (Issue #160, PR #161).
+
+### 2026-10-14 — Checkpoint 3 (CP3): Architectural Corrective Review Pass (PR #161, Issue #160)
+- Corrective Review Scope Delivered:
+  - Dual-mode graph assembly (`idd_graph.py`): `build_graph()` accepts `structural_only=True` (default, backward-compatible). In structural mode, placeholder nodes raise `RuntimeError("Cannot execute placeholder node '<name>'...")` when executed. In executable mode (`structural_only=False`), validates all 14 production worker and supervisor nodes are present in `node_overrides` (`FINISH` defaults to `write_output_to_file`), failing closed with `ValueError` on missing or unknown node overrides.
+  - Fail-closed supervisor routing (`route_from_supervisor`): raises `ValueError` on missing/empty `next`, raises `ValueError` on invalid destinations, and rejects `next='supervisor'` self-loops to prevent `KeyError: 'supervisor'` crashes.
+  - Pydantic schema parity:
+    - Restored exact Cell 7 `AgentMembers` schema with strictly 2 fields (`description` and `agent_type`); removed `next: Optional[AgentId]`.
+    - Restored required-nullable contract on `Router`: `next_agent_metadata: Optional[NextAgentMetadata] = Field(..., description="Metadata for the next agent.")` required in Pydantic v2 JSON schema but accepting `None` via nullable `anyOf`.
+  - Offline Executable Graph Harness:
+    - Verified deterministic offline pipeline: `START -> initial_analysis -> supervisor -> data_cleaner -> supervisor -> FINISH -> END` without API keys.
+    - Verified state accumulation and fail-closed error halting during graph execution.
+  - Diagnostic Hardening (Claim 11):
+    - Replaced static string matching with programmatic runtime validation for structural/executable modes, placeholder RuntimeError, supervisor fail-closed routing, AgentMembers schema fields, and Router metadata nullability.
+    - Added 5 negative simulation tests in `test_cp0_diagnostics.py` (48/48 passed).
+- Verification Baseline:
+  - Unit & integration suites: **636 passed**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **48 passed**.
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **48 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+  - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
+  - Code quality: `black --check` 100% clean, `flake8` 0 warnings.
+  - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
+- Status: **CP3 ARCHITECTURAL CORRECTIVE REVIEW PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW** (Issue #160, PR #161).
+
+### 2026-10-14 — Checkpoint 3 (CP3): Codex & Copilot Review Resolutions (PR #161, Issue #160)
+- Addressed Codex and Copilot review findings across `idd_core.py`, `idd_graph.py`, `reproduce_drift.py`, and test suites:
+  - Added fallback stubs for all 7 LangChain message symbols and `MyChatOpenai` in `idd_core.py` when `HAS_LANGCHAIN = False`.
+  - Added parent state context propagation in `assign_viz_workers` (matching Cell 57 `Fix AM-1`) and `dispatch_sections` (handling dict serialization and required context for `section_worker`).
+  - Defined `SupervisorRouteTarget` for `Router.next` to accept `EMERGENCY_MSG`; mapped `next="END"` to `"FINISH"` in `route_from_supervisor`.
+  - Expanded `AGENT_MEMBERS` to include all 10 worker agents per migration plan `docs/plans/idd-canonical-core-migration.md:116`.
+  - Enforced `cond_edge_count != 21` check in Claim 11 dynamic diagnostic probe and added regression simulation test.
+  - Defended authoritative notebook architecture: rejected Copilot's suggestions to modify `viz_evaluator` routing and remove `report_orchestrator` -> `report_join` edge, which would violate patch `W2-BR6` and break `validate_graph.py`.
+- Verification Baseline:
+  - Unit & integration suites: **650 passed, 9 skipped**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **54 passed**.
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **49 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+  - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
+  - Code quality: `black --check` 100% clean, `flake8` 0 errors.
+- Status: **CP3 REVIEW PASS COMPLETE — READY FOR FINAL APPROVAL & MERGE GATE** (Issue #160, PR #161).

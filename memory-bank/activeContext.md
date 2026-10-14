@@ -706,6 +706,154 @@ This is now the strongest completion baseline:
 - Status: **CP2 FINAL CORRECTIVE REVIEW PASS COMPLETE — PR #159 MAINTAINED IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW** (Issue #158, PR #159).
 <!-- session-curated:2026-10-13-cp2-canonical-tools-error-handling:end -->
 
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:start -->
+## 2026-10-14 — Checkpoint 3 (CP3): Canonical State, Reducers, and LangGraph Assembly (Issue #160, Roadmap Issue #140, PR #161)
 
+### Scope Delivered
+- **Established Canonical Module `idd_state.py`**:
+  - Implemented authoritative 70-field `State(TypedDict, total=False)` exactly matching notebook Cell 22: 39 fields with reducers, 31 plain fields.
+  - Enforced **BR-7 Invariant**: `State.messages` declared directly as `Annotated[list[AnyMessage], add_messages]`, never inheriting from LangChain's `AgentState` base (which drags in the `remaining_steps` managed channel rejected in `InputSchema`).
+  - Enforced **W9-SR-DROP Invariant**: `structured_response` is strictly NOT a channel on supervisor `State`. In `langgraph.prebuilt.create_agent`, each agent subgraph manages its own `AgentState[ResponseT]`. Colliding a supervisor custom-reducer channel with `AgentState.structured_response` causes `_resolve_schemas` set-iteration nondeterminism and `InvalidUpdateError` on concurrent writes across steps. Wrapper nodes read structured responses from the `agent.invoke()` Python dictionary return (`result["structured_response"]`) and map fields into dedicated supervisor State keys.
+  - Implemented `VizWorkerState` TypedDict for parallel visualization worker tasks.
+  - Implemented all 15 reducers: `keep_first`, `_sr_reducer`, `_reduce_strs_resettable`, `_reduce_viz_results_resettable`, `_keep_last_or_clear`, `merge_int_sum`, safe `bool_or` handling `None` without bitwise crash, `dict_merge_shallow`, `merge_lists`, `merge_unique`, `merge_dicts`, `merge_dict`, `any_true`, `last_wins`, and re-exported `_reduce_plan_keep_sorted`.
+  - Implemented domain schemas in `idd_state.py` establishing a strict unidirectional DAG: `idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`.
+- **Established Canonical Module `idd_graph.py`**:
+  - Implemented `build_graph()` constructing the authoritative 15-node, 33-edge (21 conditional) StateGraph matching `validate_graph.py`.
+  - Entry point: `START -> initial_analysis`. 0 unreachable nodes, 0 dead ends. Preserves all barriers (`viz_join`, `report_join`, `EMERGENCY_MSG`).
+  - Supports offline pass-through nodes with optional node overrides via `_make_pass_through_node()` and avoids SQLite database side effects by defaulting `checkpointer=None`.
+  - Implemented public agent constants: `AGENT_MEMBERS`, `AGENT_OPTIONS`, `options` (backward-compatibility alias), `PRODUCTION_NODE_NAMES`, `Router`.
+  - Implemented routing functions: `route_from_supervisor`, `route_to_writer`, `route_viz`, `write_output_to_file`, `assign_viz_workers`, `dispatch_sections`.
+- **Transitional Compatibility Façade (`idd_core.py`)**:
+  - Re-exports all state and graph symbols with 100% object identity (`idd_core.State is idd_state.State`, `idd_core.build_graph is idd_graph.build_graph`).
+  - Removed obsolete duplicate definitions. Declared explicit `__all__` export list.
+  - Maintained full backward compatibility for existing tests and notebook cells.
+- **Modernized Integration Tests**:
+  - Modernized `tests/integration/test_graph_compile.py` (4 tests) and `tests/integration/test_routing.py` (3 tests).
+  - Removed artificial `OPENAI_API_KEY` skips; all 7 tests run completely offline and pass 100%.
+  - Updated node inventory to 15 production nodes.
+- **Diagnostic Claims Resolved**:
+  - **Claim 11 (Skipped integration tests audit & CP3 canonical graph enablement)**: Evaluates to `OBSERVED INVARIANT`.
+    - Static inspection confirms `test_graph_compile.py` does not skip on missing API keys and tests the 15 production nodes.
+    - Static inspection confirms `test_routing.py` tests canonical `AGENT_OPTIONS`/`options` and `Router.next`.
+    - Dynamic verification confirms `idd_core` re-exports canonical 70-field `State` and `build_graph()` compiling 15 nodes and 33 edges (21 conditional).
 
+### Verification Baseline
+- `tests/unit/test_canonical_state_graph.py`: **35/35 passed**.
+- `tools/diagnostics/test_cp0_diagnostics.py`: **43/43 passed**, 12/12 evaluated cleanly with 0 blocked/failed (Claims 6, 7, 8, 9, 10, 11 observed invariants).
+- Full test suites:
+  - Unit & integration suites: **629 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean**.
+  - `flake8`: **0 warnings**.
+- CI Gate Hardening:
+  - Hosted GitHub Actions CI run `#38598401721`: **100% green**.
+- PR & Branch Status:
+  - Branch: `antigravity/issue-160-canonical-state-graph`.
+  - PR #161 opened in Draft under Issue #160 (parent #140).
+  - Status: **CP3 INITIAL CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 IN DRAFT**.
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->
+
+<!-- session-curated:2026-10-14-cp3-corrective-pass:start -->
+## 2026-10-14 — Checkpoint 3 (CP3): Architectural Corrective Review Pass (PR #161, Issue #160)
+
+### Corrective Scope Delivered
+- **P1-A: Structural vs. Executable Dual-Mode Graph Assembly (`idd_graph.py`)**:
+  - `build_graph()` accepts `structural_only: bool = True` (default, ensuring 100% backward compatibility for offline topology compile tests and validators).
+  - Structural placeholder nodes (`_make_pass_through_node`) raise `RuntimeError("Cannot execute placeholder node '<name>'...")` if executed at runtime, preventing silent execution of un-overridden nodes.
+  - When `structural_only=False` (executable mode), `build_graph()` validates all 14 worker and supervisor nodes are present in `node_overrides` (`FINISH` defaults to `write_output_to_file`). It fails closed with `ValueError` if any required nodes are missing or unrecognized. Sets `compiled_graph.is_structural_only = False`.
+- **P1-B: Fail-Closed Supervisor Routing (`route_from_supervisor`)**:
+  - Raises `ValueError("Supervisor routing failed: destination 'next' is missing or empty in State.")` if `next` is omitted or empty.
+  - Raises `ValueError("Supervisor routing failed: destination ... is invalid.")` if `next` is not in the allowed 14 production destinations.
+  - Excluded `'supervisor'` from allowed destinations to prevent self-loop `KeyError: 'supervisor'` crashes while preserving authoritative 15-node, 33-edge topology and W13N-RT routing (`report_generator_complete` + `report_results` routing to `FINISH` or `file_writer`).
+- **P2-A: AgentMembers Schema Parity (`idd_state.py`)**:
+  - Restored exact Cell 7 Pydantic schema: `AgentMembers(BaseModel)` contains strictly two fields: `description: str` and `agent_type: Literal[...]`.
+  - Removed `next: Optional[AgentId]` from `AgentMembers` (routing logic belongs strictly to `Router`, not membership listings).
+  - Verified all 9 derived member classes (`InitialAnalysis`, `DataCleaner`, `Analyst`, `FileWriter`, `Visualization`, `ReportGenerator`, `SuperVisor`, `ReportOrchestrator`, `ReportSection`) and `agent_list_default_generator()` instantiate cleanly with exact 2-field contracts.
+- **P2-B: Router Schema Parity (`idd_graph.py`)**:
+  - Restored required-nullable contract on `Router`:
+    `next_agent_metadata: Optional[NextAgentMetadata] = Field(..., description="Metadata for the next agent.")`
+  - In Pydantic v2, `Field(...)` ensures `next_agent_metadata` is mandatory in `Router.model_json_schema()['required']` alongside `next` and `next_agent_prompt`.
+  - Nullability is preserved via `anyOf` schema allowing `{"type": "null"}`.
+  - Prevents downstream prompt/schema drift where models or callers could omit metadata entirely when `None` was previously defaulted.
+- **Offline Executable Graph Harness (`tests/unit/test_canonical_state_graph.py`)**:
+  - Verified deterministic offline pipeline trajectory without live API keys:
+    `START -> initial_analysis -> supervisor -> data_cleaner -> supervisor -> FINISH -> END`
+  - Confirmed state flag accumulation (`initial_analysis_complete=True`, `data_cleaning_complete=True`) and clean termination.
+  - Verified fail-closed error halting during graph execution for invalid routing and missing `next`.
+- **Diagnostic Hardening (`tools/diagnostics/reproduce_drift.py` & `test_cp0_diagnostics.py`)**:
+  - Upgraded Claim 11 from static heuristic checks to dynamic programmatic validation:
+    - Verifies `structural_only=True` builds 15 nodes / 33 edges with placeholder `RuntimeError`.
+    - Verifies `structural_only=False` validates all 14 node overrides and fails closed on missing/unknown overrides.
+    - Verifies `route_from_supervisor` fails closed with `ValueError` on empty, missing, or invalid destinations and rejects self-loops.
+    - Verifies `AgentMembers` has strictly 2 fields (`description` and `agent_type`).
+    - Verifies `Router` schema enforces required-nullable `next_agent_metadata`.
+  - Added 5 negative simulation tests in `test_cp0_diagnostics.py` (totaling 48/48 passed).
+
+### Verification Baseline
+- Full test suites:
+  - Unit & integration suites: **636 passed**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **48 passed** (added 13 tests for dual-mode assembly, fail-closed routing, schema contracts, and offline execution).
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **48 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean**.
+  - `flake8`: **0 warnings**.
+- PR & Branch Status:
+  - Branch: `antigravity/cp3-canonical-state-graph`.
+  - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
+  - Status: **CP3 ARCHITECTURAL CORRECTIVE PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW**.
+<!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
+
+<!-- session-curated:2026-10-14-cp3-review-resolutions:start -->
+## 2026-10-14 — Checkpoint 3 (CP3) Codex & Copilot Review Resolutions
+
+### Review Comments Analysis & Resolution
+1. **LangChain Fallback Export Stubs (`idd_core.py`, Copilot Review 5524504736, `r4276133342`)**:
+   - **Finding**: When `HAS_LANGCHAIN = False`, `HumanMessage`, `AIMessage`, `SystemMessage`, `ToolMessage`, `BaseMessage`, `add_messages`, and `MyChatOpenai` were exported in `__all__` but undefined in the fallback block, raising `AttributeError` on `from idd_core import *`.
+   - **Resolution**: Added complete fallback stubs for all 7 LangChain message symbols and `MyChatOpenai` fallback stub in `idd_core.py`. Verified with unit test `test_idd_core_all_symbols_exist`.
+2. **Fan-Out Context Propagation (`idd_graph.py`, Codex Review 5524459760, `r4276098205` & `r4276098216`)**:
+   - **Finding**: `assign_viz_workers` and `dispatch_sections` passed only task/spec and section, missing parent context (`cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`, `messages`). In executable subgraphs, worker nodes seeing missing cleaning metadata would prematurely halt or reroute to `data_cleaner`.
+   - **Resolution**: Aligned `assign_viz_workers` with notebook Cell 57 `Fix AM-1` and `dispatch_sections` with `section_worker` requirements, injecting `cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`, `final_turn_msgs_list`, and `messages`.
+3. **Supervisor Route Target & EMERGENCY_MSG Typing (`idd_graph.py` & `idd_state.py`, Copilot Review, `r4276133543`)**:
+   - **Finding**: `Router.next` was typed as `AgentId` which omitted `EMERGENCY_MSG`, causing Pydantic validation failures on emergency routes. Also `next="END"` caused `route_from_supervisor` to raise `ValueError`.
+   - **Resolution**: Restored `AgentId` to the exact 14 values from notebook Cell 7. Defined `SupervisorRouteTarget: TypeAlias = Literal[..., "END", "FINISH", "EMERGENCY_MSG"]` for `Router.next`. In `route_from_supervisor`, normalized `"END"` token to `"FINISH"` (the 15-node graph terminal transition node).
+4. **AGENT_MEMBERS Constant Alignment (`idd_graph.py`, Copilot Review, `r4276133491`)**:
+   - **Finding**: `AGENT_MEMBERS` only listed 6 direct supervisor delegation options rather than all 10 worker agents in the team.
+   - **Resolution**: Expanded `AGENT_MEMBERS` to include all 10 worker agents matching migration specification `docs/plans/idd-canonical-core-migration.md:116`: `["initial_analysis", "data_cleaner", "analyst", "visualization", "report_orchestrator", "report_section_worker", "report_packager", "file_writer", "viz_worker", "viz_evaluator"]`. Preserved `options = AGENT_OPTIONS`.
+5. **Conditional Edge Count in Claim 11 Diagnostic (`reproduce_drift.py`, Copilot Review, `r4276133594`)**:
+   - **Finding**: In `probe_claim_11()`, `cond_edge_count = sum(...)` was calculated but omitted from the condition check.
+   - **Resolution**: Added `or cond_edge_count != 21` to the check in `probe_claim_11()`. Added regression test `test_claim_11_simulated_cond_edge_mismatch_returns_reproduced` in `test_cp0_diagnostics.py`.
+6. **Authoritative Topology Invariants Defended (Copilot Review, `r4276133416` & `r4276133460`)**:
+   - **Finding**: Copilot suggested modifying `viz_evaluator` routing from `{"Accepted": "supervisor", "Revise": "supervisor"}` to `{"Accepted": "report_orchestrator", "Revise": "analyst"}`, and removing the `report_orchestrator` -> `report_join` edge.
+   - **Resolution**: Rejected both suggestions based on authoritative evidence. Notebook Cell 60 explicitly incorporates patch `W2-BR6` routing both branches through supervisor, and explicitly retains `report_orchestrator` -> `report_join` (`# ensure join waits for all`) to enforce fan-in barrier synchronization. Changing either would break `validate_graph.py` and diverge from the 15-node, 33-edge topology.
+
+### Verification Baseline Post-Resolution
+- Full test suites:
+  - Unit & integration suites: **650 passed, 9 skipped**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **54 passed** (added 6 tests).
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **49 passed** (added 1 test).
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean across all files**.
+  - `flake8`: **0 errors, 0 warnings**.
+<!-- session-curated:2026-10-14-cp3-review-resolutions:end -->
 
