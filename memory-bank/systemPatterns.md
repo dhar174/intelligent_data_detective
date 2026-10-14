@@ -361,18 +361,9 @@ def build_graph(
     checkpointer: Any = None,
     store: Any = None,
     cache: Any = None,
+    structural_only: bool = True,
     **kwargs: Any,
 ) -> CompiledStateGraph:
-    builder = StateGraph(State)
-    overrides = node_overrides or {}
-    for name in PRODUCTION_NODE_NAMES:
-        if name in overrides:
-            node_fn = overrides[name]
-        elif name == "FINISH":
-            node_fn = write_output_to_file
-        else:
-            node_fn = _make_pass_through_node(name)
-        builder.add_node(name, node_fn)
     ...
 ```
 **Why:**
@@ -380,3 +371,84 @@ def build_graph(
 2. **Barrier & Fan-In Preservation**: Preserves all structural graph barriers (`viz_join`, `report_join`, `EMERGENCY_MSG` fan-in edge back to `supervisor`), eliminating unreachable nodes and dead ends.
 3. **Strict Layering DAG**: Establishes a clean unidirectional DAG (`idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`), completely decoupling graph compilation from execution adapters.
 <!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->
+
+<!-- session-curated:2026-10-14-cp3-corrective-pass:start -->
+### Pattern: Dual-Mode Graph Assembly & Fail-Closed Node Validation (CP3 Corrective Pass)
+**Pattern:** `build_graph()` distinguishes structural compile/topology checks from executable pipelines:
+```python
+# In idd_graph.py:
+def _make_pass_through_node(name: str) -> Callable[[State], dict]:
+    def pass_through_node(state: State) -> dict:
+        raise RuntimeError(
+            f"Cannot execute placeholder node '{name}'. "
+            "Graph was assembled with structural_only=True. "
+            "To execute the graph, provide node_overrides and compile with structural_only=False."
+        )
+    pass_through_node.__name__ = f"{name}_node"
+    return pass_through_node
+
+def build_graph(
+    node_overrides: Optional[Dict[str, Callable]] = None,
+    ...,
+    structural_only: bool = True,
+    **kwargs: Any,
+) -> CompiledStateGraph:
+    ...
+    if not structural_only:
+        required_nodes = set(PRODUCTION_NODE_NAMES) - {"FINISH"}
+        missing = required_nodes - set(overrides.keys())
+        if missing:
+            raise ValueError(f"Cannot build executable graph (structural_only=False): missing node override(s): {sorted(missing)}")
+```
+**Why:**
+1. **Safety Boundary**: Structural compilation allows fast unit testing and topology validation without requiring mock implementations for all 14 nodes.
+2. **Fail-Closed Execution**: If a test or runtime invokes a placeholder node, it immediately raises `RuntimeError` rather than silently passing through an empty dictionary.
+3. **Executable Mode Validation**: When `structural_only=False`, the graph builder validates upfront that all required production/mock nodes are present, failing closed with `ValueError` on missing or unrecognized node overrides.
+
+### Pattern: Fail-Closed Supervisor Routing & Self-Loop Rejection (CP3 Corrective Pass)
+**Pattern:** `route_from_supervisor()` rigorously validates routing targets and rejects supervisor self-loops:
+```python
+def route_from_supervisor(state: State) -> str:
+    # W13N-RT completion route:
+    if bool(state.get("report_generator_complete")) and state.get("report_results"):
+        return "FINISH" if bool(state.get("file_writer_complete")) else "file_writer"
+
+    nxt = state.get("next")
+    if not nxt:
+        raise ValueError("Supervisor routing failed: destination 'next' is missing or empty in State.")
+
+    allowed: Set[str] = {
+        "initial_analysis", "data_cleaner", "analyst", "viz_worker", "viz_join",
+        "viz_evaluator", "visualization", "report_orchestrator", "report_section_worker",
+        "report_join", "report_packager", "file_writer", "FINISH", "EMERGENCY_MSG",
+    }
+    if nxt not in allowed:
+        raise ValueError(f"Supervisor routing failed: destination {nxt!r} is invalid. Allowed destinations: {sorted(allowed)}")
+    return nxt
+```
+**Why:**
+1. **Self-Loop Prevention**: Removing `'supervisor'` from `allowed` prevents infinite self-routing loops and catastrophic `KeyError: 'supervisor'` during conditional edge resolution.
+2. **Deterministic Error Halting**: Missing, empty, or unmapped worker destinations fail immediately with descriptive `ValueError` rather than propagating undefined states or falling back to a default node.
+
+### Pattern: Pydantic v2 Required-Nullable Contract & Schema Parity (CP3 Corrective Pass)
+**Pattern:** Strict field parity with Cell 7 schemas:
+```python
+# AgentMembers: strictly 2 fields (membership listing, not routing)
+class AgentMembers(BaseModel):
+    description: str = Field(default="Members of an agent list.")
+    agent_type: Literal[...]
+
+# Router: next_agent_metadata required in JSON schema but nullable
+class Router(BaseNoExtrasModel):
+    next: AgentId = Field(..., description="The next agent to route to.")
+    next_agent_prompt: str = Field(..., description="Instructions for the next agent.")
+    next_agent_metadata: Optional[NextAgentMetadata] = Field(
+        ...,
+        description="Metadata for the next agent.",
+    )
+```
+**Why:**
+1. **AgentMembers Separation of Concerns**: Routing is dynamic and determined by `Router` during execution. Embedding `next` on `AgentMembers` caused confusion between static worker definitions and dynamic routing decisions.
+2. **Pydantic v2 Required-Nullable Serialization**: Using `Field(...)` with `Optional[T]` places `next_agent_metadata` in `schema['required']` while configuring `anyOf: [..., {'type': 'null'}]`. This requires the LLM or caller to explicitly evaluate metadata (passing `None` if absent) rather than omitting the field from JSON payloads.
+<!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
+
