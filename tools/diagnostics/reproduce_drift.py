@@ -943,6 +943,8 @@ def probe_claim_6() -> ClaimResult:
             "idd_core missing",
         )
 
+    EXPECTED_KEYS = {"status", "operation", "reason", "action"}
+
     # 1. Dynamic test 1: Known exception (KeyError)
     @idd_core.handle_tool_errors
     def failing_core_tool():
@@ -951,10 +953,11 @@ def probe_claim_6() -> ClaimResult:
     res_core = failing_core_tool()
     known_is_dict = (
         isinstance(res_core, dict)
+        and set(res_core.keys()) == EXPECTED_KEYS
         and res_core.get("status") == "error"
         and res_core.get("operation") == "failing_core_tool"
         and "column or key" in str(res_core.get("reason", ""))
-        and "action" in res_core
+        and bool(res_core.get("action"))
     )
     core_is_str = isinstance(res_core, str) and res_core.startswith("Error:")
 
@@ -976,16 +979,23 @@ def probe_claim_6() -> ClaimResult:
 
     unexpected_is_dict = (
         isinstance(res_unexpected, dict)
+        and set(res_unexpected.keys()) == EXPECTED_KEYS
         and res_unexpected.get("status") == "error"
         and res_unexpected.get("operation") == "unexpected_core_tool"
         and res_unexpected.get("reason")
         == "An unexpected data-processing failure occurred."
-        and "action" in res_unexpected
+        and bool(res_unexpected.get("action"))
     )
-    canary_leaked = isinstance(res_unexpected, dict) and (
-        canary_secret in str(res_unexpected.get("reason", ""))
-        or canary_secret in str(res_unexpected.get("action", ""))
-    )
+    canary_leaked = False
+    if isinstance(res_unexpected, dict):
+        try:
+            serialized = json.dumps(res_unexpected, default=str)
+            canary_leaked = canary_secret in serialized
+        except Exception:
+            canary_leaked = canary_secret in str(res_unexpected)
+    elif isinstance(res_unexpected, (str, list, tuple)):
+        canary_leaked = canary_secret in str(res_unexpected)
+
     canary_logged = canary_secret in log_capture.getvalue()
 
     # 3. Static inspection of notebook Cell 32 structured error implementation
@@ -1018,21 +1028,25 @@ def probe_claim_6() -> ClaimResult:
         is_defect = False
         explanation = (
             "Canonical tool error framework in idd_tools/idd_core implements standardized 4-field error dictionary "
-            "with verified unexpected-exception sanitization (canary secret absent from agent response, recorded in diagnostic log), "
+            "with verified unexpected-exception sanitization (canary secret absent from entire agent response payload, recorded in diagnostic log), "
             "matching notebook Cell 32 contract. (Note: Canonical Python implementation verified; notebook/runtime import parity deferred to CP4)."
         )
     elif core_is_str:
         classification = "REPRODUCED"
         is_defect = True
         explanation = "idd_core returns plain error strings, breaking the production dictionary contract {'status': 'error', 'operation': ..., 'reason': ..., 'action': ...}."
+    elif not known_is_dict:
+        classification = "REPRODUCED"
+        is_defect = True
+        explanation = f"Known exception response violated exact 4-field schema contract: {res_core}."
     elif canary_leaked:
         classification = "REPRODUCED"
         is_defect = True
-        explanation = "Sanitizer leaked unexpected exception details (canary secret appeared in agent-visible error response)."
+        explanation = "Sanitizer leaked unexpected exception details (canary secret appeared in agent-visible error response payload)."
     elif not unexpected_is_dict:
         classification = "REPRODUCED"
         is_defect = True
-        explanation = f"Unexpected exception did not return the standardized 4-field error response: {res_unexpected}."
+        explanation = f"Unexpected exception response violated exact 4-field schema contract: {res_unexpected}."
     elif not canary_logged:
         classification = "REPRODUCED"
         is_defect = True

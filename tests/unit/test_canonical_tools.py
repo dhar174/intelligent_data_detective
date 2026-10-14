@@ -503,6 +503,9 @@ class TestArtifactPathResolution:
             "custom+scheme:payload",
             "http://example.com/image.png",
             "https://example.com/image.png",
+            "a:payload",
+            "x:javascript",
+            "C:relative.png",
         ]
         for uri in schemes_to_test:
             assert (
@@ -519,6 +522,70 @@ class TestArtifactPathResolution:
 
         with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
             idd_tools._resolve_artifact_path("file:///etc/passwd")
+
+        with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+            idd_tools._resolve_artifact_path("a:payload")
+
+        with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+            idd_tools._resolve_artifact_path("x:javascript")
+
+    def test_drive_relative_paths_rejected_without_directory_creation(self, tmp_path):
+        """Verify Windows drive-relative paths are rejected as ambiguous URI schemes without creating dirs."""
+        art_dir = tmp_path / "artifacts"
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(art_dir))}
+        )
+        drive_relative_cases = [
+            "C:relative.png",
+            r"D:folder\file.txt",
+            "Z:secret.txt",
+        ]
+        for path_str in drive_relative_cases:
+            assert idd_tools.is_safe_artifact_path(path_str, [art_dir]) is False
+            with pytest.raises(ValueError, match="Refusing to resolve URI scheme"):
+                idd_tools._resolve_artifact_path(path_str, config=cfg)
+
+        # Confirm no directories were prematurely created
+        assert not (art_dir / "folder").exists()
+
+    def test_unc_paths_rejected_on_posix_and_windows(self, tmp_path, monkeypatch):
+        """Verify UNC paths are rejected outside root on Windows and as non-POSIX paths on POSIX."""
+        art_dir = tmp_path / "artifacts"
+        art_dir.mkdir()
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(art_dir))}
+        )
+        unc_path = r"\\server\share\file.png"
+
+        # On current platform, UNC path is not inside tmp_path / artifacts
+        assert idd_tools.is_safe_artifact_path(unc_path, [art_dir]) is False
+        with pytest.raises(
+            ValueError, match="Refusing to access path outside artifacts root"
+        ):
+            idd_tools._resolve_artifact_path(unc_path, config=cfg)
+
+        # On simulated POSIX platform, UNC prefix \\ is explicitly rejected
+        monkeypatch.setattr(idd_tools.os, "name", "posix")
+        assert idd_tools.is_safe_artifact_path(unc_path, [art_dir]) is False
+        with pytest.raises(
+            ValueError, match="Refusing to access path outside artifacts root"
+        ):
+            idd_tools._resolve_artifact_path(unc_path, config=cfg)
+
+    def test_legitimate_relative_paths_resolve_safely(self, tmp_path):
+        """Verify legitimate relative paths with subdirectories resolve strictly inside root."""
+        art_dir = tmp_path / "artifacts"
+        cfg = types.SimpleNamespace(
+            configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(art_dir))}
+        )
+        for rel_path in [
+            "chart.png",
+            "reports/report.html",
+            "visualizations/figure_01.png",
+        ]:
+            resolved = idd_tools._resolve_artifact_path(rel_path, config=cfg)
+            assert resolved == (art_dir / rel_path).resolve()
+            assert resolved.parent.exists()
 
     def test_windows_drive_letter_paths(self, tmp_path):
         """Verify Windows drive-letter paths are distinguished from URI schemes and checked for containment."""

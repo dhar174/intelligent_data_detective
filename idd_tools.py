@@ -336,10 +336,10 @@ def _get_artifacts_base(
 
 
 def _is_uri_scheme(path_str: str) -> bool:
-    """Return True if path_str begins with an RFC-compliant URI scheme or contains '://'.
+    """Return True if path_str begins with an RFC-compliant URI scheme or is an
 
-    Safely distinguishes Windows drive-letter paths (e.g., 'C:\\path' or 'C:/path')
-    which have a single-letter prefix.
+    ambiguous single-character URI / drive-relative path.
+    Only unambiguous absolute Windows drive paths (^[A-Za-z]:[/\\]) are exempted.
     """
     if not path_str or not isinstance(path_str, str):
         return False
@@ -355,8 +355,9 @@ def _is_uri_scheme(path_str: str) -> bool:
         scheme = match.group(1)
         if len(scheme) == 1:
             rest = s[2:]
-            if rest.startswith(("\\", "/")) or (len(rest) > 0 and rest[0].isalnum()):
+            if rest.startswith(("\\", "/")):
                 return False
+            return True
         return True
     return False
 
@@ -397,7 +398,9 @@ def _resolve_artifact_path(
         raise ValueError(
             f"Refusing to resolve URI scheme as artifact path: {file_name}"
         )
-    if os.name != "nt" and _WINDOWS_DRIVE_PATTERN.match(fn_stripped):
+    if os.name != "nt" and (
+        _WINDOWS_DRIVE_PATTERN.match(fn_stripped) or fn_stripped.startswith(r"\\")
+    ):
         raise ValueError(f"Refusing to access path outside artifacts root: {file_name}")
 
     base = _get_artifacts_base(config, create=False)
@@ -448,7 +451,9 @@ def is_safe_artifact_path(
         cand_str = str(candidate).strip()
         if _is_uri_scheme(cand_str):
             return False
-        if os.name != "nt" and _WINDOWS_DRIVE_PATTERN.match(cand_str):
+        if os.name != "nt" and (
+            _WINDOWS_DRIVE_PATTERN.match(cand_str) or cand_str.startswith(r"\\")
+        ):
             return False
 
         cand_obj = PathlibPath(candidate)

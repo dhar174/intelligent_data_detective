@@ -497,7 +497,7 @@ def test_claim_6_simulated_broken_sanitizer_returns_reproduced(monkeypatch):
     assert res.classification == "REPRODUCED"
     assert res.is_defect is True
     assert (
-        "Unexpected exception did not return the standardized 4-field error response"
+        "Unexpected exception response violated exact 4-field schema contract"
         in res.defect_or_contract_explanation
     )
 
@@ -526,6 +526,81 @@ def test_claim_6_simulated_canary_leak_returns_reproduced(monkeypatch):
     )
 
 
+def test_claim_6_simulated_canary_leak_in_extra_field_returns_reproduced(monkeypatch):
+    """Verify that leaking canary secret in an additional unexpected field is detected (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def extra_field_leak_failure(operation, action, exc=None):
+        return {
+            "status": "error",
+            "operation": operation,
+            "reason": "An unexpected data-processing failure occurred.",
+            "action": action,
+            "debug": f"Secret canary detail: {exc}",
+        }
+
+    monkeypatch.setattr(idd_core, "_tool_failure", extra_field_leak_failure)
+    monkeypatch.setattr(idd_tools, "_tool_failure", extra_field_leak_failure)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Sanitizer leaked unexpected exception details"
+        in res.defect_or_contract_explanation
+    )
+
+
+def test_claim_6_simulated_extra_schema_field_returns_reproduced(monkeypatch):
+    """Verify that extra fields without secrets still violate exact schema contract (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def extra_field_failure(operation, action, exc=None):
+        return {
+            "status": "error",
+            "operation": operation,
+            "reason": "An unexpected data-processing failure occurred.",
+            "action": action,
+            "extra_harmless": "harmless_metadata",
+        }
+
+    monkeypatch.setattr(idd_core, "_tool_failure", extra_field_failure)
+    monkeypatch.setattr(idd_tools, "_tool_failure", extra_field_failure)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Unexpected exception response violated exact 4-field schema contract"
+        in res.defect_or_contract_explanation
+    )
+
+
+def test_claim_6_simulated_known_error_schema_violation_returns_reproduced(monkeypatch):
+    """Verify that extra fields in known error response violate exact schema contract (Claim 6 REPRODUCED)."""
+    import idd_core
+    import idd_tools
+
+    def extra_field_tool_error(operation, reason, action):
+        return {
+            "status": "error",
+            "operation": operation,
+            "reason": reason,
+            "action": action,
+            "extra": "unauthorized",
+        }
+
+    monkeypatch.setattr(idd_core, "_tool_error", extra_field_tool_error)
+    monkeypatch.setattr(idd_tools, "_tool_error", extra_field_tool_error)
+    res = probe_claim_6()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Known exception response violated exact 4-field schema contract"
+        in res.defect_or_contract_explanation
+    )
+
+
 def test_claim_6_simulated_missing_schema_fields_returns_reproduced(monkeypatch):
     """Verify that missing schema fields in tool error are detected (Claim 6 REPRODUCED)."""
     import idd_core
@@ -537,8 +612,12 @@ def test_claim_6_simulated_missing_schema_fields_returns_reproduced(monkeypatch)
     monkeypatch.setattr(idd_core, "_tool_error", broken_tool_error)
     monkeypatch.setattr(idd_tools, "_tool_error", broken_tool_error)
     res = probe_claim_6()
-    assert res.classification in ("REPRODUCED", "BLOCKED")
+    assert res.classification == "REPRODUCED"
     assert res.is_defect is True
+    assert (
+        "Known exception response violated exact 4-field schema contract"
+        in res.defect_or_contract_explanation
+    )
 
 
 def test_claim_9_simulated_broken_safe_path_returns_reproduced(monkeypatch):
