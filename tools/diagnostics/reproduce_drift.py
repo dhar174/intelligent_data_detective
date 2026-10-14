@@ -1699,6 +1699,159 @@ def probe_claim_11() -> ClaimResult:
                 locators=locators,
             )
 
+        if not getattr(graph, "is_structural_only", False):
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="build_graph() default did not set is_structural_only = True.",
+                defect_or_contract_explanation="Default graph build must distinguish structural from executable assembly.",
+                locators=locators,
+            )
+
+        # Dynamic check: structural placeholder invocation raises RuntimeError
+        placeholder_raised = False
+        try:
+            placeholder = graph.nodes["initial_analysis"].bound
+            placeholder.invoke({"messages": []})
+        except RuntimeError:
+            placeholder_raised = True
+        except Exception:
+            pass
+        if not placeholder_raised:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="Placeholder node invocation in structural graph did not raise RuntimeError.",
+                defect_or_contract_explanation="Structural placeholder nodes must fail closed with RuntimeError if executed.",
+                locators=locators,
+            )
+
+        # Dynamic check: executable mode without overrides raises ValueError
+        executable_missing_raised = False
+        try:
+            idd_core.build_graph(structural_only=False)
+        except ValueError:
+            executable_missing_raised = True
+        except Exception:
+            pass
+        if not executable_missing_raised:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="build_graph(structural_only=False) without overrides did not raise ValueError.",
+                defect_or_contract_explanation="Executable graph compilation must fail closed when production node overrides are missing.",
+                locators=locators,
+            )
+
+        # Dynamic check: supervisor routing fails closed on missing, invalid, or self routes
+        route_missing_raised = False
+        try:
+            idd_core.route_from_supervisor({})
+        except ValueError:
+            route_missing_raised = True
+        if not route_missing_raised:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="route_from_supervisor with missing 'next' did not raise ValueError.",
+                defect_or_contract_explanation="Supervisor routing must fail closed when destination 'next' is missing.",
+                locators=locators,
+            )
+
+        route_invalid_raised = False
+        try:
+            idd_core.route_from_supervisor({"next": "non_existent_worker"})
+        except ValueError:
+            route_invalid_raised = True
+        if not route_invalid_raised:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="route_from_supervisor with invalid 'next' did not raise ValueError.",
+                defect_or_contract_explanation="Supervisor routing must fail closed when destination 'next' is not in conditional edges map.",
+                locators=locators,
+            )
+
+        route_self_raised = False
+        try:
+            idd_core.route_from_supervisor({"next": "supervisor"})
+        except ValueError:
+            route_self_raised = True
+        if not route_self_raised:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="route_from_supervisor with 'supervisor' destination did not raise ValueError.",
+                defect_or_contract_explanation="Supervisor cannot route to itself; 'supervisor' is not in the conditional edges map.",
+                locators=locators,
+            )
+
+        # Dynamic check: AgentMembers schema exact fields (no next)
+        am_fields = getattr(idd_core.AgentMembers, "model_fields", {})
+        if (
+            set(am_fields.keys()) != {"description", "agent_type"}
+            or "next" in am_fields
+        ):
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior=f"AgentMembers fields mismatch: {list(am_fields.keys())}.",
+                defect_or_contract_explanation="AgentMembers must only declare 'description' and 'agent_type' (routing belongs to Router).",
+                locators=locators,
+            )
+
+        # Dynamic check: Router schema required-nullable next_agent_metadata
+        router_schema = idd_core.Router.model_json_schema()
+        router_required = router_schema.get("required", [])
+        if "next_agent_metadata" not in router_required:
+            return ClaimResult(
+                claim_id=11,
+                title=title,
+                subsystem=subsystem,
+                classification="REPRODUCED",
+                evidence_type="DYNAMIC",
+                is_defect=True,
+                expected_behavior=expected,
+                observed_behavior="Router schema omits 'next_agent_metadata' from required fields.",
+                defect_or_contract_explanation="Router.next_agent_metadata must be required in schema while remaining nullable.",
+                locators=locators,
+            )
+
         import typing
 
         hints = typing.get_type_hints(idd_core.State, include_extras=True)
@@ -1734,7 +1887,10 @@ def probe_claim_11() -> ClaimResult:
     observed = (
         f"Modernized test inspection: test_graph_compile skips on API key = False, checks 15 production nodes = True. "
         f"test_routing checks canonical options ({routing_looks_for_lowercase_options}) and Router.next ({routing_looks_for_next}). "
-        f"Canonical State verified: 70 fields. Canonical graph compiled OK: 15 nodes, 33 edges ({cond_edge_count} conditional)."
+        f"Canonical State verified: 70 fields. Canonical graph compiled OK: 15 nodes, 33 edges ({cond_edge_count} conditional). "
+        f"Executable graph contracts verified: structural_only=True default, placeholder raises RuntimeError, "
+        f"missing overrides raise ValueError, route_from_supervisor fails closed, AgentMembers has 2 fields (no next), "
+        f"Router required-nullable next_agent_metadata enforced."
     )
 
     return ClaimResult(

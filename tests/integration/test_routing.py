@@ -69,17 +69,28 @@ class TestSupervisorRouting:
         ), f"No terminal option found in supervisor options: {options}"
 
     def test_agent_members_enum_or_literal(self, core):
-        """AgentMembers Literal and Router.next must include all expected routing targets."""
+        """AgentMembers must define agent_type (without next), and Router must define next."""
         model = getattr(core, "AgentMembers", None)
         assert model is not None, "AgentMembers not exposed in idd_core"
         hints = typing.get_type_hints(model)
-        next_hint = hints.get("next", None)
-        assert next_hint is not None, "AgentMembers has no 'next' field"
-        args = getattr(next_hint, "__args__", ())
-        assert args, "AgentMembers.next Literal must have at least one option"
+        assert "agent_type" in hints, "AgentMembers must have 'agent_type' field"
+        assert "description" in hints, "AgentMembers must have 'description' field"
+        assert (
+            "next" not in hints
+        ), "AgentMembers must NOT have 'next' field (routing belongs to Router)"
+        agent_type_hint = hints["agent_type"]
+        args = getattr(agent_type_hint, "__args__", ())
+        assert (
+            len(args) == 9
+        ), f"AgentMembers.agent_type must have 9 options, got {len(args)}"
 
         # Verify canonical Router model and its destination options
         router_cls = getattr(core, "Router", None)
         assert router_cls is not None, "Router model not exposed in idd_core"
         router_hints = typing.get_type_hints(router_cls)
         assert "next" in router_hints, "Router model must have 'next' field"
+        router_next_args = getattr(router_hints["next"], "__args__", ())
+        assert router_next_args, "Router.next must have destination options"
+        assert set(router_next_args).issubset(
+            VALID_ROUTES
+        ), f"Router.next has destinations outside VALID_ROUTES: {set(router_next_args) - VALID_ROUTES}"

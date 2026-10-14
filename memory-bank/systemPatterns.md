@@ -329,6 +329,54 @@ def probe_claim_6():
 4. Serializing the entire dictionary payload in `probe_claim_6` guarantees that canary secrets do not leak into undeclared dictionary keys or metadata, avoiding false-green diagnostic certifications.
 <!-- session-curated:2026-10-13-cp2-canonical-tools:end -->
 
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:start -->
+### Pattern: Canonical State, Reducer Discipline & Channel Invariants (CP3)
+**Pattern:** Canonical State (`idd_state.py`) defines 70 fields (39 with custom reducers, 31 plain fields) with strict channel discipline:
+```python
+class State(TypedDict, total=False):
+    # BR-7 Invariant: declared directly, never inheriting from AgentState
+    messages: Annotated[list[AnyMessage], add_messages]
+    
+    # W9-SR-DROP Invariant: structured_response intentionally OMITTED from supervisor State
+    
+    # Turn accounting & boolean state
+    _report_dispatched: Annotated[Optional[bool], bool_or]
+    ...
 
+# Safe boolean-OR reducer:
+def bool_or(a: Optional[bool], b: Optional[bool]) -> Optional[bool]:
+    """Safe boolean-OR reducer: treats None as False, avoids TypeError."""
+    return b if a is None else (a if b is None else bool(a | b))
+```
+**Why:**
+1. **BR-7**: Inheriting `State` from LangChain's `AgentState` drags in the `remaining_steps` managed channel which LangGraph's `InputSchema` rejects at graph compilation. Direct declaration avoids managed channel collisions.
+2. **W9-SR-DROP**: In `langgraph.prebuilt.create_agent`, each agent subgraph manages its own `AgentState[ResponseT]`. Colliding a supervisor custom-reducer channel with `AgentState.structured_response` causes `_resolve_schemas` set-iteration nondeterminism and `InvalidUpdateError` on concurrent writes across steps. Wrapper nodes read structured responses from the `agent.invoke()` Python dictionary return (`result["structured_response"]`) and map fields into dedicated supervisor State keys.
+3. **Safe Reducers (`bool_or`)**: Naive bitwise OR (`a | b`) crashes with `TypeError` when either operand is `None` during intermediate supersteps. Checking `None` first ensures robust multi-agent state accumulation.
 
-
+### Pattern: Canonical Graph Assembly & Offline Pass-Through Architecture (CP3)
+**Pattern:** `idd_graph.py` encapsulates `build_graph()` to construct the authoritative 15-node, 33-edge StateGraph matching `validate_graph.py`:
+```python
+def build_graph(
+    node_overrides: Optional[Dict[str, Callable]] = None,
+    checkpointer: Any = None,
+    store: Any = None,
+    cache: Any = None,
+    **kwargs: Any,
+) -> CompiledStateGraph:
+    builder = StateGraph(State)
+    overrides = node_overrides or {}
+    for name in PRODUCTION_NODE_NAMES:
+        if name in overrides:
+            node_fn = overrides[name]
+        elif name == "FINISH":
+            node_fn = write_output_to_file
+        else:
+            node_fn = _make_pass_through_node(name)
+        builder.add_node(name, node_fn)
+    ...
+```
+**Why:**
+1. **Offline Testability**: Providing default lightweight pass-through nodes (`_make_pass_through_node`) allows compiling and verifying the exact 15-node graph topology without live LLM calls, external API keys, or side-effect SQLite database file creation (`checkpointer=None`).
+2. **Barrier & Fan-In Preservation**: Preserves all structural graph barriers (`viz_join`, `report_join`, `EMERGENCY_MSG` fan-in edge back to `supervisor`), eliminating unreachable nodes and dead ends.
+3. **Strict Layering DAG**: Establishes a clean unidirectional DAG (`idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`), completely decoupling graph compilation from execution adapters.
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->

@@ -208,7 +208,7 @@ AgentOrSupervisor = Union[AgentId, Supervisor]
 
 
 class AgentMembers(BaseModel):
-    """Pydantic model representing agent membership and routing targets."""
+    """Pydantic model representing agent membership."""
 
     description: str = Field(default="Members of an agent list.")
     agent_type: Literal[
@@ -222,7 +222,6 @@ class AgentMembers(BaseModel):
         "report_packager",
         "supervisor",
     ]
-    next: Optional[AgentId] = Field(default=None, description="Next agent destination")
 
     @model_validator(mode="wrap")
     @classmethod

@@ -706,6 +706,56 @@ This is now the strongest completion baseline:
 - Status: **CP2 FINAL CORRECTIVE REVIEW PASS COMPLETE — PR #159 MAINTAINED IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW** (Issue #158, PR #159).
 <!-- session-curated:2026-10-13-cp2-canonical-tools-error-handling:end -->
 
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:start -->
+## 2026-10-14 — Checkpoint 3 (CP3): Canonical State, Reducers, and LangGraph Assembly (Issue #160, Roadmap Issue #140, PR #161)
 
+### Scope Delivered
+- **Established Canonical Module `idd_state.py`**:
+  - Implemented authoritative 70-field `State(TypedDict, total=False)` exactly matching notebook Cell 22: 39 fields with reducers, 31 plain fields.
+  - Enforced **BR-7 Invariant**: `State.messages` declared directly as `Annotated[list[AnyMessage], add_messages]`, never inheriting from LangChain's `AgentState` base (which drags in the `remaining_steps` managed channel rejected in `InputSchema`).
+  - Enforced **W9-SR-DROP Invariant**: `structured_response` is strictly NOT a channel on supervisor `State`. In `langgraph.prebuilt.create_agent`, each agent subgraph manages its own `AgentState[ResponseT]`. Colliding a supervisor custom-reducer channel with `AgentState.structured_response` causes `_resolve_schemas` set-iteration nondeterminism and `InvalidUpdateError` on concurrent writes across steps. Wrapper nodes read structured responses from the `agent.invoke()` Python dictionary return (`result["structured_response"]`) and map fields into dedicated supervisor State keys.
+  - Implemented `VizWorkerState` TypedDict for parallel visualization worker tasks.
+  - Implemented all 15 reducers: `keep_first`, `_sr_reducer`, `_reduce_strs_resettable`, `_reduce_viz_results_resettable`, `_keep_last_or_clear`, `merge_int_sum`, safe `bool_or` handling `None` without bitwise crash, `dict_merge_shallow`, `merge_lists`, `merge_unique`, `merge_dicts`, `merge_dict`, `any_true`, `last_wins`, and re-exported `_reduce_plan_keep_sorted`.
+  - Implemented domain schemas in `idd_state.py` establishing a strict unidirectional DAG: `idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`.
+- **Established Canonical Module `idd_graph.py`**:
+  - Implemented `build_graph()` constructing the authoritative 15-node, 33-edge (21 conditional) StateGraph matching `validate_graph.py`.
+  - Entry point: `START -> initial_analysis`. 0 unreachable nodes, 0 dead ends. Preserves all barriers (`viz_join`, `report_join`, `EMERGENCY_MSG`).
+  - Supports offline pass-through nodes with optional node overrides via `_make_pass_through_node()` and avoids SQLite database side effects by defaulting `checkpointer=None`.
+  - Implemented public agent constants: `AGENT_MEMBERS`, `AGENT_OPTIONS`, `options` (backward-compatibility alias), `PRODUCTION_NODE_NAMES`, `Router`.
+  - Implemented routing functions: `route_from_supervisor`, `route_to_writer`, `route_viz`, `write_output_to_file`, `assign_viz_workers`, `dispatch_sections`.
+- **Transitional Compatibility Façade (`idd_core.py`)**:
+  - Re-exports all state and graph symbols with 100% object identity (`idd_core.State is idd_state.State`, `idd_core.build_graph is idd_graph.build_graph`).
+  - Removed obsolete duplicate definitions. Declared explicit `__all__` export list.
+  - Maintained full backward compatibility for existing tests and notebook cells.
+- **Modernized Integration Tests**:
+  - Modernized `tests/integration/test_graph_compile.py` (4 tests) and `tests/integration/test_routing.py` (3 tests).
+  - Removed artificial `OPENAI_API_KEY` skips; all 7 tests run completely offline and pass 100%.
+  - Updated node inventory to 15 production nodes.
+- **Diagnostic Claims Resolved**:
+  - **Claim 11 (Skipped integration tests audit & CP3 canonical graph enablement)**: Evaluates to `OBSERVED INVARIANT`.
+    - Static inspection confirms `test_graph_compile.py` does not skip on missing API keys and tests the 15 production nodes.
+    - Static inspection confirms `test_routing.py` tests canonical `AGENT_OPTIONS`/`options` and `Router.next`.
+    - Dynamic verification confirms `idd_core` re-exports canonical 70-field `State` and `build_graph()` compiling 15 nodes and 33 edges (21 conditional).
 
-
+### Verification Baseline
+- `tests/unit/test_canonical_state_graph.py`: **35/35 passed**.
+- `tools/diagnostics/test_cp0_diagnostics.py`: **43/43 passed**, 12/12 evaluated cleanly with 0 blocked/failed (Claims 6, 7, 8, 9, 10, 11 observed invariants).
+- Full test suites:
+  - Unit & integration suites: **629 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean**.
+  - `flake8`: **0 warnings**.
+- CI Gate Hardening:
+  - Hosted GitHub Actions CI run `#38598401721`: **100% green**.
+- PR & Branch Status:
+  - Branch: `antigravity/issue-160-canonical-state-graph`.
+  - PR #161 opened in Draft under Issue #160 (parent #140).
+  - Status: **CP3 CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW**.
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->

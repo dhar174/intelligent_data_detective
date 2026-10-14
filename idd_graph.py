@@ -126,7 +126,7 @@ class Router(BaseNoExtrasModel):
         description="Instructions for the next agent.",
     )
     next_agent_metadata: Optional[NextAgentMetadata] = Field(
-        default=None,
+        ...,
         description="Metadata for the next agent.",
     )
 
@@ -138,13 +138,22 @@ class Router(BaseNoExtrasModel):
 
 def route_from_supervisor(
     state: State,
-) -> Union[AgentId, Literal["supervisor"]]:
-    """Route from supervisor to the chosen worker agent, barrier, or terminal."""
-    nxt = state.get("next") or "END"
+) -> str:
+    """Route from supervisor to the chosen worker agent, barrier, or terminal.
 
+    Raises:
+        ValueError: If destination 'next' is missing/empty, or not in the allowed
+            14 production destinations.
+    """
     # W13N-RT: final supervisor route to file_writer/FINISH
     if bool(state.get("report_generator_complete")) and state.get("report_results"):
         return "FINISH" if bool(state.get("file_writer_complete")) else "file_writer"
+
+    nxt = state.get("next")
+    if not nxt:
+        raise ValueError(
+            "Supervisor routing failed: destination 'next' is missing or empty in State."
+        )
 
     allowed: Set[str] = {
         "initial_analysis",
@@ -161,9 +170,13 @@ def route_from_supervisor(
         "file_writer",
         "FINISH",
         "EMERGENCY_MSG",
-        "supervisor",
     }
-    return nxt if nxt in allowed else "supervisor"
+    if nxt not in allowed:
+        raise ValueError(
+            f"Supervisor routing failed: destination {nxt!r} is invalid. "
+            f"Allowed destinations: {sorted(allowed)}"
+        )
+    return nxt
 
 
 def route_to_writer(
@@ -294,10 +307,17 @@ def dispatch_sections(state: State):
 
 
 def _make_pass_through_node(name: str) -> Callable[[State], dict]:
-    """Create a lightweight default pass-through node for offline graph assembly."""
+    """Create a placeholder pass-through node for structural-only graph assembly.
+
+    If invoked at runtime, raises RuntimeError to prevent silent execution of placeholder nodes.
+    """
 
     def pass_through_node(state: State) -> dict:
-        return {}
+        raise RuntimeError(
+            f"Cannot execute placeholder node '{name}'. "
+            "Graph was assembled with structural_only=True. "
+            "To execute the graph, provide node_overrides and compile with structural_only=False."
+        )
 
     pass_through_node.__name__ = f"{name}_node"
     return pass_through_node
@@ -313,31 +333,61 @@ def build_graph(
     checkpointer: Any = None,
     store: Any = None,
     cache: Any = None,
+    structural_only: bool = True,
     **kwargs: Any,
 ) -> CompiledStateGraph:
     """Construct, wire, and compile the authoritative 15-node IDD StateGraph.
 
     Args:
         node_overrides: Optional mapping of node name -> callable implementation.
-            Allows injecting mock or production agent nodes. Omitted nodes default
-            to lightweight offline pass-through functions.
+            Allows injecting mock or production agent nodes.
         checkpointer: Checkpointer instance (e.g. MemorySaver, SqliteSaver).
             Defaults to None to avoid side-effect SQLite database file creation.
         store: LangGraph store instance (e.g. InMemoryStore).
         cache: Cache policy or instance (e.g. InMemoryCache).
+        structural_only: If True (default for backward compatibility), un-overridden
+            nodes get placeholder functions that raise RuntimeError if invoked.
+            If False, fails closed with ValueError unless all 14 production worker
+            and supervisor nodes are provided in node_overrides (FINISH defaults to
+            write_output_to_file).
         **kwargs: Accepted for backward compatibility (e.g. api_key=...).
 
     Returns:
         CompiledStateGraph with exactly 15 nodes and 33 edges (21 conditional),
-        0 unreachable nodes, and 0 dead ends.
+        0 unreachable nodes, and 0 dead ends. Sets compiled.is_structural_only = structural_only.
+
+    Raises:
+        ValueError: If node_overrides contains unknown node names, or if
+            structural_only is False and required node implementations are missing.
     """
     if not HAS_LANGGRAPH:
         raise RuntimeError("LangGraph is required to build the state graph.")
 
-    builder = StateGraph(State)
-    overrides = node_overrides or {}
+    overrides = dict(node_overrides or {})
 
-    # 1. Register all 15 nodes
+    # 1. Validate override names: reject unknown nodes
+    unknown = set(overrides.keys()) - set(PRODUCTION_NODE_NAMES)
+    if unknown:
+        raise ValueError(
+            f"Unknown node override(s): {sorted(unknown)}. "
+            f"Allowed production nodes: {sorted(PRODUCTION_NODE_NAMES)}"
+        )
+
+    # 2. In executable mode, fail closed if any required node implementations are missing
+    if not structural_only:
+        required_nodes = set(PRODUCTION_NODE_NAMES) - {"FINISH"}
+        missing = required_nodes - set(overrides.keys())
+        if missing:
+            raise ValueError(
+                f"Cannot build executable graph (structural_only=False): "
+                f"missing node override(s): {sorted(missing)}. "
+                "All 14 production worker/supervisor nodes must be provided. "
+                "For offline compilation and topology inspection, pass structural_only=True."
+            )
+
+    builder = StateGraph(State)
+
+    # 3. Register all 15 nodes
     for name in PRODUCTION_NODE_NAMES:
         if name in overrides:
             node_fn = overrides[name]
@@ -426,4 +476,6 @@ def build_graph(
     if cache is not None:
         compile_kwargs["cache"] = cache
 
-    return builder.compile(**compile_kwargs)
+    compiled = builder.compile(**compile_kwargs)
+    compiled.is_structural_only = structural_only
+    return compiled

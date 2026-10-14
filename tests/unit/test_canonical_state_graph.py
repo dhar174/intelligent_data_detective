@@ -29,6 +29,7 @@ Validates:
 from __future__ import annotations
 
 import typing
+import pydantic
 import pytest
 
 import idd_core
@@ -240,6 +241,135 @@ class TestGraphAssembly:
         node_names = set(graph.nodes.keys())
         assert "data_cleaner" in node_names
 
+    def test_build_graph_structural_default(self):
+        """build_graph() defaults to structural_only=True."""
+        graph = idd_graph.build_graph()
+        assert getattr(graph, "is_structural_only", False) is True
+
+    def test_build_graph_executable_fails_closed_missing_overrides(self):
+        """build_graph(structural_only=False) raises ValueError when overrides are missing."""
+        with pytest.raises(ValueError, match="Cannot build executable graph"):
+            idd_graph.build_graph(structural_only=False)
+
+    def test_build_graph_rejects_unknown_override(self):
+        """build_graph rejects unrecognized node overrides fail-closed."""
+        with pytest.raises(ValueError, match="Unknown node override"):
+            idd_graph.build_graph(
+                node_overrides={"unrecognized_node": lambda s: {}},
+                structural_only=True,
+            )
+
+    def test_structural_placeholder_node_invocation_raises_runtime_error(self):
+        """Placeholder nodes in structural graphs fail closed with RuntimeError if executed."""
+        graph = idd_graph.build_graph(structural_only=True)
+        # Directly invoking placeholder
+        placeholder = graph.nodes["initial_analysis"].bound
+        with pytest.raises(
+            RuntimeError, match="Cannot execute placeholder node 'initial_analysis'"
+        ):
+            placeholder.invoke({"messages": []})
+
+        # Invoking graph end-to-end
+        with pytest.raises(
+            RuntimeError, match="Cannot execute placeholder node 'initial_analysis'"
+        ):
+            graph.invoke({"messages": []})
+
+    def test_offline_executable_graph_pipeline(self):
+        """Executable graph with 14 injected overrides executes deterministic workflow."""
+        execution_trace: list[str] = []
+
+        def make_mock_worker(name: str, output: dict):
+            def _node(state: dict):
+                execution_trace.append(name)
+                return output
+
+            return _node
+
+        overrides = {
+            "initial_analysis": make_mock_worker(
+                "initial_analysis", {"initial_analysis_complete": True}
+            ),
+            "supervisor": None,  # assigned below
+            "data_cleaner": make_mock_worker(
+                "data_cleaner", {"data_cleaning_complete": True}
+            ),
+            "analyst": make_mock_worker("analyst", {}),
+            "visualization": make_mock_worker("visualization", {}),
+            "viz_worker": make_mock_worker("viz_worker", {}),
+            "viz_join": make_mock_worker("viz_join", {}),
+            "viz_evaluator": make_mock_worker("viz_evaluator", {}),
+            "report_orchestrator": make_mock_worker("report_orchestrator", {}),
+            "report_section_worker": make_mock_worker("report_section_worker", {}),
+            "report_join": make_mock_worker("report_join", {}),
+            "report_packager": make_mock_worker("report_packager", {}),
+            "file_writer": make_mock_worker("file_writer", {}),
+            "EMERGENCY_MSG": make_mock_worker("EMERGENCY_MSG", {}),
+            "FINISH": make_mock_worker("FINISH", {}),
+        }
+
+        def mock_supervisor(state: dict):
+            execution_trace.append("supervisor")
+            if not state.get("data_cleaning_complete"):
+                return {"next": "data_cleaner"}
+            return {"next": "FINISH"}
+
+        overrides["supervisor"] = mock_supervisor
+
+        graph = idd_graph.build_graph(node_overrides=overrides, structural_only=False)
+        assert graph.is_structural_only is False
+
+        initial_state = {
+            "messages": [],
+            "user_request": "Execute offline pipeline test",
+        }
+        final_state = graph.invoke(initial_state)
+
+        # Expected sequence: START -> initial_analysis -> supervisor -> data_cleaner -> supervisor -> FINISH -> END
+        assert execution_trace == [
+            "initial_analysis",
+            "supervisor",
+            "data_cleaner",
+            "supervisor",
+            "FINISH",
+        ]
+        assert final_state["initial_analysis_complete"] is True
+        assert final_state["data_cleaning_complete"] is True
+
+    def test_offline_executable_graph_routing_failure_halts_fail_closed(self):
+        """Supervisor routing to an invalid destination raises ValueError during graph invoke."""
+
+        def make_worker(output: dict):
+            return lambda state: output
+
+        overrides = {n: make_worker({}) for n in idd_graph.PRODUCTION_NODE_NAMES}
+        overrides["initial_analysis"] = make_worker({"initial_analysis_complete": True})
+        overrides["supervisor"] = make_worker({"next": "invalid_worker"})
+
+        graph = idd_graph.build_graph(node_overrides=overrides, structural_only=False)
+        with pytest.raises(
+            ValueError,
+            match="Supervisor routing failed: destination 'invalid_worker' is invalid",
+        ):
+            graph.invoke({"messages": []})
+
+    def test_offline_executable_graph_missing_next_halts_fail_closed(self):
+        """Supervisor returning empty/missing next raises ValueError during graph invoke."""
+
+        def make_worker(output: dict):
+            return lambda state: output
+
+        overrides = {n: make_worker({}) for n in idd_graph.PRODUCTION_NODE_NAMES}
+        overrides["initial_analysis"] = make_worker({"initial_analysis_complete": True})
+        overrides["supervisor"] = make_worker({})
+
+        graph = idd_graph.build_graph(node_overrides=overrides, structural_only=False)
+        with pytest.raises(
+            ValueError,
+            match="Supervisor routing failed: destination 'next' is missing or empty",
+        ):
+            graph.invoke({"messages": []})
+
 
 # ===========================================================================
 # 4. Routing Functions
@@ -285,9 +415,24 @@ class TestRoutingFunctions:
         }
         assert idd_graph.route_from_supervisor(state) == "file_writer"
 
-    def test_route_from_supervisor_unknown_fallback(self):
-        state = {"next": "non_existent_agent"}
-        assert idd_graph.route_from_supervisor(state) == "supervisor"
+    def test_route_from_supervisor_unknown_raises(self):
+        """Unknown next destination raises ValueError fail-closed."""
+        with pytest.raises(ValueError, match="is invalid"):
+            idd_graph.route_from_supervisor({"next": "non_existent_agent"})
+
+    def test_route_from_supervisor_missing_next_raises(self):
+        """Missing or empty next raises ValueError fail-closed."""
+        with pytest.raises(ValueError, match="is missing or empty"):
+            idd_graph.route_from_supervisor({})
+        with pytest.raises(ValueError, match="is missing or empty"):
+            idd_graph.route_from_supervisor({"next": None})
+        with pytest.raises(ValueError, match="is missing or empty"):
+            idd_graph.route_from_supervisor({"next": ""})
+
+    def test_route_from_supervisor_self_route_raises(self):
+        """Supervisor cannot route to itself; raises ValueError fail-closed."""
+        with pytest.raises(ValueError, match="is invalid"):
+            idd_graph.route_from_supervisor({"next": "supervisor"})
 
     def test_route_to_writer_already_wrote(self):
         state = {"file_writer_complete": True}
@@ -405,3 +550,110 @@ class TestSymbolIdentity:
         assert idd_core.write_output_to_file is idd_graph.write_output_to_file
         assert idd_core.assign_viz_workers is idd_graph.assign_viz_workers
         assert idd_core.dispatch_sections is idd_graph.dispatch_sections
+
+
+# ===========================================================================
+# 6. Pydantic Contract Invariants (AgentMembers & Router)
+# ===========================================================================
+
+
+class TestPydanticSchemas:
+    def test_agent_members_schema_exact_fields(self):
+        """AgentMembers must have exactly description and agent_type (no next)."""
+        fields = idd_state.AgentMembers.model_fields
+        assert set(fields.keys()) == {"description", "agent_type"}
+        assert "next" not in fields
+
+    def test_agent_members_instantiation_and_derived_types(self):
+        """AgentMembers and all 9 derived classes instantiate correctly."""
+        am = idd_state.AgentMembers(
+            description="Custom desc", agent_type="data_cleaner"
+        )
+        assert am.description == "Custom desc"
+        assert am.agent_type == "data_cleaner"
+
+        # Derived classes from idd_core
+        dc = idd_core.DataCleaner()
+        assert dc.agent_type == "data_cleaner"
+        ia = idd_core.InitialAnalysis()
+        assert ia.agent_type == "initial_analysis"
+        an = idd_core.Analyst()
+        assert an.agent_type == "analyst"
+        fw = idd_core.FileWriter()
+        assert fw.agent_type == "file_writer"
+        vz = idd_core.Visualization()
+        assert vz.agent_type == "visualization"
+        rg = idd_core.ReportGenerator()
+        assert rg.agent_type == "report_packager"
+        sv = idd_core.SuperVisor()
+        assert sv.agent_type == "supervisor"
+        ro = idd_core.ReportOrchestrator()
+        assert ro.agent_type == "report_orchestrator"
+        rs = idd_core.ReportSection()
+        assert rs.agent_type == "report_section_worker"
+
+    def test_agent_members_rejects_invalid_type(self):
+        """AgentMembers rejects invalid agent_type strings."""
+        with pytest.raises(pydantic.ValidationError):
+            idd_state.AgentMembers(agent_type="unknown_agent")
+
+    def test_router_schema_required_nullable_metadata(self):
+        """Router.next_agent_metadata is required in schema but nullable."""
+        # Valid with None
+        r_none = idd_graph.Router(
+            next="analyst",
+            next_agent_prompt="prompt",
+            next_agent_metadata=None,
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        assert r_none.next == "analyst"
+        assert r_none.next_agent_metadata is None
+
+        # Valid with NextAgentMetadata instance
+        meta = idd_state.NextAgentMetadata(
+            df_id="clean_data",
+            file_type="csv",
+            file_name="clean.csv",
+            section_name=None,
+            viz_spec=None,
+            notes="Cleaned data ready",
+            file_content=None,
+            reply_msg_to_supervisor="meta msg",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        r_meta = idd_graph.Router(
+            next="analyst",
+            next_agent_prompt="analyze clean data",
+            next_agent_metadata=meta,
+            reply_msg_to_supervisor="ok",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        assert r_meta.next_agent_metadata is not None
+        assert r_meta.next_agent_metadata.df_id == "clean_data"
+
+        # Rejects omission of next_agent_metadata
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            idd_graph.Router(
+                next="analyst",
+                next_agent_prompt="prompt",
+                reply_msg_to_supervisor="ok",
+                finished_this_task=True,
+                expect_reply=False,
+            )
+        errors = exc_info.value.errors()
+        missing_fields = {e["loc"][0] for e in errors if e["type"] == "missing"}
+        assert "next_agent_metadata" in missing_fields
+
+        # JSON schema inspection
+        schema = idd_graph.Router.model_json_schema()
+        assert "next_agent_metadata" in schema["required"]
+        assert "next" in schema["required"]
+        assert "next_agent_prompt" in schema["required"]
+        prop = schema["properties"]["next_agent_metadata"]
+        assert "anyOf" in prop
+        types_in_anyof = [item.get("type") for item in prop["anyOf"]]
+        assert "null" in types_in_anyof

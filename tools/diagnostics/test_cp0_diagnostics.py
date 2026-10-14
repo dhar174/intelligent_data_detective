@@ -213,6 +213,114 @@ def test_claim_11_missing_state_or_build_graph_returns_reproduced(monkeypatch):
     assert "lacks State schema" in res.observed_behavior
 
 
+def test_claim_11_simulated_placeholder_executes_without_error_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that placeholder node not raising RuntimeError reports REPRODUCED (defect)."""
+    import idd_core
+
+    orig_build_graph = idd_core.build_graph
+
+    def mock_build_graph(node_overrides=None, structural_only=True, **kwargs):
+        g = orig_build_graph(
+            node_overrides=node_overrides, structural_only=structural_only, **kwargs
+        )
+        if structural_only:
+
+            class HarmlessRunnable:
+                def __call__(self, state, **kw):
+                    return {}
+
+                def invoke(self, state, **kw):
+                    return {}
+
+            g.nodes["initial_analysis"].bound = HarmlessRunnable()
+        return g
+
+    monkeypatch.setattr(idd_core, "build_graph", mock_build_graph)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "Placeholder node invocation in structural graph did not raise RuntimeError"
+        in res.observed_behavior
+    )
+
+
+def test_claim_11_simulated_executable_missing_overrides_not_raising_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that executable mode without overrides not raising ValueError reports REPRODUCED."""
+    import idd_core
+
+    orig_build_graph = idd_core.build_graph
+
+    def mock_build_graph(node_overrides=None, structural_only=True, **kwargs):
+        if not structural_only:
+            return orig_build_graph(
+                node_overrides=node_overrides, structural_only=True, **kwargs
+            )
+        return orig_build_graph(
+            node_overrides=node_overrides, structural_only=structural_only, **kwargs
+        )
+
+    monkeypatch.setattr(idd_core, "build_graph", mock_build_graph)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert (
+        "build_graph(structural_only=False) without overrides did not raise ValueError"
+        in res.observed_behavior
+    )
+
+
+def test_claim_11_simulated_supervisor_routing_invalid_not_raising_returns_reproduced(
+    monkeypatch,
+):
+    """Verify that route_from_supervisor not raising on invalid route reports REPRODUCED."""
+    import idd_core
+
+    monkeypatch.setattr(
+        idd_core,
+        "route_from_supervisor",
+        lambda state: "supervisor",
+    )
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "route_from_supervisor" in res.observed_behavior
+
+
+def test_claim_11_simulated_agent_members_with_next_returns_reproduced(monkeypatch):
+    """Verify that AgentMembers declaring 'next' reports REPRODUCED."""
+    import idd_core
+
+    class LeakingAgentMembers:
+        model_fields = {"description": None, "agent_type": None, "next": None}
+
+    monkeypatch.setattr(idd_core, "AgentMembers", LeakingAgentMembers)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "AgentMembers fields mismatch" in res.observed_behavior
+
+
+def test_claim_11_simulated_router_optional_metadata_returns_reproduced(monkeypatch):
+    """Verify that Router omitting next_agent_metadata from required reports REPRODUCED."""
+    import idd_core
+
+    class BuggyRouter:
+        @classmethod
+        def model_json_schema(cls):
+            return {"required": ["next", "next_agent_prompt"]}
+
+    monkeypatch.setattr(idd_core, "Router", BuggyRouter)
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert "Router schema omits 'next_agent_metadata'" in res.observed_behavior
+
+
 def test_missing_prerequisites_return_blocked(monkeypatch):
     """Verify that missing environment or dependencies returns BLOCKED."""
     monkeypatch.setattr(reproduce_drift, "HAS_IDD_CORE", False)
