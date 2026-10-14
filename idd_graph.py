@@ -24,6 +24,7 @@ from typing import (
     Literal,
     Optional,
     Set,
+    TypeAlias,
     Union,
 )
 
@@ -54,7 +55,6 @@ except ImportError:
 
 from idd_models import BaseNoExtrasModel
 from idd_state import (
-    AgentId,
     NextAgentMetadata,
     ReportOutline,
     ReportResults,
@@ -71,21 +71,16 @@ AGENT_MEMBERS: List[str] = [
     "initial_analysis",
     "data_cleaner",
     "analyst",
-    "file_writer",
     "visualization",
     "report_orchestrator",
+    "report_section_worker",
+    "report_packager",
+    "file_writer",
+    "viz_worker",
+    "viz_evaluator",
 ]
 
-AGENT_OPTIONS: List[str] = [
-    "initial_analysis",
-    "data_cleaner",
-    "analyst",
-    "file_writer",
-    "visualization",
-    "report_orchestrator",
-    "FINISH",
-    "EMERGENCY_MSG",
-]
+AGENT_OPTIONS: List[str] = AGENT_MEMBERS + ["FINISH", "EMERGENCY_MSG"]
 
 # Backward-compatibility alias
 options: List[str] = AGENT_OPTIONS
@@ -114,10 +109,29 @@ PRODUCTION_NODE_NAMES: List[str] = [
 # ---------------------------------------------------------------------------
 
 
+SupervisorRouteTarget: TypeAlias = Literal[
+    "initial_analysis",
+    "data_cleaner",
+    "analyst",
+    "viz_worker",
+    "viz_join",
+    "viz_evaluator",
+    "visualization",
+    "report_orchestrator",
+    "report_section_worker",
+    "report_join",
+    "report_packager",
+    "file_writer",
+    "END",
+    "FINISH",
+    "EMERGENCY_MSG",
+]
+
+
 class Router(BaseNoExtrasModel):
     """Structured output contract for supervisor routing decisions."""
 
-    next: AgentId = Field(
+    next: SupervisorRouteTarget = Field(
         ...,
         description="The next agent to route to.",
     )
@@ -154,6 +168,10 @@ def route_from_supervisor(
         raise ValueError(
             "Supervisor routing failed: destination 'next' is missing or empty in State."
         )
+
+    # Allow "END" token to route to "FINISH" transition node
+    if nxt == "END":
+        nxt = "FINISH"
 
     allowed: Set[str] = {
         "initial_analysis",
@@ -275,6 +293,13 @@ def assign_viz_workers(state: State):
         if not getattr(sp, "viz_id", None):
             sp.viz_id = uuid.uuid4().hex
 
+    _vw_cm = state.get("cleaning_metadata")
+    _vw_ai = state.get("analysis_insights")
+    _vw_df_ids = state.get("available_df_ids") or []
+    _vw_cfg = state.get("_config")
+    _vw_ftml = state.get("final_turn_msgs_list") or []
+    _vw_msgs = state.get("messages") or []
+
     return [
         Send(
             "viz_worker",
@@ -282,6 +307,12 @@ def assign_viz_workers(state: State):
                 "task": t,
                 "individual_viz_task": t,
                 "viz_spec": sp,
+                "cleaning_metadata": _vw_cm,
+                "analysis_insights": _vw_ai,
+                "available_df_ids": _vw_df_ids,
+                "_config": _vw_cfg,
+                "final_turn_msgs_list": _vw_ftml,
+                "messages": _vw_msgs,
             },
         )
         for t, sp in zip(tasks, viz_specs)
@@ -294,9 +325,35 @@ def dispatch_sections(state: State):
     if not isinstance(outline, ReportOutline) or not outline or not outline.sections:
         return []
 
+    _sec_cm = state.get("cleaning_metadata")
+    _sec_ai = state.get("analysis_insights")
+    _sec_df_ids = state.get("available_df_ids") or []
+    _sec_cfg = state.get("_config")
+    _sec_prompt = state.get("user_prompt")
+    _sec_viz = state.get("viz_results")
+    _sec_cdd = state.get("cleaned_dataset_description")
+    _sec_ftml = state.get("final_turn_msgs_list") or []
+    _sec_msgs = state.get("messages") or []
+
     sends = []
     for s in outline.sections:
-        payload = {"section": s.model_dump(mode="json", exclude_none=True)}
+        sec_payload = (
+            s.model_dump(mode="json", exclude_none=True)
+            if hasattr(s, "model_dump")
+            else (dict(s) if isinstance(s, dict) else s)
+        )
+        payload = {
+            "section": sec_payload,
+            "cleaning_metadata": _sec_cm,
+            "analysis_insights": _sec_ai,
+            "available_df_ids": _sec_df_ids,
+            "_config": _sec_cfg,
+            "user_prompt": _sec_prompt,
+            "viz_results": _sec_viz,
+            "cleaned_dataset_description": _sec_cdd,
+            "final_turn_msgs_list": _sec_ftml,
+            "messages": _sec_msgs,
+        }
         sends.append(Send("report_section_worker", payload))
     return sends
 

@@ -1685,7 +1685,7 @@ def probe_claim_11() -> ClaimResult:
         edge_count = len(g.edges)
         cond_edge_count = sum(1 for e in g.edges if getattr(e, "conditional", False))
 
-        if len(real_nodes) != 15 or edge_count != 33:
+        if len(real_nodes) != 15 or edge_count != 33 or cond_edge_count != 21:
             return ClaimResult(
                 claim_id=11,
                 title=title,
@@ -1694,8 +1694,14 @@ def probe_claim_11() -> ClaimResult:
                 evidence_type="DYNAMIC",
                 is_defect=True,
                 expected_behavior=expected,
-                observed_behavior=f"Compiled graph topology mismatch: {len(real_nodes)} nodes, {edge_count} edges (expected 15 nodes, 33 edges).",
-                defect_or_contract_explanation="Canonical graph assembly does not match authoritative 15-node, 33-edge topology.",
+                observed_behavior=(
+                    f"Compiled graph topology mismatch: {len(real_nodes)} nodes, {edge_count} edges, "
+                    f"{cond_edge_count} conditional edges (expected 15 nodes, 33 edges, 21 conditional)."
+                ),
+                defect_or_contract_explanation=(
+                    "Canonical graph assembly does not match authoritative 15-node, 33-edge topology "
+                    "(with 21 conditional edges)."
+                ),
                 locators=locators,
             )
 

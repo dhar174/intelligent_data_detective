@@ -129,6 +129,7 @@ from idd_graph import (
     options,
     PRODUCTION_NODE_NAMES,
     Router,
+    SupervisorRouteTarget,
     route_from_supervisor,
     route_to_writer,
     route_viz,
@@ -162,10 +163,21 @@ try:
     HAS_LANGCHAIN = True
 except ImportError:
     HAS_LANGCHAIN = False
-    BaseChatModel = object
-    RunnableConfig = dict
-    AnyMessage = Any
-    AgentState = dict
+    BaseChatModel = object  # type: ignore[misc,assignment]
+    RunnableConfig = dict  # type: ignore[misc,assignment]
+    AnyMessage = Any  # type: ignore[misc,assignment]
+    AgentState = dict  # type: ignore[misc,assignment]
+    ChatOpenAI = object  # type: ignore[misc,assignment]
+    LanguageModelInput = Any  # type: ignore[misc,assignment]
+    HumanMessage = Any  # type: ignore[misc,assignment]
+    AIMessage = Any  # type: ignore[misc,assignment]
+    SystemMessage = Any  # type: ignore[misc,assignment]
+    ToolMessage = Any  # type: ignore[misc,assignment]
+    BaseMessage = Any  # type: ignore[misc,assignment]
+
+    def add_messages(a: Any, b: Any) -> list:  # type: ignore[misc]
+        return (a or []) + (b or [])
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -478,6 +490,14 @@ if HAS_LANGCHAIN:
                         message["role"] = "developer"
             return payload
 
+else:
+
+    class MyChatOpenai:  # type: ignore[no-redef]
+        """Fallback stub for MyChatOpenai when LangChain is not installed."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # DataFrame Registry (Canonical implementation in idd_registry.py)
@@ -632,6 +652,7 @@ __all__ = [
     "options",
     "PRODUCTION_NODE_NAMES",
     "Router",
+    "SupervisorRouteTarget",
     "route_from_supervisor",
     "route_to_writer",
     "route_viz",

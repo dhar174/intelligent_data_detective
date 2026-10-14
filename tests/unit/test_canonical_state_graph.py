@@ -657,3 +657,180 @@ class TestPydanticSchemas:
         assert "anyOf" in prop
         types_in_anyof = [item.get("type") for item in prop["anyOf"]]
         assert "null" in types_in_anyof
+
+    def test_router_accepts_emergency_msg(self):
+        """Router accepts EMERGENCY_MSG as next destination."""
+        r = idd_graph.Router(
+            next="EMERGENCY_MSG",
+            next_agent_prompt="Urgent error recovery required",
+            next_agent_metadata=None,
+            reply_msg_to_supervisor="emergency triggered",
+            finished_this_task=False,
+            expect_reply=True,
+        )
+        assert r.next == "EMERGENCY_MSG"
+
+    def test_route_from_supervisor_maps_end_to_finish(self):
+        """route_from_supervisor normalizes 'END' token to 'FINISH'."""
+        state = {"next": "END"}
+        res = idd_graph.route_from_supervisor(state)
+        assert res == "FINISH"
+
+    def test_agent_members_contains_all_ten_workers(self):
+        """AGENT_MEMBERS must contain all 10 worker agents per migration plan."""
+        assert len(idd_graph.AGENT_MEMBERS) == 10
+        expected = {
+            "initial_analysis",
+            "data_cleaner",
+            "analyst",
+            "visualization",
+            "report_orchestrator",
+            "report_section_worker",
+            "report_packager",
+            "file_writer",
+            "viz_worker",
+            "viz_evaluator",
+        }
+        assert set(idd_graph.AGENT_MEMBERS) == expected
+        assert set(idd_graph.AGENT_OPTIONS) == expected | {"FINISH", "EMERGENCY_MSG"}
+
+    def test_assign_viz_workers_passes_parent_context(self):
+        """assign_viz_workers passes cleaning_metadata, analysis_insights, etc. in Send."""
+        from idd_state import CleaningMetadata, AnalysisInsights, VizSpec
+        from langgraph.types import Send
+
+        cm = CleaningMetadata(
+            steps_taken=["drop_na"],
+            data_description_after_cleaning="Cleaned data without missing values",
+            reply_msg_to_supervisor="cleaned",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        ai = AnalysisInsights(
+            summary="Key trend",
+            correlation_insights="Strong positive correlation",
+            anomaly_insights="No outliers found",
+            recommended_visualizations=[],
+            recommended_next_steps=["Examine segment differences"],
+            reply_msg_to_supervisor="analyzed",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        spec = VizSpec(
+            title="Trend",
+            viz_type="scatter",
+            df_id="df_clean",
+            viz_instructions="plot scatter",
+            viz_id="viz_1",
+            columns=["x", "y"],
+            x="x",
+            y="y",
+            hue=None,
+            bins=None,
+            agg=None,
+            query=None,
+            description=None,
+            limit=None,
+            style=None,
+            reply_msg_to_supervisor="viz spec",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        state = {
+            "viz_tasks": ["Plot scatter trend"],
+            "viz_specs": [spec],
+            "cleaning_metadata": cm,
+            "analysis_insights": ai,
+            "available_df_ids": ["df_clean"],
+            "_config": {"configurable": {"thread_id": "t1"}},
+        }
+        sends = idd_graph.assign_viz_workers(state)
+        assert isinstance(sends, list)
+        assert len(sends) == 1
+        assert isinstance(sends[0], Send)
+        assert sends[0].node == "viz_worker"
+        arg = sends[0].arg
+        assert arg["individual_viz_task"] == "Plot scatter trend"
+        assert arg["cleaning_metadata"] is cm
+        assert arg["analysis_insights"] is ai
+        assert arg["available_df_ids"] == ["df_clean"]
+        assert arg["_config"] == {"configurable": {"thread_id": "t1"}}
+
+    def test_dispatch_sections_passes_parent_context(self):
+        """dispatch_sections passes section, cleaning_metadata, analysis_insights, etc. in Send."""
+        from idd_state import (
+            CleaningMetadata,
+            AnalysisInsights,
+            ReportOutline,
+            SectionOutline,
+        )
+        from langgraph.types import Send
+
+        sec = SectionOutline(
+            name="Executive Summary",
+            section_num=1,
+            description="Overview of analysis",
+            goals=["Summarize data"],
+            data_signals_needed={"trend": "sales over time"},
+            data_signals_available=["sales", "dates"],
+            expected_figures=[],
+            word_target=300,
+            reply_msg_to_supervisor="section ready",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        outline = ReportOutline(
+            title="EDA Report",
+            section_num=0,
+            name="Outline",
+            description="Full report outline",
+            goals=["Complete report"],
+            data_signals_needed={},
+            data_signals_available=[],
+            expected_figures=[],
+            word_target=1000,
+            sections=[sec],
+            reply_msg_to_supervisor="outline ready",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        cm = CleaningMetadata(
+            steps_taken=["drop_na"],
+            data_description_after_cleaning="Cleaned data without missing values",
+            reply_msg_to_supervisor="cleaned",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        ai = AnalysisInsights(
+            summary="Summary",
+            correlation_insights="None",
+            anomaly_insights="None",
+            recommended_visualizations=[],
+            recommended_next_steps=[],
+            reply_msg_to_supervisor="insights",
+            finished_this_task=True,
+            expect_reply=False,
+        )
+        state = {
+            "report_outline": outline,
+            "cleaning_metadata": cm,
+            "analysis_insights": ai,
+            "available_df_ids": ["df_clean"],
+            "user_prompt": "Produce EDA report",
+        }
+        sends = idd_graph.dispatch_sections(state)
+        assert isinstance(sends, list)
+        assert len(sends) == 1
+        assert isinstance(sends[0], Send)
+        assert sends[0].node == "report_section_worker"
+        arg = sends[0].arg
+        assert arg["section"]["name"] == "Executive Summary"
+        assert arg["cleaning_metadata"] is cm
+        assert arg["analysis_insights"] is ai
+        assert arg["available_df_ids"] == ["df_clean"]
+        assert arg["user_prompt"] == "Produce EDA report"
+
+    def test_idd_core_all_symbols_exist(self):
+        """Every symbol in idd_core.__all__ must exist as an attribute on idd_core without raising AttributeError."""
+        for name in idd_core.__all__:
+            assert hasattr(idd_core, name), f"idd_core missing exported symbol {name!r}"

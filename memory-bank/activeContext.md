@@ -812,8 +812,48 @@ This is now the strongest completion baseline:
   - `black --check`: **100% clean**.
   - `flake8`: **0 warnings**.
 - PR & Branch Status:
-  - Branch: `antigravity/issue-160-canonical-state-graph`.
+  - Branch: `antigravity/cp3-canonical-state-graph`.
   - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
   - Status: **CP3 ARCHITECTURAL CORRECTIVE PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW**.
 <!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
+
+<!-- session-curated:2026-10-14-cp3-review-resolutions:start -->
+## 2026-10-14 — Checkpoint 3 (CP3) Codex & Copilot Review Resolutions
+
+### Review Comments Analysis & Resolution
+1. **LangChain Fallback Export Stubs (`idd_core.py`, Copilot Review 5524504736, `r4276133342`)**:
+   - **Finding**: When `HAS_LANGCHAIN = False`, `HumanMessage`, `AIMessage`, `SystemMessage`, `ToolMessage`, `BaseMessage`, `add_messages`, and `MyChatOpenai` were exported in `__all__` but undefined in the fallback block, raising `AttributeError` on `from idd_core import *`.
+   - **Resolution**: Added complete fallback stubs for all 7 LangChain message symbols and `MyChatOpenai` fallback stub in `idd_core.py`. Verified with unit test `test_idd_core_all_symbols_exist`.
+2. **Fan-Out Context Propagation (`idd_graph.py`, Codex Review 5524459760, `r4276098205` & `r4276098216`)**:
+   - **Finding**: `assign_viz_workers` and `dispatch_sections` passed only task/spec and section, missing parent context (`cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`, `messages`). In executable subgraphs, worker nodes seeing missing cleaning metadata would prematurely halt or reroute to `data_cleaner`.
+   - **Resolution**: Aligned `assign_viz_workers` with notebook Cell 57 `Fix AM-1` and `dispatch_sections` with `section_worker` requirements, injecting `cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`, `final_turn_msgs_list`, and `messages`.
+3. **Supervisor Route Target & EMERGENCY_MSG Typing (`idd_graph.py` & `idd_state.py`, Copilot Review, `r4276133543`)**:
+   - **Finding**: `Router.next` was typed as `AgentId` which omitted `EMERGENCY_MSG`, causing Pydantic validation failures on emergency routes. Also `next="END"` caused `route_from_supervisor` to raise `ValueError`.
+   - **Resolution**: Restored `AgentId` to the exact 14 values from notebook Cell 7. Defined `SupervisorRouteTarget: TypeAlias = Literal[..., "END", "FINISH", "EMERGENCY_MSG"]` for `Router.next`. In `route_from_supervisor`, normalized `"END"` token to `"FINISH"` (the 15-node graph terminal transition node).
+4. **AGENT_MEMBERS Constant Alignment (`idd_graph.py`, Copilot Review, `r4276133491`)**:
+   - **Finding**: `AGENT_MEMBERS` only listed 6 direct supervisor delegation options rather than all 10 worker agents in the team.
+   - **Resolution**: Expanded `AGENT_MEMBERS` to include all 10 worker agents matching migration specification `docs/plans/idd-canonical-core-migration.md:116`: `["initial_analysis", "data_cleaner", "analyst", "visualization", "report_orchestrator", "report_section_worker", "report_packager", "file_writer", "viz_worker", "viz_evaluator"]`. Preserved `options = AGENT_OPTIONS`.
+5. **Conditional Edge Count in Claim 11 Diagnostic (`reproduce_drift.py`, Copilot Review, `r4276133594`)**:
+   - **Finding**: In `probe_claim_11()`, `cond_edge_count = sum(...)` was calculated but omitted from the condition check.
+   - **Resolution**: Added `or cond_edge_count != 21` to the check in `probe_claim_11()`. Added regression test `test_claim_11_simulated_cond_edge_mismatch_returns_reproduced` in `test_cp0_diagnostics.py`.
+6. **Authoritative Topology Invariants Defended (Copilot Review, `r4276133416` & `r4276133460`)**:
+   - **Finding**: Copilot suggested modifying `viz_evaluator` routing from `{"Accepted": "supervisor", "Revise": "supervisor"}` to `{"Accepted": "report_orchestrator", "Revise": "analyst"}`, and removing the `report_orchestrator` -> `report_join` edge.
+   - **Resolution**: Rejected both suggestions based on authoritative evidence. Notebook Cell 60 explicitly incorporates patch `W2-BR6` routing both branches through supervisor, and explicitly retains `report_orchestrator` -> `report_join` (`# ensure join waits for all`) to enforce fan-in barrier synchronization. Changing either would break `validate_graph.py` and diverge from the 15-node, 33-edge topology.
+
+### Verification Baseline Post-Resolution
+- Full test suites:
+  - Unit & integration suites: **650 passed, 9 skipped**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **54 passed** (added 6 tests).
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **49 passed** (added 1 test).
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean across all files**.
+  - `flake8`: **0 errors, 0 warnings**.
+<!-- session-curated:2026-10-14-cp3-review-resolutions:end -->
 

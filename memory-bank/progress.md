@@ -229,3 +229,23 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Code quality: `black --check` 100% clean, `flake8` 0 warnings.
   - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
 - Status: **CP3 ARCHITECTURAL CORRECTIVE REVIEW PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW** (Issue #160, PR #161).
+
+### 2026-10-14 — Checkpoint 3 (CP3): Codex & Copilot Review Resolutions (PR #161, Issue #160)
+- Addressed Codex and Copilot review findings across `idd_core.py`, `idd_graph.py`, `reproduce_drift.py`, and test suites:
+  - Added fallback stubs for all 7 LangChain message symbols and `MyChatOpenai` in `idd_core.py` when `HAS_LANGCHAIN = False`.
+  - Added parent state context propagation in `assign_viz_workers` (matching Cell 57 `Fix AM-1`) and `dispatch_sections` (handling dict serialization and required context for `section_worker`).
+  - Defined `SupervisorRouteTarget` for `Router.next` to accept `EMERGENCY_MSG`; mapped `next="END"` to `"FINISH"` in `route_from_supervisor`.
+  - Expanded `AGENT_MEMBERS` to include all 10 worker agents per migration plan `docs/plans/idd-canonical-core-migration.md:116`.
+  - Enforced `cond_edge_count != 21` check in Claim 11 dynamic diagnostic probe and added regression simulation test.
+  - Defended authoritative notebook architecture: rejected Copilot's suggestions to modify `viz_evaluator` routing and remove `report_orchestrator` -> `report_join` edge, which would violate patch `W2-BR6` and break `validate_graph.py`.
+- Verification Baseline:
+  - Unit & integration suites: **650 passed, 9 skipped**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **54 passed**.
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **49 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+  - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
+  - Code quality: `black --check` 100% clean, `flake8` 0 errors.
+- Status: **CP3 REVIEW PASS COMPLETE — READY FOR FINAL APPROVAL & MERGE GATE** (Issue #160, PR #161).

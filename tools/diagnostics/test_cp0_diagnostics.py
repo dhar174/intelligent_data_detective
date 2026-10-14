@@ -182,6 +182,33 @@ def test_claim_11_simulated_topology_mismatch_returns_reproduced(monkeypatch):
     assert "Compiled graph topology mismatch" in res.observed_behavior
 
 
+def test_claim_11_simulated_cond_edge_mismatch_returns_reproduced(monkeypatch):
+    """Verify that a mismatch in conditional edge count (not 21) is reported as a defect (Claim 11 REPRODUCED)."""
+    import idd_core
+
+    class MockGraph:
+        def get_graph(self):
+            class Edge:
+                def __init__(self, conditional=False):
+                    self.conditional = conditional
+
+            class G:
+                nodes = {f"node_{i}": i for i in range(15)}
+                # 33 edges total, but only 10 conditional (instead of 21)
+                edges = [Edge(conditional=True) for _ in range(10)] + [
+                    Edge(conditional=False) for _ in range(23)
+                ]
+
+            return G()
+
+    monkeypatch.setattr(idd_core, "build_graph", lambda: MockGraph())
+    res = probe_claim_11()
+    assert res.classification == "REPRODUCED"
+    assert res.is_defect is True
+    assert res.evidence_type == "DYNAMIC"
+    assert "21 conditional" in res.observed_behavior
+
+
 def test_claim_11_simulated_state_field_mismatch_returns_reproduced(monkeypatch):
     """Verify that a State field count mismatch is reported as a defect (Claim 11 REPRODUCED)."""
     import typing
