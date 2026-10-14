@@ -670,6 +670,8 @@ This is now the strongest completion baseline:
     - Reliably checks existence and non-empty status across all registered formats (.csv, .parquet, .pkl, .json) and LRU cache evictions while preserving context isolation.
   - Secure Artifact Path Containment:
     - `_resolve_artifact_path()` guarantees strict single-root containment within the active artifacts directory. Rejects path traversal (`../`), absolute path escapes, symlink escapes, and root targeting (`path == base`) with `ValueError`.
+    - Ambiguous URI & Drive-Relative Rejection: `_is_uri_scheme()` only exempts unambiguous absolute Windows drive paths (`^[A-Za-z]:[/\\\\]`); rejects single-letter schemes (`a:payload`, `x:javascript`) and Windows drive-relative paths (`C:relative.png`, `D:folder\file.txt`) on all platforms before path resolution, without creating directories.
+    - POSIX UNC Rejection: Rejects paths starting with `\\\\server\\share` on POSIX platforms before resolution. On Windows, UNC paths are validated for containment within the allowed root.
     - Delayed parent directory creation: `mkdir(parents=True, exist_ok=True)` executed only after path containment validation succeeds.
     - Multi-root read validation: `is_safe_artifact_path()` validates candidates against authorized roots (`_allowed_roots`) and immediately rejects URI schemes (`http://`, `https://`, `data:`, `file:`) for downstream reporting nodes without weakening single-root write containment.
 - **Transitional Compatibility Façade (`idd_core.py`)**:
@@ -678,29 +680,30 @@ This is now the strongest completion baseline:
   - Exactly 0 lines modified in `IntelligentDataDetective_beta_v5_patched.ipynb`, `IntelligentDataDetective_beta_v5.ipynb`, or `_patch_notebook.py`.
 
 ### Diagnostic Claims Resolved
-- **Claim 6 (Structured tool error schema divergence)**: Evaluates to `OBSERVED INVARIANT`. Standardized 4-field error dictionary verified dynamically and statically against notebook Cell 32.
+- **Claim 6 (Structured tool error schema divergence)**: Evaluates to `OBSERVED INVARIANT`. Standardized 4-field error dictionary verified dynamically and statically against notebook Cell 32. Diagnostic probe `probe_claim_6()` enforces exact 4-key schema equality (`set(res.keys()) == {'status', 'operation', 'reason', 'action'}`) and serializes entire response (`json.dumps(res, default=str)`) to verify canary secret absence across all fields.
 - **Claim 7 (Signature-aware df_id extraction)**: Evaluates to `OBSERVED INVARIANT`. Functions without `df_id` parameters execute cleanly without invalid DataFrame lookup errors.
-- **Claim 9 (Artifact path containment & multi-root protections)**: Evaluates to `OBSERVED INVARIANT`. Path traversal rejection, delayed directory creation, and multi-root read validation verified.
+- **Claim 9 (Artifact path containment & multi-root protections)**: Evaluates to `OBSERVED INVARIANT`. Ambiguous URI rejection, Windows drive-relative rejection, POSIX UNC rejection, delayed directory creation, and multi-root read validation verified.
 
 ### Verification Baseline
-- `test_error_handling_framework.py`: **16/16 passed** without `--deselect` in 0.79s!
-- `tests/unit/test_canonical_tools.py`: **33/33 passed** in 0.45s (including descriptor exception handling, registry error propagation, optional df_id defaults, URI scheme rejections, Windows drive letters, global runtime precedence, and facade identity).
-- `tests/unit/test_handle_tool_errors.py`: **24/24 passed** in 0.35s (migrated from string assertions to dict contract).
-- `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **34/34 passed**, 12/12 evaluated cleanly with 0 blocked/failed (Claims 6, 7, 8, 9 observed invariants).
+- `test_error_handling_framework.py`: **16/16 passed** without `--deselect`!
+- `tests/unit/test_canonical_tools.py`: **36/36 passed** (including descriptor exceptions, registry errors, optional defaults, URI schemes, Windows drive letters, Windows drive-relative paths, and POSIX UNC paths).
+- `tests/unit/test_handle_tool_errors.py`: **24/24 passed** (migrated from string assertions to dict contract).
+- `tools/diagnostics/reproduce_drift.py` & `tools/diagnostics/test_cp0_diagnostics.py`: **37/37 passed**, 12/12 evaluated cleanly with 0 blocked/failed (Claims 6, 7, 8, 9 observed invariants).
 - Full test suites:
-  - Unit & integration suites: **583 passed, 16 skipped** in 46.3s.
-  - Core & memory suites: **110 passed** in 3.6s.
-  - Prompt validation suites: **17 passed** in 2.2s.
+  - Unit & integration suites: **586 passed, 16 skipped**.
+  - Core & memory suites: **110 passed**.
+  - Prompt validation suites: **17 passed**.
 - Formatting & Linting:
   - `black --check`: **10/10 files passed**.
   - `flake8`: **0 warnings**.
   - `git diff --check`: clean.
 - CI Gate Hardening:
   - `.github/workflows/copilot-setup-steps.yml` enforces all 16 tests in `test_error_handling_framework.py` as a mandatory blocking gate without `--deselect`.
+  - Hosted GitHub Actions CI run `#38487887343`: **100% green**.
 - Notebook & Graph Invariants:
   - Notebook integrity verified across **99 cells**.
   - LangGraph state topology verified across **15 nodes and 33 edges**.
-- Status: **CP2 CORRECTIVE REVIEW PASS COMPLETE — READY FOR INDEPENDENT RE-REVIEW** (Issue #158, PR #159).
+- Status: **CP2 FINAL CORRECTIVE REVIEW PASS COMPLETE — PR #159 MAINTAINED IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW** (Issue #158, PR #159).
 <!-- session-curated:2026-10-13-cp2-canonical-tools-error-handling:end -->
 
 

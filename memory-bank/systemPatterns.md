@@ -281,8 +281,8 @@ def is_safe_artifact_path(candidate, allowed_roots, require_file=False):
 ```
 **Why:** Single-root containment protects against path traversal attacks (`../`), absolute path escapes, and symlink escapes, ensuring tool artifacts are written strictly into the designated run directory. Delayed directory creation prevents malicious or malformed paths from creating directories before validation. Multi-root read verification allows downstream publication nodes to verify images across artifacts, working directories, and run directories without weakening write containment.
 
-### Pattern: Exception Boundary, Diagnostic Integrity & RFC URI Rejection (CP2 Corrective Pass)
-**Pattern:** Enclose pre-execution reflection in exception-safe boundaries and reject remote RFC URI schemes while honoring Windows paths:
+### Pattern: Exception Boundary, Diagnostic Integrity & Path Pre-Filter Security (CP2 Final Corrective Pass)
+**Pattern:** Enclose pre-execution reflection in exception-safe boundaries, enforce exact 4-key error schema equality with canary secret leak prevention, and reject remote RFC URIs, single-letter schemes, drive-relative paths, and POSIX UNC notation:
 ```python
 # 1. Closed decorator boundary:
 @wraps(func)
@@ -301,16 +301,32 @@ def _validate_dataframe_for_tool(df_id: str):
     # Distinguishes genuine missing/empty DataFrame from unexpected registry RuntimeError.
     # Registry errors re-raise to propagate cleanly to _tool_failure sanitization.
 
-# 3. RFC URI scheme rejection:
-_SCHEME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-def _is_rfc_uri(path_str: str) -> bool:
-    # Rejects remote schemes (http:, https:, data:, etc.) or :// before path resolution
-    # Safely distinguishes single-letter Windows drive letters (C:\ or C:/)
+# 3. Ambiguous URI, Drive-Relative & POSIX UNC Path Rejection:
+_URI_SCHEME_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
+_WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[/\\]")
+
+def _is_uri_scheme(path_str: str) -> bool:
+    # Only unambiguous absolute Windows drive paths (^[A-Za-z]:[/\\\\]) are exempted.
+    # Rejects remote schemes (http:, https:, data:, etc.), single-letter schemes (a:payload),
+    # and Windows drive-relative paths (C:relative.png, D:folder\file.txt) on all platforms
+    # before path resolution, without creating directories.
+
+# In _resolve_artifact_path / is_safe_artifact_path:
+if os.name != "nt" and (_WINDOWS_DRIVE_PATTERN.match(fn_stripped) or fn_stripped.startswith(r"\\")):
+    raise ValueError(...)  # POSIX UNC and drive letter rejection before resolution
+
+# 4. Diagnostic Probe Hardening (Claim 6):
+def probe_claim_6():
+    # Enforces exact 4-key schema equality:
+    # set(res.keys()) == {'status', 'operation', 'reason', 'action'}
+    # and serializes entire payload (json.dumps(res, default=str)) to verify
+    # complete absence of synthetic canary secrets in all fields.
 ```
 **Why:** 
 1. If a caller passes an object whose attribute descriptor (like `.df_id`) raises `RuntimeError`, or if argument binding fails unexpectedly, raw exceptions could bypass `@handle_tool_errors`, crash the agent node, or leak confidential canaries in prompt context. Enclosing all wrapper operations in a unified `try...except` guarantees complete sanitization.
 2. In `_validate_dataframe_for_tool`, treating an unexpected registry crash as a missing dataframe misinforms the agent to "check the dataframe ID". Propagating unexpected errors to `_tool_failure` yields a system error response with local diagnostic logging.
-3. Rejecting RFC URI schemes before `resolve()` prevents remote network URLs from bypassing path normalization, while preserving absolute Windows local paths (`C:\...`).
+3. Rejecting ambiguous URI schemes and Windows drive-relative paths (`C:foo`) prevents remote URLs or unanchored drives from creating directories before validation. Rejecting UNC paths on POSIX (`\\\\server\\share`) prevents OS-dependent path traversal, while on Windows UNC paths are contained within authorized roots.
+4. Serializing the entire dictionary payload in `probe_claim_6` guarantees that canary secrets do not leak into undeclared dictionary keys or metadata, avoiding false-green diagnostic certifications.
 <!-- session-curated:2026-10-13-cp2-canonical-tools:end -->
 
 
