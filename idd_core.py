@@ -9,29 +9,36 @@ During the canonical core migration (Issue #140 / Issue #156):
   alongside transitional tools, adapters, and helper functions until subsequent checkpoints
   (CP2-CP5) establish dedicated canonical modules.
 """
+
 from __future__ import annotations
-import os, sys, re, json, uuid, hashlib, shutil, logging, functools
-import itertools, threading, operator, base64, tempfile, math
-from functools import wraps, lru_cache
-from io import StringIO, BytesIO
-from pathlib import Path as PathlibPath
-from collections import OrderedDict
+
+import logging
+import os
+import re
 from collections.abc import Sequence
+from pathlib import Path as PathlibPath
 from typing import (
-    Dict, Optional, List, Tuple, Union, Literal, Any, Mapping, MutableMapping,
-    cast, TypeGuard, Iterable, Callable
+    Any,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    TypeGuard,
+    Union,
 )
-from typing_extensions import TypedDict, NotRequired, Annotated, TypeAlias
+from typing_extensions import Annotated
 import numpy as np
 from numpy.typing import ArrayLike
 import pandas as pd
 from pandas.api.types import is_list_like
 from pydantic import (
-    BaseModel, Field, model_validator, field_validator, ValidationError,
-    ConfigDict, AfterValidator, ValidationInfo, PrivateAttr
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
 )
-from typing import List, ClassVar
-from operator import add, or_ as bool_or
 
 # Canonical models and registry imports (Checkpoint 1)
 from idd_models import (
@@ -55,22 +62,103 @@ from idd_registry import (
     override_global_registry,
 )
 
+# Canonical tools and error handling (Checkpoint 2)
+from idd_tools import (
+    WORKING_DIRECTORY,
+    _get_artifacts_base,
+    _is_subpath,
+    _resolve_artifact_path,
+    _tool_error,
+    _tool_failure,
+    handle_tool_errors,
+    is_safe_artifact_path,
+    validate_dataframe_exists,
+)
+
+# Canonical state, reducers, and domain schemas (Checkpoint 3)
+from idd_state import (
+    State,
+    VizWorkerState,
+    keep_first,
+    _sr_reducer,
+    _reduce_strs_resettable,
+    _reduce_viz_results_resettable,
+    _keep_last_or_clear,
+    merge_int_sum,
+    bool_or,
+    dict_merge_shallow,
+    merge_lists,
+    merge_unique,
+    merge_dicts,
+    merge_dict,
+    any_true,
+    last_wins,
+    AgentId,
+    Supervisor,
+    AgentOrSupervisor,
+    AgentMembers,
+    AnalysisConfig,
+    CleaningMetadata,
+    InitialDescription,
+    VizSpec,
+    AnalysisInsights,
+    ImagePayload,
+    DataVisualization,
+    VisualizationResults,
+    ReportResults,
+    DataQueryParams,
+    QueryDataframeInput,
+    FileResult,
+    ListOfFiles,
+    ToDoList,
+    NextAgentMetadata,
+    SendAgentMessage,
+    MessagesToAgentsList,
+    Section,
+    SectionOutline,
+    ReportOutline,
+    VizFeedback,
+    ConversationalResponse,
+)
+
+# Canonical graph assembly and routing (Checkpoint 3)
+from idd_graph import (
+    build_graph,
+    AGENT_MEMBERS,
+    AGENT_OPTIONS,
+    options,
+    PRODUCTION_NODE_NAMES,
+    Router,
+    route_from_supervisor,
+    route_to_writer,
+    route_viz,
+    write_output_to_file,
+    assign_viz_workers,
+    dispatch_sections,
+)
+
 # Optional LangChain imports (needed for MyChatOpenai and State only)
 try:
     from langchain_openai import ChatOpenAI
     from langchain_core.language_models import LanguageModelInput
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import (
-        HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage,
-        AnyMessage
+        HumanMessage,
+        AIMessage,
+        SystemMessage,
+        ToolMessage,
+        BaseMessage,
+        AnyMessage,
     )
     from langchain_core.runnables.config import RunnableConfig
+
     try:
         from langchain.agents import AgentState
     except ImportError:
         # AgentState was removed from langchain.agents in newer versions
         AgentState = dict
     from langgraph.graph.message import add_messages
+
     HAS_LANGCHAIN = True
 except ImportError:
     HAS_LANGCHAIN = False
@@ -78,13 +166,6 @@ except ImportError:
     RunnableConfig = dict
     AnyMessage = Any
     AgentState = dict
-
-# ---------------------------------------------------------------------------
-# Working directory
-# ---------------------------------------------------------------------------
-import tempfile as _tempfile
-_WORKING_DIR_PATH = PathlibPath(_tempfile.mkdtemp(prefix="idd_core_"))
-WORKING_DIRECTORY = _WORKING_DIR_PATH
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -95,6 +176,7 @@ logging.basicConfig(level=logging.INFO)
 # Environment helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_colab() -> bool:
     """Always returns False in idd_core — no Colab dependency."""
     return False
@@ -102,7 +184,11 @@ def _is_colab() -> bool:
 
 def _make_idd_results_dir() -> PathlibPath:
     base_env = os.environ.get("GDRIVE_BASE", "")
-    base = PathlibPath(base_env).expanduser() if base_env else PathlibPath.cwd() / "IDD_results"
+    base = (
+        PathlibPath(base_env).expanduser()
+        if base_env
+        else PathlibPath.cwd() / "IDD_results"
+    )
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -114,24 +200,6 @@ def _is_relative_to(a: PathlibPath, b: PathlibPath) -> bool:
         ar, br = str(a.resolve()), str(b.resolve())
         return ar.startswith(br)
 
-# ---------------------------------------------------------------------------
-# Reducers
-# ---------------------------------------------------------------------------
-
-def keep_first(a: Optional[Any], b: Optional[Any]) -> Optional[Any]:
-    """Reducer to preserve the first non-null value."""
-    return a if a is not None else b
-
-
-def dict_merge_shallow(old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Merge two dicts shallowly (one level)."""
-    if old is None and new is None:
-        return {}
-    if old is None:
-        return dict(new)
-    if new is None:
-        return dict(old)
-    return {**old, **new}
 
 # ---------------------------------------------------------------------------
 # Type aliases and helpers
@@ -171,7 +239,7 @@ def is_1d_vector(x: object) -> TypeGuard[Array1D]:
         raise e
 
 
-Number    = Union[int, float]
+Number = Union[int, float]
 ScalarNum = Annotated[Number, "Scalar number (int | float)"]
 Estimator = Literal["auto", "fd", "doane", "scott", "sturges", "sqrt", "stone", "rice"]
 
@@ -185,7 +253,7 @@ BinSpec = Union[
 
 BinWidthSpec = Annotated[
     Union[Number, Sequence[Number], np.ndarray, pd.Series, None],
-    "A scalar or sequence of widths"
+    "A scalar or sequence of widths",
 ]
 RangeSpec = Annotated[
     Optional[Tuple[Number, Number]],
@@ -197,33 +265,40 @@ ColumnSelector = Annotated[
 ]
 
 
-class AgentMembers(BaseModel):
-    description: str = Field(default="Members of an agent list.")
-    agent_type: Literal[
-        "initial_analysis", "data_cleaner", "analyst", "file_writer",
-        "visualization", "report_orchestrator", "report_section_worker",
-        "report_packager", "supervisor"
-    ]
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def log_failed_validation(cls, data, handler):
-        try:
-            return handler(data)
-        except ValidationError:
-            print(f"[AgentMembers] validation failed: {data}")
-            raise
+class InitialAnalysis(AgentMembers):
+    agent_type: Literal["initial_analysis"] = "initial_analysis"
 
 
-class InitialAnalysis(AgentMembers):   agent_type: Literal["initial_analysis"]    = "initial_analysis"
-class DataCleaner(AgentMembers):        agent_type: Literal["data_cleaner"]        = "data_cleaner"
-class Analyst(AgentMembers):            agent_type: Literal["analyst"]             = "analyst"
-class FileWriter(AgentMembers):         agent_type: Literal["file_writer"]         = "file_writer"
-class Visualization(AgentMembers):      agent_type: Literal["visualization"]       = "visualization"
-class ReportGenerator(AgentMembers):    agent_type: Literal["report_packager"]     = "report_packager"
-class SuperVisor(AgentMembers):         agent_type: Literal["supervisor"]          = "supervisor"
-class ReportOrchestrator(AgentMembers): agent_type: Literal["report_orchestrator"] = "report_orchestrator"
-class ReportSection(AgentMembers):      agent_type: Literal["report_section_worker"] = "report_section_worker"
+class DataCleaner(AgentMembers):
+    agent_type: Literal["data_cleaner"] = "data_cleaner"
+
+
+class Analyst(AgentMembers):
+    agent_type: Literal["analyst"] = "analyst"
+
+
+class FileWriter(AgentMembers):
+    agent_type: Literal["file_writer"] = "file_writer"
+
+
+class Visualization(AgentMembers):
+    agent_type: Literal["visualization"] = "visualization"
+
+
+class ReportGenerator(AgentMembers):
+    agent_type: Literal["report_packager"] = "report_packager"
+
+
+class SuperVisor(AgentMembers):
+    agent_type: Literal["supervisor"] = "supervisor"
+
+
+class ReportOrchestrator(AgentMembers):
+    agent_type: Literal["report_orchestrator"] = "report_orchestrator"
+
+
+class ReportSection(AgentMembers):
+    agent_type: Literal["report_section_worker"] = "report_section_worker"
 
 
 def agent_list_default_generator() -> List[AgentMembers]:
@@ -237,15 +312,6 @@ def agent_list_default_generator() -> List[AgentMembers]:
         SuperVisor(),
     ]
 
-
-AgentId: TypeAlias = Literal[
-    "initial_analysis", "data_cleaner", "analyst",
-    "viz_worker", "viz_join", "viz_evaluator", "visualization",
-    "report_orchestrator", "report_section_worker", "report_join",
-    "report_packager", "file_writer", "END", "FINISH"
-]
-Supervisor = Literal["supervisor"]
-AgentOrSupervisor = Union[AgentId, Supervisor]
 
 # ---------------------------------------------------------------------------
 # LangChain-dependent helpers
@@ -337,7 +403,10 @@ if HAS_LANGCHAIN:
                     and (response_format["type"] == "json_schema")
                 ):
                     structured_text = {
-                        "format": {"type": "json_schema", **response_format["json_schema"]}
+                        "format": {
+                            "type": "json_schema",
+                            **response_format["json_schema"],
+                        }
                     }
                 else:
                     structured_text = {}
@@ -411,252 +480,14 @@ if HAS_LANGCHAIN:
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-class AnalysisConfig(BaseNoExtrasModel):
-    """User-configurable settings for the data analysis workflow."""
-    default_visualization_style: str = Field(..., description="Default style for matplotlib/seaborn visualizations. seaborn-v0_8-whitegrid is a decent choice if unsure.")
-    report_author: str = Field(..., description="Author name to include in generated reports.")
-    datetime_format_preference: str = Field(..., description="Preferred format for datetime string representations. If unsure, use %Y-%m-%d %H:%M:%S")
-    large_dataframe_preview_rows: int = Field(..., description="Number of rows for previewing large dataframes. Use 5 if unsure.")
-
-
-class CleaningMetadata(BaseNoExtrasModel):
-    """Metadata about the data cleaning actions taken."""
-    steps_taken: list[str] = Field(..., description="List of cleaning steps performed.")
-    data_description_after_cleaning: str = Field(..., description="Brief description of the dataset after cleaning.")
-
-
-class InitialDescription(BaseNoExtrasModel):
-    """Initial description of the dataset."""
-    dataset_description: str = Field(..., description="Brief description of the dataset.")
-    data_sample: str = Field(..., description="Sample of the dataset.")
-    notes: str = Field(..., description="Notes about the dataset.")
-
-
-class VizSpec(BaseNoExtrasModel):
-    title: Optional[Union[str, None]] = Field(..., description="Title of the visualization.")
-    viz_type: Optional[Union[Literal["histogram", "scatter", "bar", "line", "box", "auto"], None]] = Field(..., description="Type of the visualization. Set to 'auto' to let the agent decide.")
-    df_id: Optional[Union[str, None]] = Field(..., description="ID of the DataFrame to visualize.")
-    viz_instructions: Optional[Union[str, None]] = Field(..., description="Instructions to the next agent for the visualization.")
-    viz_id: Optional[Union[str, None]] = Field(..., description="ID of the visualization. If not provided, the agent will generate one. Must be unique.")
-    columns: Optional[Union[List[str], None]] = Field(..., description="Optional list of columns to visualize.")
-    x: Optional[Union[str, None]] = Field(..., description="Optional column to use for the x-axis.")
-    y: Optional[Union[str, None]] = Field(..., description="Optional column to use for the y-axis.")
-    hue: Optional[str] = Field(..., description="Optional column to use for the hue.")
-    bins: Optional[Union[int, str, None]] = Field(..., description="Optional number of bins or method for binning.")
-    agg: Optional[Union[str, None]] = Field(..., description="Optional aggregation method.")
-    query: Optional[Union[str, None]] = Field(..., description="Optional query to filter the data.")
-    description: Optional[Union[str, None]] = Field(..., description="Optional description of the visualization.")
-    limit: Optional[Union[int, None]] = Field(..., description="Optional limit of rows to visualize.")
-    style: Optional[Union[str, None]] = Field(..., description="Optional style of the visualization. This should be a matplotlib/seaborn style.")
-
-
-class AnalysisInsights(BaseNoExtrasModel):
-    """Insights from the exploratory data analysis."""
-    summary: str = Field(..., description="Overall summary of EDA findings.")
-    correlation_insights: str = Field(..., description="Key correlation insights identified.")
-    anomaly_insights: str = Field(..., description="Anomalies or interesting patterns detected.")
-    recommended_visualizations: List[VizSpec] = Field(...)
-    recommended_next_steps: List[str] = Field(..., description="List of recommended next analysis steps or questions to investigate based on the findings.")
-
-
-class ImagePayload(BaseNoExtrasModel):
-    """Wrap both the image bytes and its declared MIME-type."""
-    mime: Literal["image/png", "image/jpeg"]
-    payload: bytes
-
-    @field_validator("payload", mode="before")
-    def ensure_b64(cls, v: str | bytes):
-        if isinstance(v, bytes):
-            return v
-        try:
-            return base64.b64decode(v, validate=True)
-        except Exception as e:
-            raise ValueError("Invalid Base-64") from e
-
-    @field_validator("payload")
-    def enforce_size(cls, v: bytes):
-        max_bytes = 2 * 1024 * 1024
-        if len(v) > max_bytes:
-            raise ValueError(f"Image is too large ({len(v)} bytes > {max_bytes})")
-        return v
-
-
-class DataVisualization(BaseNoExtrasModel):
-    """Individual visualizations generated"""
-    path: str = Field(description="Path to the generated visualization.")
-    visualization_id: str = Field(..., description="Unique ID for the visualization.")
-    visualization_type: str = Field(..., description="Type of the visualization.")
-    visualization_description: str = Field(..., description="Description of the visualization.")
-    visualization_style: str = Field(..., description="Style of the visualization.")
-    visualization_title: str = Field(..., description="Title of the visualization.")
-
-
-class VisualizationResults(BaseNoExtrasModel):
-    """Results from the visualization generation."""
-    visualizations: List[DataVisualization] = Field(...)
-
-
-class ReportResults(BaseNoExtrasModel):
-    """Results from the report generation."""
-    pdf_report_path: str = Field(..., description="Path to the generated PDF report.")
-    html_report_path: str = Field(..., description="Path to the generated HTML report.")
-    markdown_report_path: str = Field(..., description="Path to the generated Markdown report.")
-
-
-class DataQueryParams(BaseModel):
-    """Parameters for querying the DataFrame."""
-    model_config = ConfigDict(extra="forbid", json_schema_extra={"additionalProperties": False})
-    columns: List[str] = Field(..., description="List of columns to include in the output")
-    filter_column: str = Field(None, description="Column to apply the filter on")
-    filter_value: str = Field(None, description="Value to filter the rows by")
-    operation: str = Field(..., description="Operation to perform: 'select', 'sum', 'mean', 'count', 'max', 'min', 'median', etc.")
-
-
-class QueryDataframeInput(BaseModel):
-    """Args schema to query a registered DataFrame by columns, optional equality filter, and an operation."""
-    model_config = ConfigDict(extra="forbid", json_schema_extra={"additionalProperties": False})
-    params: DataQueryParams
-    df_id: str = Field(..., description="ID of the DataFrame in the registry")
-
-
-class FileResult(BaseNoExtrasModel):
-    """Results object storing metadata from the file generation or editing."""
-    write_success: bool = Field(..., description="Whether the file was written to disk successfully.")
-    file_path: str = Field(..., description="Path to the generated file.")
-    file_type: str = Field(..., description="Type of the generated file.")
-    file_name: str = Field(..., description="Name of the generated file.")
-    file_description: str = Field(..., description="Description of the generated file.")
-    is_final_report: bool = Field(..., description="Whether the file is the finalized report.")
-    category_tag: str = Field(..., description="Type of the resulting file: 'report', 'data', 'visualization', or 'other'.")
-
-
-class ListOfFiles(BaseNoExtrasModel):
-    """List of metadata as FileResult objects for the files generated."""
-    files: List[FileResult] = Field(...)
-
-
-# Core planning models (PlanStep, Plan, CompletedStepsAndTasks, ProgressReport,
-# DataFrameRegistryError) are canonical in idd_models.py and idd_registry.py.
-
-
-
-class ToDoList(BaseNoExtrasModel):
-    to_do_list: List[str] = Field(..., description="List of tasks to be done based on the steps of the Plan")
-
-
-class NextAgentMetadata(BaseNoExtrasModel):
-    df_id: Optional[str] = Field(..., description="Optional DataFrame ID to supply to the next agent.")
-    file_type: Optional[str] = Field(..., description="Optional field for specifying a file type.")
-    file_name: Optional[str] = Field(..., description="Optional field for communicating a file name.")
-    section_name: Optional[str] = Field(..., description="Optional field for specifying a section name.")
-    viz_spec: Optional[Union[VizSpec, None]] = Field(...)
-    notes: Optional[str] = Field(..., description="Optional field for communicating notes.")
-    file_content: Optional[str] = Field(..., description="Optional field for communicating file content.")
-
-
-class SendAgentMessage(BaseNoExtrasModel):
-    recipient: AgentOrSupervisor = Field(...)
-    message: str = Field(..., description="Message to send to recipient agent")
-    delivery_status: bool = Field(..., description="Whether the message was successfully delivered.")
-    agent_obj_needs_recreated_bool: bool = Field(..., description="Whether the object needs to be recreated by the recipient agent.")
-    is_message_critical: bool = Field(..., description="Whether the message is critical.")
-    immediate_emergency_reroute_to_recipient: bool = Field(..., description="Whether to immediately reroute the message.")
-
-
-class MessagesToAgentsList(BaseNoExtrasModel):
-    messages_to_agents: List[SendAgentMessage] = Field(...)
-
-
-class Section(BaseNoExtrasModel):
-    name: str = Field(..., description="Section name")
-    section_num: int = Field(..., description="Section number")
-    description: str = Field(..., description="What this section covers")
-    goals: List[str] = Field(..., description="List of goals for this section")
-    data_signals: List[str] = Field(..., description="List of data signals used for this section")
-    expected_figures: List[DataVisualization] = Field(...)
-    content: str = Field(..., description="Content of the section")
-
-
-class SectionOutline(BaseNoExtrasModel):
-    name: str = Field(..., description="Section name/title")
-    section_num: int = Field(..., description="Section number")
-    description: str = Field(..., description="What this section covers")
-    goals: List[str] = Field(..., description="List of goals for this section.")
-    data_signals_needed: Dict[str, str] = Field(..., description="List of data signals needed for this section.")
-    data_signals_available: List[str] = Field(..., description="List of data signals available for this section.")
-    expected_figures: List[DataVisualization] = Field(...)
-    word_target: int = Field(..., description="Approx length target. 300 is a good standard length target per section")
-
-
-class ReportOutline(SectionOutline):
-    title: str = Field(..., description="Title of the report")
-    description: str = Field(..., description="Description of the report")
-    goals: List[str] = Field(..., description="List of goals for the report")
-    sections: List[SectionOutline] = Field(...)
-
-
-class VizFeedback(BaseNoExtrasModel):
-    grade: Literal["acceptable", "revise"] = Field(..., description="Overall judgment of visualizations")
-    feedback: str = Field(..., description="Concrete advice if 'revise'")
-    redo_list: List[str] = Field(..., description="List of visualizations to redo")
-
-
-class ConversationalResponse(BaseNoExtrasModel):
-    response: str = Field(..., description="A conversational response to the supervisors message.")
-
-# ---------------------------------------------------------------------------
 # DataFrame Registry (Canonical implementation in idd_registry.py)
 # ---------------------------------------------------------------------------
+
 
 def get_global_df_registry() -> DataFrameRegistry:
     """Return the active DataFrameRegistry instance."""
     return get_global_registry()
 
-
-# ---------------------------------------------------------------------------
-# Additional reducers (depend on Plan/PlanStep, so placed after them)
-# ---------------------------------------------------------------------------
-
-def merge_lists(a: list | None, b: list | None) -> list:
-    return (a or []) + (b or [])
-
-
-def merge_unique(a: list[str] | None, b: list[str] | None) -> list[str]:
-    return list(dict.fromkeys((a or []) + (b or [])))
-
-
-def merge_int_sum(a: int | None, b: int | None) -> int:
-    return int(a or 0) + int(b or 0)
-
-
-def merge_dicts(a: Dict | None, b: Dict | None) -> Dict:
-    d = {}
-    if a: d.update(a)
-    if b: d.update(b)
-    return d
-
-
-def merge_dict(a: Optional[dict], b: Optional[dict]) -> dict:
-    return {**(a or {}), **(b or {})}
-
-
-def any_true(a: Optional[bool], b: Optional[bool]) -> bool:
-    return bool(a) or bool(b)
-
-
-def last_wins(a, b):
-    return b
-
-
-# _reduce_plan_keep_sorted is canonical in idd_models.py
-
-# State TypedDict is intentionally excluded from idd_core.
-# It requires langgraph.graph.message.add_messages and inherits from AgentState,
-# which makes it incompatible with unit test imports.
-# Import State directly from the production script when needed for integration tests.
 
 # ---------------------------------------------------------------------------
 # Default config and class-to-agent mapping
@@ -687,25 +518,141 @@ CLASS_TO_AGENT: dict[type, AgentId] = {
 }
 
 # ---------------------------------------------------------------------------
-# Canonical tools, error handling, and artifact path resolution (CP2)
+# Public exports
 # ---------------------------------------------------------------------------
 
-from idd_tools import (
-    WORKING_DIRECTORY,
-    _get_artifacts_base,
-    _is_subpath,
-    _resolve_artifact_path,
-    _tool_error,
-    _tool_failure,
-    handle_tool_errors,
-    is_safe_artifact_path,
-    validate_dataframe_exists,
-)
+__all__ = [
+    # Framework / environment
+    "HAS_LANGCHAIN",
+    "WORKING_DIRECTORY",
+    "default_an_config",
+    "CLASS_TO_AGENT",
+    # Local types and classes
+    "Literal",
+    "Field",
+    "BaseModel",
+    "ConfigDict",
+    "field_validator",
+    "model_validator",
+    "ValidationError",
+    "Array1D",
+    "is_1d_vector",
+    "Number",
+    "ScalarNum",
+    "Estimator",
+    "BinSpec",
+    "BinWidthSpec",
+    "RangeSpec",
+    "ColumnSelector",
+    "InitialAnalysis",
+    "DataCleaner",
+    "Analyst",
+    "FileWriter",
+    "Visualization",
+    "ReportGenerator",
+    "SuperVisor",
+    "ReportOrchestrator",
+    "ReportSection",
+    "agent_list_default_generator",
+    "MyChatOpenai",
+    # Re-exports: idd_models (CP1)
+    "BaseNoExtrasModel",
+    "ProgressReport",
+    "PlanStep",
+    "Plan",
+    "CompletedStepsAndTasks",
+    "Triplet",
+    "_norm",
+    "_triplet_from_raw",
+    "_sort_plan_steps",
+    "_assert_sorted_completed_no_dups",
+    "_reduce_plan_keep_sorted",
+    # Re-exports: idd_registry (CP1)
+    "DataFrameRegistry",
+    "DataFrameRegistryError",
+    "get_global_registry",
+    "set_global_registry",
+    "override_global_registry",
+    # Re-exports: idd_tools (CP2)
+    "_get_artifacts_base",
+    "_is_subpath",
+    "_resolve_artifact_path",
+    "_tool_error",
+    "_tool_failure",
+    "handle_tool_errors",
+    "is_safe_artifact_path",
+    "validate_dataframe_exists",
+    # Re-exports: idd_state (CP3)
+    "State",
+    "VizWorkerState",
+    "keep_first",
+    "_sr_reducer",
+    "_reduce_strs_resettable",
+    "_reduce_viz_results_resettable",
+    "_keep_last_or_clear",
+    "merge_int_sum",
+    "bool_or",
+    "dict_merge_shallow",
+    "merge_lists",
+    "merge_unique",
+    "merge_dicts",
+    "merge_dict",
+    "any_true",
+    "last_wins",
+    "AgentId",
+    "Supervisor",
+    "AgentOrSupervisor",
+    "AgentMembers",
+    "AnalysisConfig",
+    "CleaningMetadata",
+    "InitialDescription",
+    "VizSpec",
+    "AnalysisInsights",
+    "ImagePayload",
+    "DataVisualization",
+    "VisualizationResults",
+    "ReportResults",
+    "DataQueryParams",
+    "QueryDataframeInput",
+    "FileResult",
+    "ListOfFiles",
+    "ToDoList",
+    "NextAgentMetadata",
+    "SendAgentMessage",
+    "MessagesToAgentsList",
+    "Section",
+    "SectionOutline",
+    "ReportOutline",
+    "VizFeedback",
+    "ConversationalResponse",
+    # Re-exports: idd_graph (CP3)
+    "build_graph",
+    "AGENT_MEMBERS",
+    "AGENT_OPTIONS",
+    "options",
+    "PRODUCTION_NODE_NAMES",
+    "Router",
+    "route_from_supervisor",
+    "route_to_writer",
+    "route_viz",
+    "write_output_to_file",
+    "assign_viz_workers",
+    "dispatch_sections",
+    # LangChain message classes
+    "HumanMessage",
+    "AIMessage",
+    "SystemMessage",
+    "ToolMessage",
+    "BaseMessage",
+    "AnyMessage",
+    "add_messages",
+]
 
 
 # ---------------------------------------------------------------------------
 # Module getattr for backward-compatible dynamic registry resolution
 # ---------------------------------------------------------------------------
+
 
 def __getattr__(name: str) -> Any:
     if name == "global_df_registry":
