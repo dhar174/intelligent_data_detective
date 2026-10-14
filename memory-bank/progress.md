@@ -202,4 +202,30 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
   - Code quality: `black --check` 100% clean, `flake8` 0 warnings.
   - Hosted GitHub Actions CI run `#38598401721`: **100% green**.
-- Status: **CP3 CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 OPENED IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW** (Issue #160, PR #161).
+- Status: **CP3 INITIAL CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 OPENED IN DRAFT** (Issue #160, PR #161).
+
+### 2026-10-14 — Checkpoint 3 (CP3): Architectural Corrective Review Pass (PR #161, Issue #160)
+- Corrective Review Scope Delivered:
+  - Dual-mode graph assembly (`idd_graph.py`): `build_graph()` accepts `structural_only=True` (default, backward-compatible). In structural mode, placeholder nodes raise `RuntimeError("Cannot execute placeholder node '<name>'...")` when executed. In executable mode (`structural_only=False`), validates all 14 production worker and supervisor nodes are present in `node_overrides` (`FINISH` defaults to `write_output_to_file`), failing closed with `ValueError` on missing or unknown node overrides.
+  - Fail-closed supervisor routing (`route_from_supervisor`): raises `ValueError` on missing/empty `next`, raises `ValueError` on invalid destinations, and rejects `next='supervisor'` self-loops to prevent `KeyError: 'supervisor'` crashes.
+  - Pydantic schema parity:
+    - Restored exact Cell 7 `AgentMembers` schema with strictly 2 fields (`description` and `agent_type`); removed `next: Optional[AgentId]`.
+    - Restored required-nullable contract on `Router`: `next_agent_metadata: Optional[NextAgentMetadata] = Field(..., description="Metadata for the next agent.")` required in Pydantic v2 JSON schema but accepting `None` via nullable `anyOf`.
+  - Offline Executable Graph Harness:
+    - Verified deterministic offline pipeline: `START -> initial_analysis -> supervisor -> data_cleaner -> supervisor -> FINISH -> END` without API keys.
+    - Verified state accumulation and fail-closed error halting during graph execution.
+  - Diagnostic Hardening (Claim 11):
+    - Replaced static string matching with programmatic runtime validation for structural/executable modes, placeholder RuntimeError, supervisor fail-closed routing, AgentMembers schema fields, and Router metadata nullability.
+    - Added 5 negative simulation tests in `test_cp0_diagnostics.py` (48/48 passed).
+- Verification Baseline:
+  - Unit & integration suites: **636 passed**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **48 passed**.
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **48 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+  - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
+  - Code quality: `black --check` 100% clean, `flake8` 0 warnings.
+  - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
+- Status: **CP3 ARCHITECTURAL CORRECTIVE REVIEW PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW** (Issue #160, PR #161).
