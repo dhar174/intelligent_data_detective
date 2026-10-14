@@ -757,5 +757,63 @@ This is now the strongest completion baseline:
 - PR & Branch Status:
   - Branch: `antigravity/issue-160-canonical-state-graph`.
   - PR #161 opened in Draft under Issue #160 (parent #140).
-  - Status: **CP3 CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 IN DRAFT AWAITING CHARLES'S MERGE-GATE REVIEW**.
+  - Status: **CP3 INITIAL CANONICAL STATE & GRAPH ASSEMBLY COMPLETE — PR #161 IN DRAFT**.
 <!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->
+
+<!-- session-curated:2026-10-14-cp3-corrective-pass:start -->
+## 2026-10-14 — Checkpoint 3 (CP3): Architectural Corrective Review Pass (PR #161, Issue #160)
+
+### Corrective Scope Delivered
+- **P1-A: Structural vs. Executable Dual-Mode Graph Assembly (`idd_graph.py`)**:
+  - `build_graph()` accepts `structural_only: bool = True` (default, ensuring 100% backward compatibility for offline topology compile tests and validators).
+  - Structural placeholder nodes (`_make_pass_through_node`) raise `RuntimeError("Cannot execute placeholder node '<name>'...")` if executed at runtime, preventing silent execution of un-overridden nodes.
+  - When `structural_only=False` (executable mode), `build_graph()` validates all 14 worker and supervisor nodes are present in `node_overrides` (`FINISH` defaults to `write_output_to_file`). It fails closed with `ValueError` if any required nodes are missing or unrecognized. Sets `compiled_graph.is_structural_only = False`.
+- **P1-B: Fail-Closed Supervisor Routing (`route_from_supervisor`)**:
+  - Raises `ValueError("Supervisor routing failed: destination 'next' is missing or empty in State.")` if `next` is omitted or empty.
+  - Raises `ValueError("Supervisor routing failed: destination ... is invalid.")` if `next` is not in the allowed 14 production destinations.
+  - Excluded `'supervisor'` from allowed destinations to prevent self-loop `KeyError: 'supervisor'` crashes while preserving authoritative 15-node, 33-edge topology and W13N-RT routing (`report_generator_complete` + `report_results` routing to `FINISH` or `file_writer`).
+- **P2-A: AgentMembers Schema Parity (`idd_state.py`)**:
+  - Restored exact Cell 7 Pydantic schema: `AgentMembers(BaseModel)` contains strictly two fields: `description: str` and `agent_type: Literal[...]`.
+  - Removed `next: Optional[AgentId]` from `AgentMembers` (routing logic belongs strictly to `Router`, not membership listings).
+  - Verified all 9 derived member classes (`InitialAnalysis`, `DataCleaner`, `Analyst`, `FileWriter`, `Visualization`, `ReportGenerator`, `SuperVisor`, `ReportOrchestrator`, `ReportSection`) and `agent_list_default_generator()` instantiate cleanly with exact 2-field contracts.
+- **P2-B: Router Schema Parity (`idd_graph.py`)**:
+  - Restored required-nullable contract on `Router`:
+    `next_agent_metadata: Optional[NextAgentMetadata] = Field(..., description="Metadata for the next agent.")`
+  - In Pydantic v2, `Field(...)` ensures `next_agent_metadata` is mandatory in `Router.model_json_schema()['required']` alongside `next` and `next_agent_prompt`.
+  - Nullability is preserved via `anyOf` schema allowing `{"type": "null"}`.
+  - Prevents downstream prompt/schema drift where models or callers could omit metadata entirely when `None` was previously defaulted.
+- **Offline Executable Graph Harness (`tests/unit/test_canonical_state_graph.py`)**:
+  - Verified deterministic offline pipeline trajectory without live API keys:
+    `START -> initial_analysis -> supervisor -> data_cleaner -> supervisor -> FINISH -> END`
+  - Confirmed state flag accumulation (`initial_analysis_complete=True`, `data_cleaning_complete=True`) and clean termination.
+  - Verified fail-closed error halting during graph execution for invalid routing and missing `next`.
+- **Diagnostic Hardening (`tools/diagnostics/reproduce_drift.py` & `test_cp0_diagnostics.py`)**:
+  - Upgraded Claim 11 from static heuristic checks to dynamic programmatic validation:
+    - Verifies `structural_only=True` builds 15 nodes / 33 edges with placeholder `RuntimeError`.
+    - Verifies `structural_only=False` validates all 14 node overrides and fails closed on missing/unknown overrides.
+    - Verifies `route_from_supervisor` fails closed with `ValueError` on empty, missing, or invalid destinations and rejects self-loops.
+    - Verifies `AgentMembers` has strictly 2 fields (`description` and `agent_type`).
+    - Verifies `Router` schema enforces required-nullable `next_agent_metadata`.
+  - Added 5 negative simulation tests in `test_cp0_diagnostics.py` (totaling 48/48 passed).
+
+### Verification Baseline
+- Full test suites:
+  - Unit & integration suites: **636 passed**.
+  - Canonical state graph suite (`test_canonical_state_graph.py`): **48 passed** (added 13 tests for dual-mode assembly, fail-closed routing, schema contracts, and offline execution).
+  - Diagnostic suite (`test_cp0_diagnostics.py`): **48 passed**.
+  - Core & memory suites: **77 passed**.
+  - Prompt validation suites: **17 passed**.
+  - Error handling framework: **16/16 passed**.
+  - Notebook integrity suite: **33 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (99 cells intact, 0 churn)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges, 70 fields)**.
+- Formatting & Linting:
+  - `black --check`: **100% clean**.
+  - `flake8`: **0 warnings**.
+- PR & Branch Status:
+  - Branch: `antigravity/issue-160-canonical-state-graph`.
+  - Head commit `4bb860db44b62a53a0840564de6c320cda0b926e` pushed to PR #161.
+  - Status: **CP3 ARCHITECTURAL CORRECTIVE PASS COMPLETE — PR #161 READY FOR MERGE-GATE REVIEW**.
+<!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
+
