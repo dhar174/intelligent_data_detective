@@ -144,16 +144,7 @@ jobs:
             -v
 
       - name: Run error handling regression tests
-        run: |
-          python -m pytest test_error_handling_framework.py -v \
-            --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
-
-      - name: Run known edge-case signature test
-        continue-on-error: true
-        run: |
-          python -m pytest \
-            test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures \
-            -v
+        run: python -m pytest test_error_handling_framework.py -v
 
       - name: Check formatting
         run: |
@@ -192,6 +183,6 @@ jobs:
             echo "- No-key validator/unit/integration coverage runs via \`python -m pytest test_validate_run.py tests/unit tests/integration -q\`."
             echo "- Root-level regression suites are invoked explicitly because they are outside \`tests/\`."
             echo "- Prompt template formatting and regression suites run via \`python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v\`."
-            echo "- \`test_error_handling_framework.py\` runs as a required step except for the one known edge-case signature test, which is isolated in its own non-blocking step."
+            echo "- \`test_error_handling_framework.py\` runs all 16 tests as a mandatory gate (signature-binding edge case resolved in CP2)."
             echo "- Trajectory tests require \`OPENAI_API_KEY\` and are not part of this default CI workflow."
           } >> "$GITHUB_STEP_SUMMARY"

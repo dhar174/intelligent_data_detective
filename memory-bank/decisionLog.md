@@ -254,4 +254,43 @@ During independent code review of PR #157 (`pullrequestreview-5497824478`), a se
 - Existing user files (`raw_path`) and published artifacts are never affected.
 - 0 lines of notebook churn; 100% backward compatible with canonical API.
 
+---
+
+## 2026-10-13 — ADR: Canonical Tools, Error Handling Hardening, and Signature-Aware Binding (CP2, Issue #158)
+
+### Status
+✅ Accepted and verified (`test_error_handling_framework.py` 16/16 pass without `--deselect`, 24 unit tests in `test_canonical_tools.py`, 24 migrated tests in `test_handle_tool_errors.py`, 28/28 diagnostic tests in `test_cp0_diagnostics.py`).
+
+### Context
+During the canonical core migration (Roadmap Issue #140, Checkpoint 2 Issue #158), parity audits between `idd_core.py` and the authoritative notebook identified three critical defects/drifts:
+1. **Claim 6**: `idd_core.py` returned plain string error messages (`Error: ...`) upon exceptions, whereas the production notebook (Cell 32) returned standardized 4-field dictionaries with sanitized exceptions.
+2. **Claim 7**: `@handle_tool_errors` in `idd_core.py` naively checked `args[0]` to extract `df_id`. If a decorated tool did not take `df_id` as its first parameter (or lacked a `df_id` parameter entirely, such as a general text/numeric tool), passing an arbitrary argument (e.g. `"hello"`) triggered an erroneous DataFrame registry lookup. This was the exact root cause of the historical edge-case failure in `test_error_handling_framework.py` (`test_integration_with_different_function_signatures`) requiring `--deselect`.
+3. **Claim 9**: Artifact path resolution in `idd_core.py` lacked strict containment checks, delayed parent directory creation, and PR #149's multi-root read validation helper (`is_safe_artifact_path`).
+
+### Decision
+1. **Established Canonical Module `idd_tools.py`**:
+   - Implemented standardized 4-field error dictionary: `{"status": "error", "operation": str, "reason": str, "action": str}` via `_tool_error()`.
+   - Implemented `_tool_failure()`: logs diagnostic tracebacks via `logger.exception()` while presenting sanitized, user-safe guidance ("An unexpected data-processing failure occurred.") for unexpected exceptions. Distinct actionable guidance preserved for known domain exceptions (`FileNotFoundError`, `KeyError`, `ValueError`, `EmptyDataError`, `ParserError`, `DtypeWarning`).
+2. **Signature-Aware Argument Binding**:
+   - In `@handle_tool_errors`, use `inspect.signature(func).bind(*args, **kwargs)` with `.apply_defaults()`.
+   - Reject parameter count/type mismatches immediately with structured errors.
+   - Extract `df_id` strictly if present in bound arguments, explicit keyword arguments, or parameter object attributes (`val.df_id`).
+   - If a function lacks a `df_id` parameter, completely skip DataFrame existence validation.
+3. **Canonical DataFrame Validation**:
+   - `validate_dataframe_exists(df_id)` delegates to `get_global_registry().get_dataframe(df_id, load_if_not_exists=True)`, ensuring support for all registered formats (.csv, .parquet, .pkl, .json) across cache evictions.
+4. **Secure Path Resolution & PR #149 Protections**:
+   - `_resolve_artifact_path()` enforces strict single-root containment within the active artifacts directory (`config.configurable.runtime.artifacts_dir` -> `RUNTIME.artifacts_dir` -> `os.environ["IDD_ARTIFACTS_DIR"]` -> `WORKING_DIRECTORY / "artifacts"`). Rejects path traversal (`../`), absolute escapes, symlink escapes, and root targeting with `ValueError`.
+   - Delayed parent directory creation: `mkdir(parents=True, exist_ok=True)` executed only after path containment validation succeeds.
+   - Implemented `is_safe_artifact_path()` for multi-root read verification across `_allowed_roots` for downstream report/packager nodes without weakening single-root write containment.
+5. **Transitional Façade**:
+   - Updated `idd_core.py` to re-export all canonical symbols with 100% symbol identity.
+
+### Consequences
+- `test_error_handling_framework.py` passes 16/16 without `--deselect`!
+- Claims 6, 7, and 9 report `OBSERVED INVARIANT`.
+- All tool exceptions are sanitized against leaking internal system paths or tracebacks.
+- Single-root write containment protects against arbitrary filesystem traversal, while multi-root read validation safely supports document publishing.
+- 0 notebook lines modified across 99 cells; state graph topology verified across 15 nodes and 33 edges.
+
+
 
