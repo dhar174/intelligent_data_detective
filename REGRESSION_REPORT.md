@@ -26,8 +26,8 @@ In addition, several of the requirements from Epic #119 (Phase 6 Content-Quality
 - **Details:** The enhanced memory system (e.g., `retrieve_memories_with_ranking`, namespaces, and `MemoryPolicyEngine`) is correctly reflected in the notebook and `memory_enhancements.py`. However, `idd_core.py` still relies on legacy structures and doesn't contain these critical updates. The patcher was not updated to bridge this gap in the core extraction.
 
 ### 4. Phase 6/E: Fix `file_writer` Pipeline (Issue #116)
-- **Status:** **Superseded / Original Tool Constraint Not Adopted**
-- **Details:** `list_visualizations` and `get_visualization` remain in `file_writer_tools`, so the original E2 implementation constraint was not applied literally. However, Issue #116 was closed as completed/superseded after the W14 proof produced the canonical report artifacts with no marker/status files and passed both final validators; this is design drift from the original task, not evidence of an active regression.
+- **Status:** **Open / Incomplete**
+- **Details:** `file_writer_tools` still includes general-purpose and visualization tools instead of only the HTML/Markdown/PDF writers required by Issue #116 E2. The W14 proof validates one successful artifact set, but Issue #116 has been reopened because the required tool-surface constraint remains unimplemented.
 
 ### 5. Phase 6/F: Tighten Supervisor Completion Gate (RC4) (Issue #117)
 - **Status:** **Superseded / Patch-to-Output Drift**
