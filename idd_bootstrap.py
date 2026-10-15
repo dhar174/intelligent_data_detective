@@ -30,12 +30,15 @@ CANONICAL_MODULES = [
 
 
 def compute_sha256(path: Path | str) -> str:
-    """Compute the SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
+    """Compute the SHA-256 hex digest of a canonical module with normalized newline bytes.
+
+    Normalizing CRLF to LF ensures cryptographic digests are deterministic across
+    Windows, Linux, and macOS platforms regardless of git line ending configuration.
+    """
     with open(path, "rb") as f:
-        while chunk := f.read(65536):
-            h.update(chunk)
-    return h.hexdigest()
+        content = f.read()
+    normalized = content.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest()
 
 
 def find_repo_root(start_dir: Optional[Path | str] = None) -> Optional[Path]:

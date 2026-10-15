@@ -14728,8 +14728,17 @@ def main():
         "# Graph compile (canonical build_graph — CP4)\n"
         "# PATCH: CP4-CANONICAL-GRAPH\n"
         "import sqlite3 as _cp_sqlite3\n"
-        "from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver\n"
-        "from langgraph.types import CachePolicy\n\n"
+        "from langgraph.types import CachePolicy\n"
+        "try:\n"
+        "    from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver\n"
+        "    _cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False, timeout=30)\n"
+        '    _cp_conn.execute("PRAGMA journal_mode=WAL")\n'
+        '    _cp_conn.execute("PRAGMA synchronous=NORMAL")\n'
+        '    _cp_conn.execute("PRAGMA busy_timeout=10000")\n'
+        "    checkpointer = _SqliteSaver(_cp_conn)\n"
+        "except (ImportError, ModuleNotFoundError):\n"
+        "    from langgraph.checkpoint.memory import MemorySaver\n"
+        "    checkpointer = MemorySaver()\n\n"
         "from idd_graph import (\n"
         "    build_graph,\n"
         "    route_from_supervisor,\n"

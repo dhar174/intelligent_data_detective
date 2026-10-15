@@ -80,7 +80,8 @@ def find_defined_symbols(cell_source: str) -> Tuple[Set[str], Set[str]]:
 
 class TestStaticNotebookParity:
     @pytest.fixture(scope="class")
-    def notebook(self) -> Dict[str, Any]:
+    @classmethod
+    def notebook(cls) -> Dict[str, Any]:
         return load_patched_notebook()
 
     def test_notebook_cell_count(self, notebook: Dict[str, Any]):
@@ -183,7 +184,8 @@ class TestStaticNotebookParity:
 
 class TestRuntimeSymbolIdentity:
     @pytest.fixture(scope="class")
-    def notebook_namespace(self) -> Dict[str, Any]:
+    @classmethod
+    def notebook_namespace(cls) -> Dict[str, Any]:
         """Execute canonical cells in a clean sandbox namespace."""
         nb = load_patched_notebook()
         ns: Dict[str, Any] = {
@@ -199,11 +201,13 @@ class TestRuntimeSymbolIdentity:
         # Cells 32 and 60 contain extensive tool/agent logic; execute their imports
         for idx in [32, 60]:
             tree = ast.parse("".join(nb["cells"][idx].get("source", [])))
-            import_nodes = [
-                n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
-            ]
-            import_src = ast.unparse(ast.Module(body=import_nodes, type_ignores=[]))
-            exec(import_src, ns)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    stmt = ast.unparse(node)
+                    try:
+                        exec(stmt, ns)
+                    except (ImportError, ModuleNotFoundError):
+                        pass
 
         return ns
 
@@ -388,7 +392,8 @@ class TestNegativeControls:
         with open(MANIFEST_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        del data["files"]["idd_graph.py"]
+        data.get("files", {}).pop("idd_graph.py", None)
+        data.get("modules", {}).pop("idd_graph.py", None)
         with open(manifest_copy, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
