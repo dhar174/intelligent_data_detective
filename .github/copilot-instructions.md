@@ -5,7 +5,7 @@
 ```bash
 # Run all tests
 python3 -m pytest -v
-# Expected: 22/22 pass in test_intelligent_data_detective.py, 16/16 in test_error_handling_framework.py (all mandatory), 22/22 in tests/unit/test_core_parity_guard.py
+# Expected: 22/22 pass in test_intelligent_data_detective.py, 16/16 in test_error_handling_framework.py (all mandatory), 35/35 in tests/unit/test_core_parity_guard.py
 
 # Run anti-drift guard suite
 python3 -m pytest tests/unit/test_core_parity_guard.py -v

@@ -235,11 +235,11 @@ def _fix_runtime_prompt_braces(cells):
                     # Convert UTF-8 byte offsets (lineno is 1-indexed, col_offset is 0-indexed byte offset) to character indices
                     line_bytes = lines[literal.lineno - 1].encode("utf-8")
                     start = line_char_starts[literal.lineno - 1] + len(
-                        line_bytes[:literal.col_offset].decode("utf-8")
+                        line_bytes[: literal.col_offset].decode("utf-8")
                     )
                     end_line_bytes = lines[literal.end_lineno - 1].encode("utf-8")
                     end = line_char_starts[literal.end_lineno - 1] + len(
-                        end_line_bytes[:literal.end_col_offset].decode("utf-8")
+                        end_line_bytes[: literal.end_col_offset].decode("utf-8")
                     )
                     edits[(start, end)] = fixed
 
@@ -251,6 +251,7 @@ def _fix_runtime_prompt_braces(cells):
             cell["outputs"] = []
             cell["execution_count"] = None
     return changed
+
 
 MEMORY_POLICY_HELPERS = """MEMORY_POLICIES, RANKING_WEIGHTS = load_memory_policy()
 KNOWN_MEMORY_KINDS = (
@@ -445,7 +446,9 @@ def apply_p1_tm_supervisor_patch(source):
         '{this_last_agent_reply_msg}", name=this_last_agent_id))  # PATCH: P1-TM'
     )
     old_conversion = "if isinstance(agent_msg, ToolMessage):"
-    new_conversion = "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM"
+    new_conversion = (
+        "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM"
+    )
     sites = (
         (old_append, new_append, 1),
         (old_conversion, new_conversion, 2),
@@ -463,9 +466,10 @@ def apply_p1_tm_supervisor_patch(source):
     patched = source
     for old, new, count in sites:
         patched = patched.replace(old, new, count)
-    if any(patched.count(old) for old, _, _ in sites) or tuple(
-        patched.count(new) for _, new, _ in sites
-    ) != expected:
+    if (
+        any(patched.count(old) for old, _, _ in sites)
+        or tuple(patched.count(new) for _, new, _ in sites) != expected
+    ):
         raise RequiredPatchError("P1-TM: incomplete postcondition after replacement")
     return patched
 
@@ -481,27 +485,33 @@ def apply_notebook_install_guard_patch(source: str) -> str:
     """
     guard_marker = "# PATCH: P2-SKIP-INSTALLS"
     skip_flag_code = (
-        '_skip_notebook_installs = (\n'
+        "_skip_notebook_installs = (\n"
         '    os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS", "")\n'
-        '    .strip()\n'
-        '    .lower()\n'
+        "    .strip()\n"
+        "    .lower()\n"
         '    in {"1", "true", "yes", "on"}\n'
-        ')'
+        ")"
     )
     skip_print_code = (
-        'if _skip_notebook_installs:\n'
-        '    print(\n'
+        "if _skip_notebook_installs:\n"
+        "    print(\n"
         '        "Skipping in-notebook dependency installation; "\n'
         '        "using the pre-provisioned runtime environment."\n'
-        '    )'
+        "    )"
     )
 
     is_patched = guard_marker in source
     has_active_pip = any(re.match(r"^\s*!pip\b", line) for line in source.splitlines())
-    has_partial = ("IDD_SKIP_NOTEBOOK_INSTALLS" in source or "_skip_notebook_installs" in source or "Skipping in-notebook dependency installation;" in source)
+    has_partial = (
+        "IDD_SKIP_NOTEBOOK_INSTALLS" in source
+        or "_skip_notebook_installs" in source
+        or "Skipping in-notebook dependency installation;" in source
+    )
 
     if has_partial and not is_patched:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: partial install skip guard detected without patch marker")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: partial install skip guard detected without patch marker"
+        )
 
     anchor_original = (
         "if use_local_llm:\n"
@@ -573,8 +583,14 @@ def apply_notebook_install_guard_patch(source: str) -> str:
     )
 
     if is_patched:
-        if source.count(guard_marker) != 1 or source.count(replacement_block) != 1 or has_active_pip:
-            raise RequiredPatchError("P2-SKIP-INSTALLS: incomplete guard or corrupted postcondition in already patched source")
+        if (
+            source.count(guard_marker) != 1
+            or source.count(replacement_block) != 1
+            or has_active_pip
+        ):
+            raise RequiredPatchError(
+                "P2-SKIP-INSTALLS: incomplete guard or corrupted postcondition in already patched source"
+            )
         return source
 
     matched_anchor = None
@@ -583,27 +599,41 @@ def apply_notebook_install_guard_patch(source: str) -> str:
     elif source.count(anchor_with_bleach) == 1 and source.count(anchor_original) == 0:
         matched_anchor = anchor_with_bleach
     elif source.count(anchor_original) > 1 or source.count(anchor_with_bleach) > 1:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: multiple install anchors found in source")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: multiple install anchors found in source"
+        )
     else:
         if has_active_pip:
-            raise RequiredPatchError("P2-SKIP-INSTALLS: unexpected or malformed pip install anchor in source")
+            raise RequiredPatchError(
+                "P2-SKIP-INSTALLS: unexpected or malformed pip install anchor in source"
+            )
         raise RequiredPatchError("P2-SKIP-INSTALLS: required install anchor not found")
 
     patched = source.replace(matched_anchor, replacement_block, 1)
 
     if patched.count(guard_marker) != 1:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: patch marker count != 1 after replacement")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: patch marker count != 1 after replacement"
+        )
     if "IDD_SKIP_NOTEBOOK_INSTALLS" not in patched:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: IDD_SKIP_NOTEBOOK_INSTALLS missing after replacement")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: IDD_SKIP_NOTEBOOK_INSTALLS missing after replacement"
+        )
     if "Skipping in-notebook dependency installation;" not in patched:
-        raise RequiredPatchError("P2-SKIP-INSTALLS: skip print missing after replacement")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: skip print missing after replacement"
+        )
     if any(re.match(r"^\s*!pip\b", line) for line in patched.splitlines()):
-        raise RequiredPatchError("P2-SKIP-INSTALLS: raw !pip install remains after replacement")
+        raise RequiredPatchError(
+            "P2-SKIP-INSTALLS: raw !pip install remains after replacement"
+        )
 
     try:
         ast.parse(patched)
     except SyntaxError as syn_err:
-        raise RequiredPatchError(f"P2-SKIP-INSTALLS: generated cell is not valid Python: {syn_err}") from syn_err
+        raise RequiredPatchError(
+            f"P2-SKIP-INSTALLS: generated cell is not valid Python: {syn_err}"
+        ) from syn_err
 
     return patched
 
@@ -624,19 +654,19 @@ def apply_dataframe_registry_path_binding_patch(source: str) -> str:
     anchor_old = (
         '          if raw_path == "" or raw_path is None:\n'
         '              raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()\n'
-        '              raw_path = str(raw_path)\n'
-        '\n'
-        '          # new id: must have either df or an existing path\n'
-        '          if df is None and not path.exists():'
+        "              raw_path = str(raw_path)\n"
+        "\n"
+        "          # new id: must have either df or an existing path\n"
+        "          if df is None and not path.exists():"
     )
     anchor_new = (
         '          if raw_path == "" or raw_path is None:\n'
         '              raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()\n'
-        '              raw_path = str(raw_path)\n'
-        f'          path = self._norm_path(raw_path)  {guard_marker}\n'
-        '\n'
-        '          # new id: must have either df or an existing path\n'
-        '          if df is None and not path.exists():'
+        "              raw_path = str(raw_path)\n"
+        f"          path = self._norm_path(raw_path)  {guard_marker}\n"
+        "\n"
+        "          # new id: must have either df or an existing path\n"
+        "          if df is None and not path.exists():"
     )
 
     is_patched = guard_marker in source
@@ -649,7 +679,9 @@ def apply_dataframe_registry_path_binding_patch(source: str) -> str:
             or source.count(anchor_old) != 0
             or path_norm_count != 2
         ):
-            raise RequiredPatchError("P3-DF-REG-PATH: corrupted patch marker without path binding")
+            raise RequiredPatchError(
+                "P3-DF-REG-PATH: corrupted patch marker without path binding"
+            )
         return source
 
     if source.count(anchor_old) != 1:
@@ -660,14 +692,20 @@ def apply_dataframe_registry_path_binding_patch(source: str) -> str:
     patched = source.replace(anchor_old, anchor_new, 1)
 
     if patched.count(guard_marker) != 1:
-        raise RequiredPatchError("P3-DF-REG-PATH: patch marker count != 1 after replacement")
+        raise RequiredPatchError(
+            "P3-DF-REG-PATH: patch marker count != 1 after replacement"
+        )
     if patched.count("path = self._norm_path(raw_path)") != 2:
-        raise RequiredPatchError("P3-DF-REG-PATH: expected 2 path binding occurrences after replacement")
+        raise RequiredPatchError(
+            "P3-DF-REG-PATH: expected 2 path binding occurrences after replacement"
+        )
 
     try:
         ast.parse(patched)
     except SyntaxError as syn_err:
-        raise RequiredPatchError(f"P3-DF-REG-PATH: generated cell is not valid Python: {syn_err}") from syn_err
+        raise RequiredPatchError(
+            f"P3-DF-REG-PATH: generated cell is not valid Python: {syn_err}"
+        ) from syn_err
 
     return patched
 
@@ -676,15 +714,21 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
     """Keep the new-ID reload metadata identical to the normalized I/O path."""
     old = (
         '          self.registry[df_id] = {"df": df, "raw_path": str(raw_path)}\n'
-        '          self.df_id_to_raw_path[df_id] = str(raw_path)'
+        "          self.df_id_to_raw_path[df_id] = str(raw_path)"
     )
     new = (
         '          self.registry[df_id] = {"df": df, "raw_path": str(path)}\n'
-        '          self.df_id_to_raw_path[df_id] = str(path)  # PATCH: P3-RETAINED-PATH'
+        "          self.df_id_to_raw_path[df_id] = str(path)  # PATCH: P3-RETAINED-PATH"
     )
     if "# PATCH: P3-RETAINED-PATH" in source:
-        if source.count(new) != 1 or source.count(old) != 0 or source.count("# PATCH: P3-RETAINED-PATH") != 1:
-            raise RequiredPatchError("P3-RETAINED-PATH: corrupted retained path metadata")
+        if (
+            source.count(new) != 1
+            or source.count(old) != 0
+            or source.count("# PATCH: P3-RETAINED-PATH") != 1
+        ):
+            raise RequiredPatchError(
+                "P3-RETAINED-PATH: corrupted retained path metadata"
+            )
         return source
     return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
 
@@ -709,7 +753,9 @@ def main():
     if c4["cell_type"] == "code":
         c4["outputs"] = []
         c4["execution_count"] = None
-    print("✅ Cell idx 4: applied headless install suppression guard (P2-SKIP-INSTALLS)")
+    print(
+        "✅ Cell idx 4: applied headless install suppression guard (P2-SKIP-INSTALLS)"
+    )
 
     # --- Patch DataFrameRegistry (cell idx 19): fix unbound 'path' for new df_id (P3-DF-REG-PATH) ---
     df_reg_cells = [
@@ -723,7 +769,9 @@ def main():
             f"P3-DF-REG-PATH: expected 1 DataFrameRegistry target cell, found {len(df_reg_cells)}"
         )
     idx, cell = df_reg_cells[0]
-    cell["source"] = apply_dataframe_registry_path_binding_patch(join_source(cell["source"]))
+    cell["source"] = apply_dataframe_registry_path_binding_patch(
+        join_source(cell["source"])
+    )
     cell["source"] = apply_dataframe_registry_retained_path_patch(cell["source"])
     cell["outputs"] = []
     cell["execution_count"] = None
@@ -814,7 +862,10 @@ def main():
     # --- Patch memory lifecycle helpers in the notebook cell ---
     for i, cell in enumerate(cells):
         src = join_source(cell["source"])
-        if "class MemoryPolicyEngine:" not in src or "def memory_policy_report(" not in src:
+        if (
+            "class MemoryPolicyEngine:" not in src
+            or "def memory_policy_report(" not in src
+        ):
             continue
 
         new_src = src
@@ -1082,9 +1133,7 @@ def main():
         if "class State(AgentState, TypedDict, total=False):" not in src:
             continue
         if "# Fix AR-3" in src:
-            print(
-                f"ℹ️  Cell idx {idx}: Fix AR-3 (report_paths reducer) already applied"
-            )
+            print(f"ℹ️  Cell idx {idx}: Fix AR-3 (report_paths reducer) already applied")
             fixar3_patched = True
             break
         old_ann = "    report_paths: Annotated[Optional[dict[str, str]], operator.add]"
@@ -2392,9 +2441,7 @@ def main():
             )
             sv_routing_patched = True
         else:
-            print(
-                f"⚠️  Cell idx {idx}: supervisor routing patch — no replacements made"
-            )
+            print(f"⚠️  Cell idx {idx}: supervisor routing patch — no replacements made")
         break
     if not sv_routing_patched:
         print("⚠️  supervisor routing patch: target cell not found")
@@ -2702,9 +2749,7 @@ def main():
         if "# --- PATCH: force report routing after viz ---" not in src:
             continue
         if "_in_report_round" in src:
-            print(
-                f"ℹ️  Cell idx {idx}: Fix V2 (_in_report_round guard) already applied"
-            )
+            print(f"ℹ️  Cell idx {idx}: Fix V2 (_in_report_round guard) already applied")
             fixv2_patched = True
             break
         m_fixv2 = _re_fixv2.search(
@@ -3100,9 +3145,13 @@ def main():
             cell["source"] = new_src
             cell["outputs"] = []
             cell["execution_count"] = None
-            print(f"✅ Cell idx {idx}: P1-TM ToolMessage/AIMessage to HumanMessage conversion patched")
+            print(
+                f"✅ Cell idx {idx}: P1-TM ToolMessage/AIMessage to HumanMessage conversion patched"
+            )
         else:
-            print(f"ℹ️  Cell idx {idx}: supervisor already has complete P1-TM conversion")
+            print(
+                f"ℹ️  Cell idx {idx}: supervisor already has complete P1-TM conversion"
+            )
         sv_tm_conv_patched = True
         break
     if not sv_tm_conv_patched:
@@ -3712,9 +3761,7 @@ def main():
         if "def stream_graph_output(" not in src:
             continue
         if "_pl_logger" in src:
-            print(
-                f"ℹ️  Cell idx {idx}: stream_graph_output already has pipeline logger"
-            )
+            print(f"ℹ️  Cell idx {idx}: stream_graph_output already has pipeline logger")
             sg_patched = True
             break
         new_src = src
@@ -4237,9 +4284,7 @@ def main():
             fixi_patched = True
             break
         if fixi_old not in src:
-            print(
-                f"⚠️  Fix I: _guarded_open pattern not found in cell {idx} — skipping"
-            )
+            print(f"⚠️  Fix I: _guarded_open pattern not found in cell {idx} — skipping")
             fixi_patched = True
             break
         new_src = src.replace(fixi_old, fixi_new, 1)
@@ -5302,9 +5347,7 @@ def main():
             fixao4_patched = True
             break
         if fixao4_old not in src:
-            print(
-                f"⚠️  Fix AO-4: binwidth BinWidthSpec pattern not found in cell {idx}"
-            )
+            print(f"⚠️  Fix AO-4: binwidth BinWidthSpec pattern not found in cell {idx}")
             fixao4_patched = True
             break
         new_src = src.replace(fixao4_old, fixao4_new, 1)
@@ -5556,9 +5599,7 @@ def main():
             fixp1_patched = True
             break
         if fixp1_old not in src:
-            print(
-                f"⚠️  Fix P-1: viz_worker task getter pattern not found in cell {idx}"
-            )
+            print(f"⚠️  Fix P-1: viz_worker task getter pattern not found in cell {idx}")
             fixp1_patched = True
             break
         new_src = src.replace(fixp1_old, fixp1_new, 1)
@@ -5766,9 +5807,7 @@ def main():
             )
             changed = True
         else:
-            print(
-                f"⚠️  Fix R: supervisor_to_agent_msgs pattern not found in cell {idx}"
-            )
+            print(f"⚠️  Fix R: supervisor_to_agent_msgs pattern not found in cell {idx}")
         if changed:
             cell["source"] = new_src
             cell["outputs"] = []
@@ -7332,9 +7371,7 @@ def main():
         if _W2_BR8_VF_OLD in n:
             n = n.replace(_W2_BR8_VF_OLD, _W2_BR8_VF_NEW, 1)
         else:
-            print(
-                "⚠️  W2-BR8: viz_feedback anchor not found (may already be Annotated)"
-            )
+            print("⚠️  W2-BR8: viz_feedback anchor not found (may already be Annotated)")
         return n
 
     _w2_apply("W2-BR8 (structured_response reducer)", _w2_br8_pred, _w2_br8_mut)
@@ -11484,9 +11521,7 @@ def main():
             "    }\n"
         )
         if old_map not in src:
-            print(
-                f"⚠️  W13Q-RG-ROLES: output_format_map anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W13Q-RG-ROLES: output_format_map anchor not found in cell {idx}")
             break
         src = src.replace(old_map, new_map, 1)
 
@@ -11505,9 +11540,7 @@ def main():
             '        raise RuntimeError(f"No tools configured for report generator role {rg_agent_task!r}")\n'
         )
         if old_tools not in src:
-            print(
-                f"⚠️  W13Q-RG-ROLES: tool_descriptions anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W13Q-RG-ROLES: tool_descriptions anchor not found in cell {idx}")
             break
         src = src.replace(old_tools, new_tools, 1)
 
@@ -11742,9 +11775,7 @@ def main():
             '                "user_prompt": user_prompt,\n'
         )
         if old_invoke_state not in src:
-            print(
-                f"⚠️  W13R: viz_evaluator invoke-state anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W13R: viz_evaluator invoke-state anchor not found in cell {idx}")
             break
         src = src.replace(old_invoke_state, new_invoke_state, 1)
 
@@ -12018,9 +12049,7 @@ def main():
         if old_line in src:
             src = src.replace(old_line, new_lines, 1)
         else:
-            print(
-                f"⚠️  W13S-NUM: compact section prompt anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W13S-NUM: compact section prompt anchor not found in cell {idx}")
         old_direct = "                    f\"Correlation insights: {_w13j_short(getattr(insights, 'correlation_insights', ''), 900) if '_w13j_short' in locals() else str(getattr(insights, 'correlation_insights', ''))[:900]}\",\n"
         new_direct = (
             old_direct
@@ -12086,9 +12115,7 @@ def main():
             '    _w13t_initial_tools = [t for t in init_analyst_tools if getattr(t, "name", "") in _w13t_initial_tool_names]\n'
         )
         if old_prompt not in src:
-            print(
-                f"⚠️  W13T-IA: initial analysis prompt anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W13T-IA: initial analysis prompt anchor not found in cell {idx}")
             break
         src = src.replace(old_prompt, new_prompt, 1)
         src = src.replace(
@@ -12110,7 +12137,9 @@ def main():
         break
 
     _W13T_NODE_GUARD = "# W13T-NODES: explicit early structured-output proof"
-    for idx, cell in enumerate(()):  # Retired optional telemetry; safe-invoke guards remain.
+    for idx, cell in enumerate(
+        ()
+    ):  # Retired optional telemetry; safe-invoke guards remain.
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -13024,9 +13053,7 @@ def main():
             '        return f"Error creating sample: {e}", {"error": "exception", "message": str(e)}\n'
         )
         if old not in src:
-            print(
-                f"⚠️  W14C-NO-MARKER-TXT create_sample anchor not found in cell {idx}"
-            )
+            print(f"⚠️  W14C-NO-MARKER-TXT create_sample anchor not found in cell {idx}")
             break
         src = src.replace(old, new, 1)
         cell["source"] = src
@@ -13075,9 +13102,7 @@ def main():
                 f"✅ Cell idx {idx}: W14C-NO-MARKER-TXT scoped data_cleaner away from generic file tools"
             )
         else:
-            print(
-                f"⚠️  W14C-NO-MARKER-TXT data_cleaner anchors not found in cell {idx}"
-            )
+            print(f"⚠️  W14C-NO-MARKER-TXT data_cleaner anchors not found in cell {idx}")
         break
 
     # --- W14D-FW-PATHS: resolve report HTML image refs from promoted root as well as report dir ---
@@ -13121,7 +13146,9 @@ def main():
     _W14E_FW_NORMALIZE_GUARD = (
         "# W14E-FW-NORMALIZE: normalize manifest paths before warnings"
     )
-    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
+    for idx, cell in enumerate(
+        ()
+    ):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -13229,7 +13256,9 @@ def main():
     _W14G_FW_DEFERRED_GUARD = (
         "# W14G-FW-DEFERRED-VIZ: expected copied visualization paths are valid"
     )
-    for idx, cell in enumerate(()):  # Retired: superseded by W14J strict manifest reconciliation
+    for idx, cell in enumerate(
+        ()
+    ):  # Retired: superseded by W14J strict manifest reconciliation
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
@@ -13395,72 +13424,79 @@ def main():
         break
 
     # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
-    _W14I_VIZ_MEMBERSHIP_GUARD = "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
+    _W14I_VIZ_MEMBERSHIP_GUARD = (
+        "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
+    )
     # --- W14I-TOOL-ERROR-HARDENING: close scoped error-handling review gaps in data tools ---
     _W14I_TOOL_ERROR_GUARD = "# W14I-TOOL-ERROR-HARDENING"
     for idx, cell in enumerate(cells):
         if cell.get("cell_type") != "code":
             continue
         src = join_source(cell["source"])
-        if "def viz_evaluator_node(state: State):" not in src or _W14I_VIZ_MEMBERSHIP_GUARD in src:
+        if (
+            "def viz_evaluator_node(state: State):" not in src
+            or _W14I_VIZ_MEMBERSHIP_GUARD in src
+        ):
             continue
         if (
-            'normalized_spec_result_keys = {' in src
-            and 'normalized_visualization_id = (' in src
+            "normalized_spec_result_keys = {" in src
+            and "normalized_visualization_id = (" in src
         ):
-            print(f"ℹ️  Cell idx {idx}: W14I-VIZ-MEMBERSHIP already present in source notebook")
+            print(
+                f"ℹ️  Cell idx {idx}: W14I-VIZ-MEMBERSHIP already present in source notebook"
+            )
             break
         old = (
             '            vr_results = state.get("viz_results", []) or []\n'
-            '            for r in results:\n'
-            '                if r.visualization_title in final_grade.redo_list:\n'
-            '                    results.remove(r)\n'
-            '                    for vr in vr_results:\n'
+            "            for r in results:\n"
+            "                if r.visualization_title in final_grade.redo_list:\n"
+            "                    results.remove(r)\n"
+            "                    for vr in vr_results:\n"
             '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
-            '                            vr_results.remove(vr)\n'
-            '                            break\n'
-            '                else:\n'
-            '                    if r.visualization_id in result_task_map.keys():\n'
-            '                        tasks.remove(result_task_map[r.visualization_id])\n'
-            '                    elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:\n'
-            '                        tasks.remove(r.visualization_title)\n'
-            '                    if r.visualization_id in result_spec_map.keys():\n'
-            '                        specs.remove(result_spec_map[r.visualization_id])\n'
-            '                    elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:\n'
-            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+            "                            vr_results.remove(vr)\n"
+            "                            break\n"
+            "                else:\n"
+            "                    if r.visualization_id in result_task_map.keys():\n"
+            "                        tasks.remove(result_task_map[r.visualization_id])\n"
+            "                    elif r.visualization_title in [r.visualization_title for r in task_result_map.values()]:\n"
+            "                        tasks.remove(r.visualization_title)\n"
+            "                    if r.visualization_id in result_spec_map.keys():\n"
+            "                        specs.remove(result_spec_map[r.visualization_id])\n"
+            "                    elif r.visualization_id in [r.visualization_id for r in spec_result_map.values()] or r.visualization_id in [s for s in spec_result_map.keys() if s is not None and s.lower().strip() == r.visualization_id.lower().strip()]:\n"
+            "                        specs.remove(result_spec_map[r.visualization_title])\n"
         )
         new = (
             '            vr_results = state.get("viz_results", []) or []\n'
-            f'            {_W14I_VIZ_MEMBERSHIP_GUARD}\n'
-            '            task_result_titles = {r.visualization_title for r in task_result_map.values()}\n'
-            '            spec_result_ids = {res.visualization_id for res in spec_result_map.values()}\n'
-            '            normalized_spec_result_keys = {\n'
-            '                s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)\n'
-            '            }\n'
-            '            for r in results:\n'
-            '                if r.visualization_title in final_grade.redo_list:\n'
-            '                    results.remove(r)\n'
-            '                    for vr in vr_results:\n'
+            f"            {_W14I_VIZ_MEMBERSHIP_GUARD}\n"
+            "            task_result_titles = {r.visualization_title for r in task_result_map.values()}\n"
+            "            spec_result_ids = {res.visualization_id for res in spec_result_map.values()}\n"
+            "            normalized_spec_result_keys = {\n"
+            "                s.lower().strip() for s in spec_result_map.keys() if isinstance(s, str)\n"
+            "            }\n"
+            "            for r in results:\n"
+            "                if r.visualization_title in final_grade.redo_list:\n"
+            "                    results.remove(r)\n"
+            "                    for vr in vr_results:\n"
             '                        if vr.get("visualization_title") == r.visualization_title or vr.get("visualization_id") == r.visualization_id:\n'
-            '                            vr_results.remove(vr)\n'
-            '                            break\n'
-            '                else:\n'
-            '                    normalized_visualization_id = (\n'
-            '                        r.visualization_id.lower().strip()\n'
-            '                        if isinstance(r.visualization_id, str)\n'
-            '                        else None\n'
-            '                    )\n'
-            '                    if r.visualization_id in result_task_map.keys():\n'
-            '                        tasks.remove(result_task_map[r.visualization_id])\n'
-            '                    elif r.visualization_title in task_result_titles:\n'
-            '                        tasks.remove(r.visualization_title)\n'
-            '                    if r.visualization_id in result_spec_map.keys():\n'
-            '                        specs.remove(result_spec_map[r.visualization_id])\n'
-            '                    elif (\n'
-            '                        r.visualization_id in spec_result_ids\n'
-            '                        or normalized_visualization_id in normalized_spec_result_keys\n'
-            '                    ):\n'
-            '                        specs.remove(result_spec_map[r.visualization_title])\n'
+            "                            vr_results.remove(vr)\n"
+            "                            break\n"
+            "                else:\n"
+            "                    normalized_visualization_id = (\n"
+            "                        r.visualization_id.lower().strip()\n"
+            "                        if isinstance(r.visualization_id, str)\n"
+            "                        else None\n"
+            "                    )\n"
+            "                    if r.visualization_id in result_task_map.keys():\n"
+            "                        tasks.remove(result_task_map[r.visualization_id])\n"
+            "                    elif r.visualization_title in task_result_titles:\n"
+            "                        tasks.remove(r.visualization_title)\n"
+            "                    if r.visualization_id in result_spec_map.keys():\n"
+            "                        specs.remove(result_spec_map[r.visualization_id])\n"
+            "                    elif (\n"
+            "                        r.visualization_id in spec_result_ids\n"
+            "                        or normalized_visualization_id in normalized_spec_result_keys\n"
+            "                    ):\n"
+            "                        specs.remove(result_spec_map[r.visualization_title])\n"
         )
         if old not in src:
             print(f"⚠️  W14I-VIZ-MEMBERSHIP anchor not found in cell {idx}")
@@ -13469,7 +13505,9 @@ def main():
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
-        print(f"✅ Cell idx {idx}: W14I-VIZ-MEMBERSHIP keeps normalized spec-key matching")
+        print(
+            f"✅ Cell idx {idx}: W14I-VIZ-MEMBERSHIP keeps normalized spec-key matching"
+        )
         break
 
     # --- W14K-DELETE-ROWS: deterministic query-only view binding ---
@@ -13479,7 +13517,8 @@ def main():
             continue
         src = join_source(cell["source"])
         if (
-            "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:" not in src
+            "def delete_rows(df_id: str, conditions: Union[str, List[str], Dict], inplace: bool = True) -> str:"
+            not in src
             or _W14K_DELETE_ROWS_GUARD in src
         ):
             continue
@@ -13530,7 +13569,7 @@ def main():
             "    if not isinstance(conditions, (str, list, dict)):\n"
             "        return _tool_error(\n"
             "            operation,\n"
-            '            "\'conditions\' must be a string, list of strings, or dict.",\n'
+            "            \"'conditions' must be a string, list of strings, or dict.\",\n"
             '            "Provide a valid pandas query or a non-empty list/dict of queries.",\n'
             "        )\n"
             "    if isinstance(conditions, str):\n"
@@ -13585,7 +13624,9 @@ def main():
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
-        print(f"✅ Cell idx {idx}: W14K-DELETE-ROWS deterministic query-only view binding")
+        print(
+            f"✅ Cell idx {idx}: W14K-DELETE-ROWS deterministic query-only view binding"
+        )
         break
 
     # W14J: consolidate the active #146/#148 production invariants after the
@@ -13618,7 +13659,7 @@ def main():
         "        previous_heading_key = None\n"
         '        title_key = re.sub(r"\\s+", " ", str(report_title or "")).strip().casefold()\n'
         "        title_seen = False\n"
-        "        for raw_line in str(text or \"\").splitlines():\n"
+        '        for raw_line in str(text or "").splitlines():\n'
         '            match = re.match(r"^(#{1,6})\\s+(.+?)\\s*$", raw_line)\n'
         "            if not match:\n"
         "                normalized_lines.append(raw_line)\n"
@@ -13681,10 +13722,10 @@ def main():
         "    _run_root = None\n"
         '    if "RUNTIME" in globals() and getattr(globals()["RUNTIME"], "run_dir", None):\n'
         '        _run_root = _ReportPath(globals()["RUNTIME"].run_dir).resolve()\n'
-        '    elif _report_config and isinstance(_report_config, dict):\n'
+        "    elif _report_config and isinstance(_report_config, dict):\n"
         '        _cfg_run = _report_config.get("configurable", {}).get("runtime")\n'
         '        if getattr(_cfg_run, "run_dir", None):\n'
-        '            _run_root = _ReportPath(_cfg_run.run_dir).resolve()\n'
+        "            _run_root = _ReportPath(_cfg_run.run_dir).resolve()\n"
         "    _working_dir = _ReportPath(WORKING_DIRECTORY).resolve()\n"
         "    _allowed_roots = [_artifact_root, _working_dir]\n"
         "    if _run_root is not None:\n"
@@ -13859,9 +13900,9 @@ def main():
         "                rel = _to_rel_path(res)\n"
         '                return f"![{alt_text}]({rel})"\n'
         "            return m.group(0)\n"
-        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _img_sub, md_text)\n'
+        '        return _report_re.sub(r"!\\[([^]]*)\\]\\(([^)\\s]+)(?:\\s+[\'\\"][^\'\\"]*[\'\\"])?\\)", _img_sub, md_text)\n'
         "    canonical_source_md = _normalize_existing_md_images(canonical_source_md)\n"
-        '    figures_to_inject = [f for ck, f in _expected_figs.items() if ck not in seen_in_md_keys]\n'
+        "    figures_to_inject = [f for ck, f in _expected_figs.items() if ck not in seen_in_md_keys]\n"
         "    unplaced_figures = []\n"
         "    for fig in figures_to_inject:\n"
         '        sec = fig.get("section")\n'
@@ -13875,7 +13916,7 @@ def main():
         '                level = len(match.group("hashes"))\n'
         '                next_heading_pat = r"(?m)^#{1," + str(min(level, 2)) + r"}\\s+"\n'
         "                next_match = _report_re.search(next_heading_pat, canonical_source_md[start_idx:])\n"
-        '                img_block = f"\\n\\n![{fig[\'alt\']}]({fig[\'rel_path\']})\\n"\n'
+        "                img_block = f\"\\n\\n![{fig['alt']}]({fig['rel_path']})\\n\"\n"
         "                if next_match:\n"
         "                    insert_idx = start_idx + next_match.start()\n"
         '                    canonical_source_md = canonical_source_md[:insert_idx].rstrip() + img_block + "\\n" + canonical_source_md[insert_idx:].lstrip()\n'
@@ -13886,7 +13927,7 @@ def main():
         "        if not placed:\n"
         "            unplaced_figures.append(fig)\n"
         "    if unplaced_figures:\n"
-        '        viz_blocks = [f"![{fig[\'alt\']}]({fig[\'rel_path\']})" for fig in unplaced_figures]\n'
+        "        viz_blocks = [f\"![{fig['alt']}]({fig['rel_path']})\" for fig in unplaced_figures]\n"
         '        viz_section_content = "\\n\\n".join(viz_blocks)\n'
         '        if _report_re.search(r"(?im)^##\\s+Visualizations", canonical_source_md):\n'
         '            canonical_source_md = _report_re.sub(r"(?im)(^##\\s+Visualizations\\s*$)", r"\\1\\n\\n" + viz_section_content, canonical_source_md, count=1)\n'
@@ -13958,7 +13999,7 @@ def main():
         '    _md_stripped = _report_re.sub(r"(?ms)^```.*?^```", "", canonical_source_md)\n'
         '    _md_stripped = _report_re.sub(r"(?m)^(?: {4}|\\t)[^\\n]*", "", _md_stripped)\n'
         '    _md_stripped = _report_re.sub(r"`[^`\\n]+`", "", _md_stripped)\n'
-        '    _md_raw_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\\"][^\'\\\"]*[\'\\\"])?\\)", _md_stripped)\n'
+        '    _md_raw_embeds = _report_re.findall(r"!\\[[^\\]]*\\]\\(([^)\\s]+)(?:\\s+[\'\\"][^\'\\"]*[\'\\"])?\\)", _md_stripped)\n'
         "    _md_verified_keys = set()\n"
         "    for _s in _md_raw_embeds:\n"
         '        if _s.lower().startswith("data:"):\n'
@@ -14120,10 +14161,10 @@ def main():
         )
         src = replace_required(
             src,
-            '    finished_this_task = pdf_exists and html_exists and markdown_exists\n',
+            "    finished_this_task = pdf_exists and html_exists and markdown_exists\n",
             (
-                '    finished_this_task = bool(_report_generation_succeeded and pdf_exists and html_exists and markdown_exists)\n'
-                '    report_complete = bool(finished_this_task and rr.finished_this_task and not rr.expect_reply)\n'
+                "    finished_this_task = bool(_report_generation_succeeded and pdf_exists and html_exists and markdown_exists)\n"
+                "    report_complete = bool(finished_this_task and rr.finished_this_task and not rr.expect_reply)\n"
             ),
             patch_id="W14J-REPORT-COMPLETION",
         )
@@ -14494,10 +14535,14 @@ def main():
         cell["outputs"] = []
         cell["execution_count"] = None
         final_semantics_applied = True
-        print(f"✅ Cell idx {idx}: W14J corrected file_writer final/non-final branch and manifest validation")
+        print(
+            f"✅ Cell idx {idx}: W14J corrected file_writer final/non-final branch and manifest validation"
+        )
         break
     if not final_semantics_applied:
-        raise RequiredPatchError("W14J-FW-FINAL-SEMANTICS: file_writer_node target not found")
+        raise RequiredPatchError(
+            "W14J-FW-FINAL-SEMANTICS: file_writer_node target not found"
+        )
 
     _W14J_ROUTE_GUARD = "# W14J-RTW: reachable final writer route"
     _W14J_ROUTE_FUNCTION = (
@@ -14506,13 +14551,13 @@ def main():
         '    report_done = bool(state.get("report_generator_complete"))\n'
         '    report_results = state.get("report_results")\n'
         '    outline = state.get("report_outline")\n'
-        '    expected_sections = len(outline.sections) if isinstance(outline, ReportOutline) else 0\n'
+        "    expected_sections = len(outline.sections) if isinstance(outline, ReportOutline) else 0\n"
         '    written_sections = state.get("written_sections", []) or []\n'
         '    report_ready = bool(report_done and isinstance(report_results, ReportResults) and expected_sections > 0 and len(written_sections) >= expected_sections and state.get("report_draft"))\n'
         '    already_wrote = bool(state.get("file_writer_complete"))\n'
-        '    if already_wrote:\n'
+        "    if already_wrote:\n"
         '        return "END"\n'
-        '    if report_ready:\n'
+        "    if report_ready:\n"
         '        return "file_writer"\n'
         '    return "supervisor"\n\n'
     )
@@ -14558,11 +14603,11 @@ def main():
     # ============================  END WAVE 2 PATCHES  ===========================
 
     # ============================  CP4 CANONICAL NOTEBOOK INTEGRATION  ===========================
-    # Checkpoint 4 (Issue #140, #162): Canonical Notebook Integration & Anti-Drift Enforcement.
-    # Wires canonical Python modules into Cells 4, 16, 19, 22, 32, and 60, eliminating
-    # notebook-local behavioral duplicates and resolving deferred review findings.
+    # Checkpoint 4 (Issue #140, #144, #145, #162): Canonical Notebook Integration & Anti-Drift Enforcement.
+    # Wires canonical Python modules into Cells 4, 7, 10, 16, 19, 22, 32, 46, 60, 94, and 96,
+    # eliminating notebook-local behavioral duplicates and resolving all review findings fail-closed.
 
-    # 1. Cell 4: Bootstrap & Manifest Verification Guard
+    # 1. Cell 4: Fail-Closed Bootstrap & Manifest Verification Guard (P1-1)
     c4 = cells[4]
     src4 = join_source(c4["source"])
     if "# PATCH: CP4-BOOTSTRAP" not in src4:
@@ -14578,19 +14623,89 @@ def main():
             "        if str(_p) not in sys.path:\n"
             "            sys.path.insert(0, str(_p))\n"
             "        break\n\n"
-            "try:\n"
-            "    from idd_bootstrap import bootstrap_environment\n"
-            "    bootstrap_environment()\n"
-            '    print("✅ Canonical modules verified against idd_manifest.json")\n'
-            "except Exception as _b_err:\n"
-            '    print(f"⚠️ Canonical bootstrap notice: {_b_err}")\n'
+            "from idd_bootstrap import bootstrap_environment\n"
+            "bootstrap_environment()\n"
+            'print("✅ Canonical modules verified against idd_manifest.json")\n'
         )
         c4["source"] = src4 + bootstrap_block
         c4["outputs"] = []
         c4["execution_count"] = None
-        print("✅ Cell idx 4: applied canonical bootstrap and manifest verification (CP4-BOOTSTRAP)")
+        assert_patch_present(
+            c4["source"], "# PATCH: CP4-BOOTSTRAP", patch_id="CP4-BOOTSTRAP"
+        )
+        print("✅ Cell idx 4: applied canonical fail-closed bootstrap (CP4-BOOTSTRAP)")
 
-    # 2. Cell 16: Canonical Data Models
+    # 2. Cell 7: Canonical AgentMembers typing & Subclass Inheritance (P2-5)
+    c7 = cells[7]
+    src7 = join_source(c7["source"])
+    if "# PATCH: CP4-CANONICAL-AGENT-MEMBERS" not in src7:
+        old_agent_members_pattern = r"# --- Agent member typing \(retained\) ---\s*class AgentMembers\(BaseModel\):.*?(?=\n\n# ---|\Z)"
+        new_agent_members_block = (
+            "# --- Agent member typing — canonical imports (CP4) ---\n"
+            "# PATCH: CP4-CANONICAL-AGENT-MEMBERS\n"
+            "from idd_state import (\n"
+            "    AgentMembers,\n"
+            "    AgentId,\n"
+            "    Supervisor,\n"
+            "    AgentOrSupervisor,\n"
+            ")\n"
+            "from idd_core import (\n"
+            "    InitialAnalysis,\n"
+            "    DataCleaner,\n"
+            "    Analyst,\n"
+            "    FileWriter,\n"
+            "    Visualization,\n"
+            "    ReportGenerator,\n"
+            "    SuperVisor,\n"
+            "    ReportOrchestrator,\n"
+            "    ReportSection,\n"
+            "    agent_list_default_generator,\n"
+            ")\n"
+        )
+        src7 = replace_required_regex(
+            src7,
+            old_agent_members_pattern,
+            new_agent_members_block,
+            patch_id="CP4-CANONICAL-AGENT-MEMBERS",
+        )
+        c7["source"] = src7
+        c7["outputs"] = []
+        c7["execution_count"] = None
+        ast.parse(src7)
+        assert_patch_present(
+            src7,
+            "# PATCH: CP4-CANONICAL-AGENT-MEMBERS",
+            patch_id="CP4-CANONICAL-AGENT-MEMBERS",
+        )
+        print(
+            "✅ Cell idx 7: wired canonical AgentMembers subclasses (CP4-CANONICAL-AGENT-MEMBERS)"
+        )
+
+    # 3. Cell 10: Canonical MyChatOpenai LLM Adapter (P2-5)
+    c10 = cells[10]
+    src10 = join_source(c10["source"])
+    if "# PATCH: CP4-CANONICAL-MYCHATOPENAI" not in src10:
+        c10["source"] = (
+            "# MyChatOpenai adapter — canonical import (CP4)\n"
+            "# PATCH: CP4-CANONICAL-MYCHATOPENAI\n"
+            "from idd_core import (\n"
+            "    MyChatOpenai,\n"
+            "    _construct_responses_api_payload,\n"
+            ")\n"
+        )
+        c10["outputs"] = []
+        c10["execution_count"] = None
+        ast.parse(c10["source"])
+        assert_patch_present(
+            c10["source"],
+            "# PATCH: CP4-CANONICAL-MYCHATOPENAI",
+            patch_id="CP4-CANONICAL-MYCHATOPENAI",
+        )
+        print(
+            "✅ Cell idx 10: wired canonical MyChatOpenai adapter (CP4-CANONICAL-MYCHATOPENAI)"
+        )
+
+    # 4. Cell 16: Canonical Data Models
     c16 = cells[16]
     c16["source"] = (
         "# Support models — canonical imports (CP4)\n"
@@ -14632,9 +14747,14 @@ def main():
     c16["outputs"] = []
     c16["execution_count"] = None
     ast.parse(c16["source"])
-    print("✅ Cell idx 16: wired canonical data models from idd_models and idd_state (CP4-CANONICAL-MODELS)")
+    assert_patch_present(
+        c16["source"], "# PATCH: CP4-CANONICAL-MODELS", patch_id="CP4-CANONICAL-MODELS"
+    )
+    print(
+        "✅ Cell idx 16: wired canonical data models from idd_models and idd_state (CP4-CANONICAL-MODELS)"
+    )
 
-    # 3. Cell 19: Canonical DataFrame Registry and Reporting Models
+    # 5. Cell 19: Canonical DataFrame Registry and Reporting Models (P2-6)
     c19 = cells[19]
     c19["source"] = (
         "# DataFrame Registry and Reporting Models — canonical imports (CP4)\n"
@@ -14645,6 +14765,8 @@ def main():
         "    get_global_registry,\n"
         "    override_global_registry,\n"
         "    set_global_registry,\n"
+        "    global_df_registry,\n"
+        "    _DynamicGlobalRegistryProxy,\n"
         ")\n"
         "from idd_state import (\n"
         "    Section,\n"
@@ -14653,16 +14775,22 @@ def main():
         "    VizFeedback,\n"
         "    ConversationalResponse,\n"
         ")\n\n"
-        "global_df_registry = get_global_registry()\n\n"
         "def get_global_df_registry() -> DataFrameRegistry:\n"
         "    return get_global_registry()\n"
     )
     c19["outputs"] = []
     c19["execution_count"] = None
     ast.parse(c19["source"])
-    print("✅ Cell idx 19: wired canonical registry and reporting models (CP4-CANONICAL-REGISTRY)")
+    assert_patch_present(
+        c19["source"],
+        "# PATCH: CP4-CANONICAL-REGISTRY",
+        patch_id="CP4-CANONICAL-REGISTRY",
+    )
+    print(
+        "✅ Cell idx 19: wired canonical registry and reporting models (CP4-CANONICAL-REGISTRY)"
+    )
 
-    # 4. Cell 22: Canonical LangGraph State & Reducers
+    # 6. Cell 22: Canonical LangGraph State & Reducers
     c22 = cells[22]
     c22["source"] = (
         "# LangGraph State & Reducers — canonical imports (CP4)\n"
@@ -14693,9 +14821,14 @@ def main():
     c22["outputs"] = []
     c22["execution_count"] = None
     ast.parse(c22["source"])
-    print("✅ Cell idx 22: wired canonical State schema and reducers (CP4-CANONICAL-STATE)")
+    assert_patch_present(
+        c22["source"], "# PATCH: CP4-CANONICAL-STATE", patch_id="CP4-CANONICAL-STATE"
+    )
+    print(
+        "✅ Cell idx 22: wired canonical State schema and reducers (CP4-CANONICAL-STATE)"
+    )
 
-    # 5. Cell 32: Canonical Tool Error Handling & Artifact Security
+    # 7. Cell 32: Canonical Tool Error Handling & Artifact Security (P2-7)
     c32 = cells[32]
     src32 = join_source(c32["source"])
     old_err_pattern = r"# Error Handling and Validation Framework\s*def _tool_error\(.*?(?=\n#|\ndef get_dataframe_schema)"
@@ -14713,16 +14846,54 @@ def main():
         "    is_safe_artifact_path,\n"
         ")\n\n"
     )
-    src32 = re.sub(old_err_pattern, new_err_block, src32, count=1, flags=re.DOTALL)
+    src32 = replace_required_regex(
+        src32, old_err_pattern, new_err_block, patch_id="CP4-CANONICAL-TOOLS"
+    )
     old_art_pattern = r"def _get_artifacts_base\(config: Optional\[RunnableConfig\]\).*?(?=\nfiles_store = InMemoryStore\(\))"
-    src32 = re.sub(old_art_pattern, "", src32, count=1, flags=re.DOTALL)
+    src32 = replace_required_regex(
+        src32, old_art_pattern, "", patch_id="CP4-CANONICAL-ARTIFACTS-BASE"
+    )
     c32["source"] = src32
     c32["outputs"] = []
     c32["execution_count"] = None
     ast.parse(src32)
-    print("✅ Cell idx 32: wired canonical tool error handling and path resolution (CP4-CANONICAL-TOOLS)")
+    assert_patch_present(
+        src32, "# PATCH: CP4-CANONICAL-TOOLS", patch_id="CP4-CANONICAL-TOOLS"
+    )
+    print(
+        "✅ Cell idx 32: wired canonical tool error handling and path resolution (CP4-CANONICAL-TOOLS)"
+    )
 
-    # 6. Cell 60: Canonical Graph Assembly & Routing
+    # 8. Cell 46: Supervisor Canonical Router Schema Binding (P1-3)
+    c46 = cells[46]
+    src46 = join_source(c46["source"])
+    if "# PATCH: CP4-SUPERVISOR-ROUTER" not in src46:
+        old_router_block = (
+            "    class Router(BaseNoExtrasModel):\n"
+            '        next: AgentId = Field(..., description="Next agent to invoke.")\n'
+            '        next_agent_prompt: str = Field(..., description="Actionable prompt for the selected worker.")\n'
+            "        next_agent_metadata: Optional[NextAgentMetadata]"
+        )
+        new_router_block = (
+            "    # Canonical Router schema (CP4)\n"
+            "    # PATCH: CP4-SUPERVISOR-ROUTER\n"
+            "    from idd_graph import Router"
+        )
+        src46 = replace_required(
+            src46, old_router_block, new_router_block, patch_id="CP4-SUPERVISOR-ROUTER"
+        )
+        c46["source"] = src46
+        c46["outputs"] = []
+        c46["execution_count"] = None
+        ast.parse(src46)
+        assert_patch_present(
+            src46, "# PATCH: CP4-SUPERVISOR-ROUTER", patch_id="CP4-SUPERVISOR-ROUTER"
+        )
+        print(
+            "✅ Cell idx 46: bound supervisor to canonical Router schema (CP4-SUPERVISOR-ROUTER)"
+        )
+
+    # 9. Cell 60: Canonical Graph Assembly & Routing (P1-2 single coherent checkpointer)
     c60 = cells[60]
     c60["source"] = (
         "# Graph compile (canonical build_graph — CP4)\n"
@@ -14758,11 +14929,6 @@ def main():
         '    ["initial_analysis", "data_cleaner", "analyst", "file_writer", "visualization", "report_orchestrator"],\n'
         "    sample_prompt_text,\n"
         ")\n\n"
-        "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False, timeout=30)\n"
-        '_cp_conn.execute("PRAGMA journal_mode=WAL")\n'
-        '_cp_conn.execute("PRAGMA synchronous=NORMAL")\n'
-        '_cp_conn.execute("PRAGMA busy_timeout=10000")\n'
-        "checkpointer = _SqliteSaver(_cp_conn)\n\n"
         "data_detective_graph = build_graph(\n"
         "    node_overrides={\n"
         '        "supervisor": coordinator_node,\n'
@@ -14793,7 +14959,66 @@ def main():
     c60["outputs"] = []
     c60["execution_count"] = None
     ast.parse(c60["source"])
-    print("✅ Cell idx 60: wired canonical build_graph in executable mode (CP4-CANONICAL-GRAPH)")
+    assert_patch_present(
+        c60["source"], "# PATCH: CP4-CANONICAL-GRAPH", patch_id="CP4-CANONICAL-GRAPH"
+    )
+    print(
+        "✅ Cell idx 60: wired canonical build_graph in executable mode (CP4-CANONICAL-GRAPH)"
+    )
+
+    # 10. Cell 94 & 96: Guarded Checkpoint Demonstration Reconciled (P1-2)
+    c94 = cells[94]
+    src94 = join_source(c94["source"])
+    if "# PATCH: CP4-CELL94-GUARD" not in src94:
+        c94["source"] = (
+            "# PATCH: CP4-CELL94-GUARD\n"
+            "try:\n"
+            "    import sqlite3\n"
+            "    from langgraph.checkpoint.sqlite import SqliteSaver\n"
+            + "\n".join(
+                "    " + line
+                for line in src94.splitlines()
+                if not line.strip().startswith("import sqlite3")
+                and not line.strip().startswith("from langgraph.checkpoint.sqlite")
+            )
+            + "\nexcept (ImportError, ModuleNotFoundError):\n"
+            + "    print('ℹ️ SqliteSaver unavailable; checkpoint migration demonstration skipped.')\n"
+        )
+        c94["outputs"] = []
+        c94["execution_count"] = None
+        ast.parse(c94["source"])
+        assert_patch_present(
+            c94["source"], "# PATCH: CP4-CELL94-GUARD", patch_id="CP4-CELL94-GUARD"
+        )
+        print(
+            "✅ Cell idx 94: guarded checkpoint migration against missing SQLite driver (CP4-CELL94-GUARD)"
+        )
+
+    c96 = cells[96]
+    c96["source"] = (
+        "# PATCH: CP4-CELL96-RECONCILE\n"
+        "# To restore a previous checkpointer state from an SQL database file on disk (demo)\n"
+        "try:\n"
+        "    import sqlite3 as _restore_sqlite3\n"
+        "    from langgraph.checkpoint.sqlite import SqliteSaver as _RestoreSqliteSaver\n\n"
+        "    _restore_conn = _restore_sqlite3.connect('checkpoints.sqlite', check_same_thread=False)\n"
+        "    _restore_cp = _RestoreSqliteSaver(_restore_conn)\n"
+        "    _restored_graph = data_analysis_team_builder.compile(\n"
+        "        checkpointer=_restore_cp, store=in_memory_store, cache=InMemoryCache()\n"
+        "    )\n"
+        "    print('✅ Previous checkpointer state restore demonstration compiled.')\n"
+        "except (ImportError, ModuleNotFoundError):\n"
+        "    print('ℹ️ SqliteSaver unavailable; checkpoint restore demonstration skipped.')\n"
+    )
+    c96["outputs"] = []
+    c96["execution_count"] = None
+    ast.parse(c96["source"])
+    assert_patch_present(
+        c96["source"], "# PATCH: CP4-CELL96-RECONCILE", patch_id="CP4-CELL96-RECONCILE"
+    )
+    print(
+        "✅ Cell idx 96: reconciled checkpoint restore demo without graph replacement (CP4-CELL96-RECONCILE)"
+    )
 
     # Assert invariant cell count before saving
     if len(cells) != 99:

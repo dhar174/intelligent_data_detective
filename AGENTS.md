@@ -55,8 +55,7 @@ pip install langchain langchain-core langchain-openai langchain_experimental lan
     pandas numpy scipy scikit-learn matplotlib seaborn pydantic python-dotenv \
     tiktoken openpyxl tavily-python chromadb joblib pytest black flake8
 
-# Run all tests (no API keys required)
-python3 -m pytest tests/unit/test_core_parity_guard.py -v             # 22 anti-drift tests
+python3 -m pytest tests/unit/test_core_parity_guard.py -v             # 35 anti-drift tests
 python3 -m pytest test_intelligent_data_detective.py -v               # 22 tests
 python3 -m pytest test_error_handling_framework.py -v                 # 16/16 tests mandatory
 python3 -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v

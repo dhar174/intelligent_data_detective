@@ -4,18 +4,20 @@
   "description": "Cryptographic provenance and integrity manifest for Intelligent Data Detective canonical Python modules.",
   "files": {
     "idd_models.py": "b0145a1707e563673e1c795114d8adc8acb7a289e4a7ef56a53302d297eada57",
-    "idd_registry.py": "1daa1ee2e8ff48636c32c65dd18f11b9b0cc03ebdcd47bcf561fe99fb8ab7802",
+    "idd_registry.py": "4d66c687b90677280c434c512414a8d6eda9e27b50a369931634f5ea7bb7b24b",
     "idd_state.py": "d489c21d9e075f9a8aafc5b2eabc3489efdf3e38c392be148b1c28b0a6450360",
     "idd_tools.py": "1adb9e9599cf0de0fc423934c0200c8c2b8c814247f87e6abdec2b4561f0297f",
     "idd_graph.py": "9f613bd604c2c8bbbb559e1f7ec18b01ac62533738d65c54ce36cd06c57753b7",
-    "idd_core.py": "b00b67469e3c630bcc93ec7b70ed6a8173524ac98984f9033b0d6bcd9a862f3b"
+    "idd_core.py": "452d2445ee23849be9116de75fe75fafc605d56f09bc1a733e8d62286b9fcbc8",
+    "idd_bootstrap.py": "24798ff3e2f7d3675a82494c78969d34fa0d3fd0fc5972a49f85d8e19f3b871c"
   },
   "modules": {
     "idd_models.py": "b0145a1707e563673e1c795114d8adc8acb7a289e4a7ef56a53302d297eada57",
-    "idd_registry.py": "1daa1ee2e8ff48636c32c65dd18f11b9b0cc03ebdcd47bcf561fe99fb8ab7802",
+    "idd_registry.py": "4d66c687b90677280c434c512414a8d6eda9e27b50a369931634f5ea7bb7b24b",
     "idd_state.py": "d489c21d9e075f9a8aafc5b2eabc3489efdf3e38c392be148b1c28b0a6450360",
     "idd_tools.py": "1adb9e9599cf0de0fc423934c0200c8c2b8c814247f87e6abdec2b4561f0297f",
     "idd_graph.py": "9f613bd604c2c8bbbb559e1f7ec18b01ac62533738d65c54ce36cd06c57753b7",
-    "idd_core.py": "b00b67469e3c630bcc93ec7b70ed6a8173524ac98984f9033b0d6bcd9a862f3b"
+    "idd_core.py": "452d2445ee23849be9116de75fe75fafc605d56f09bc1a733e8d62286b9fcbc8",
+    "idd_bootstrap.py": "24798ff3e2f7d3675a82494c78969d34fa0d3fd0fc5972a49f85d8e19f3b871c"
   }
 }

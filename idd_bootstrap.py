@@ -26,6 +26,7 @@ CANONICAL_MODULES = [
     "idd_tools.py",
     "idd_graph.py",
     "idd_core.py",
+    "idd_bootstrap.py",
 ]
 
 
@@ -116,6 +117,9 @@ def verify_manifest(
 def bootstrap_environment(
     start_dir: Optional[Path | str] = None,
     allow_unverified: bool = False,
+    *,
+    repo_root: Optional[Path | str] = None,
+    manifest_path: Optional[Path | str] = None,
 ) -> Path:
     """Bootstrap the runtime environment by discovering repo root, adding to sys.path, and verifying manifest.
 
@@ -134,9 +138,11 @@ def bootstrap_environment(
     except Exception:
         pass
 
-    repo_root = find_repo_root(start_dir)
+    resolved_root: Optional[Path] = (
+        Path(repo_root).resolve() if repo_root else find_repo_root(start_dir)
+    )
 
-    if repo_root is None:
+    if resolved_root is None:
         if is_colab:
             raise RuntimeError(
                 "IDD Bootstrap Error: Running in Google Colab without an explicitly cloned repository.\n"
@@ -151,14 +157,14 @@ def bootstrap_environment(
                 f"IDD Bootstrap Error: Could not locate repository root with {MANIFEST_FILENAME}."
             )
 
-    root_str = str(repo_root)
+    if not allow_unverified:
+        verify_manifest(repo_root=resolved_root, manifest_path=manifest_path)
+
+    root_str = str(resolved_root)
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
 
-    if not allow_unverified:
-        verify_manifest(repo_root=repo_root)
-
-    return repo_root
+    return resolved_root
 
 
 if __name__ == "__main__":
