@@ -1,23 +1,35 @@
 """
 Integration tests for IDD graph compilation and topology invariants.
 
-These tests require LangChain and an OPENAI_API_KEY. They validate:
-- The graph compiles without error
-- Expected nodes are present
-- Emergency/terminal conditions are wired
-- Node set matches documented topology
+Validates that:
+- The authoritative 15-node graph compiles without error without requiring an API key.
+- All 15 required production nodes are present in the compiled graph.
+- Emergency / terminal conditions and barriers are wired.
+- Compiled graph exposes .invoke() and .stream() entrypoints.
 """
-import os
+
+from __future__ import annotations
+
 import pytest
 
 pytestmark = pytest.mark.integration
 
 REQUIRED_NODES = {
     "supervisor",
+    "initial_analysis",
     "data_cleaner",
     "analyst",
+    "viz_worker",
+    "viz_join",
+    "viz_evaluator",
+    "report_orchestrator",
+    "report_section_worker",
+    "report_join",
+    "report_packager",
+    "file_writer",
     "visualization",
-    "report_generator",
+    "EMERGENCY_MSG",
+    "FINISH",
 }
 
 
@@ -25,6 +37,7 @@ REQUIRED_NODES = {
 def core():
     try:
         import idd_core
+
         if not idd_core.HAS_LANGCHAIN:
             pytest.skip("LangChain not available")
         return idd_core
@@ -33,30 +46,21 @@ def core():
 
 
 @pytest.fixture(scope="module")
-def api_key():
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if not key or key.startswith("sk-test") or key == "your-key-here":
-        pytest.skip("OPENAI_API_KEY not set — skipping integration tests")
-    return key
-
-
-@pytest.fixture(scope="module")
-def compiled_graph(core, api_key):
-    """Compile the IDD graph once for the entire module."""
-    try:
-        graph = core.build_graph(api_key=api_key)
-        return graph
-    except AttributeError:
-        pytest.skip("idd_core.build_graph() not available in this version")
+def compiled_graph(core):
+    """Compile the IDD graph structurally once for the entire module without requiring an API key."""
+    graph = core.build_graph(structural_only=True)
+    assert graph is not None, "core.build_graph(structural_only=True) returned None"
+    return graph
 
 
 class TestGraphCompiles:
     def test_graph_builds_without_error(self, compiled_graph):
-        """Graph must compile successfully."""
+        """Graph must compile successfully in structural mode."""
         assert compiled_graph is not None
+        assert getattr(compiled_graph, "is_structural_only", False) is True
 
     def test_required_nodes_present(self, compiled_graph):
-        """All required agent nodes must be present in the compiled graph."""
+        """All 15 required production agent nodes must be present in the compiled graph."""
         node_names = set(compiled_graph.nodes.keys())
         missing = REQUIRED_NODES - node_names
         assert not missing, f"Missing nodes: {missing}"
@@ -68,3 +72,15 @@ class TestGraphCompiles:
     def test_graph_has_stream_method(self, compiled_graph):
         """Compiled graph exposes .stream() entrypoint."""
         assert callable(getattr(compiled_graph, "stream", None))
+
+    def test_executable_mode_fails_closed_without_overrides(self, core):
+        """Executable graph construction (structural_only=False) must reject missing implementations."""
+        with pytest.raises(ValueError, match="missing node override"):
+            core.build_graph(structural_only=False)
+
+    def test_structural_placeholder_invocation_raises_runtime_error(
+        self, compiled_graph
+    ):
+        """Invoking a structural-only placeholder node raises RuntimeError (fail-closed)."""
+        with pytest.raises(RuntimeError, match="Cannot execute placeholder node"):
+            compiled_graph.invoke({"messages": []})

@@ -41,7 +41,8 @@ You are the guardian and master of the repository's notebook build and patching 
    - Always verify cell-level compilation and JSON structure after regeneration:
      ```powershell
      python _patch_notebook.py
-     python -c "import json; cells=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb', encoding='utf-8'))['cells']; print(f'{len(cells)} cells OK')"
+     python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
+     python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
      ```
 
 ---
@@ -63,11 +64,12 @@ You are the guardian and master of the repository's notebook build and patching 
      - Cell 57: Wrapper nodes (`viz_worker`, `viz_join`, `report_section_worker`, `report_packager`, `file_writer`).
      - Cell 83: Deterministic ReportLab / xhtml2pdf rendering post-graph.
 3. **Diagnosis & Validation**:
-   - Run compilation checks on extracted code cells:
+   - Run fail-closed compilation and integrity checks on the patched notebook:
      ```powershell
-     python extract_notebook_source.py
-     python -m pytest test_validate_run.py -q
+     python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
+     python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
      ```
+   - Use `extract_notebook_source.py` only as a source inspection helper, NOT as a compilation gate.
    - Diagnose any notebook-level errors, JSON malformations, or cell count discrepancies.
 
 ---

@@ -1,0 +1,41 @@
+{
+  "classification": "historical failure evidence, not accepted production proof",
+  "reported_run_id": "run_default_id-20260929-0210-367d732a",
+  "reported_run_date": "2026-09-29",
+  "reported_duration_seconds": 877,
+  "reported_notebook": "IntelligentDataDetective_beta_v5_patched.ipynb",
+  "reported_dataset": "retail_orders",
+  "reported_environment": {
+    "python": "3.12.2",
+    "numpy": "1.26.4",
+    "pandas": "2.2.1",
+    "scipy": "1.12.0",
+    "matplotlib": "3.8.3",
+    "IDD_SKIP_NOTEBOOK_INSTALLS": "1"
+  },
+  "reported_validate_run": {
+    "score": "5/12",
+    "passed_criteria": [1, 3, 4, 5, 11],
+    "failed_criteria": [2, 6, 7, 8, 9, 10, 12],
+    "written_sections_count": 0,
+    "report": null,
+    "distinct_visualizations": 2
+  },
+  "validator_provenance": "Summary recorded in memory-bank/activeContext.md by commit 2845c4b; not independently rerun here. No original validator-output capture or artifact-quality score is included.",
+  "log": {
+    "filename": "notebook_run_log.txt",
+    "sha256": "07227b7516795b5d538bc60ce242cae8f84639bdf0fa2acec3301d7f913f4570",
+    "source_commit": "2845c4b779cbfb7379f55831ae44583e2734e742",
+    "source_path": "notebook_run_log.txt",
+    "observed_final": "22:25:11 [INFO] FINAL initial_analysis=True cleaning=True analyst=True viz=True report=None",
+    "limitation": "Log has time-of-day stamps, not a date, source SHA, notebook hash, or run ID. Association with the reported run is from the accompanying memory-bank entry."
+  },
+  "execution_source_sha": null,
+  "execution_notebook_sha256": null,
+  "provenance_limit": "Exact execution source and notebook bytes were not captured. This run predates the reviewed head b633da5 and must not be attributed to the current candidate.",
+  "root_log_restoration": {
+    "source_commit": "f4a749e25a34b95d6c4bd02e397ac793a732d95b",
+    "classification": "pre-PR historical log restored verbatim, not fresh proof"
+  },
+  "scope": "PR #153 is a bootstrap/registry prerequisite repair only. Report completion remains blocked by #115/#119; no report-dispatch fix or fresh keyed proof is claimed."
+}

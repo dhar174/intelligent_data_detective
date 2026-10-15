@@ -437,6 +437,258 @@ def assert_patch_present(source, marker, *, patch_id):
         )
 
 
+def apply_p1_tm_supervisor_patch(source):
+    """Replace all supervisor worker-message sites or reject a partial patch."""
+    old_append = "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))"
+    new_append = (
+        'agent_rq_msgs.append(HumanMessage(content=f"[Agent Tool Output]: '
+        '{this_last_agent_reply_msg}", name=this_last_agent_id))  # PATCH: P1-TM'
+    )
+    old_conversion = "if isinstance(agent_msg, ToolMessage):"
+    new_conversion = "if isinstance(agent_msg, (ToolMessage, AIMessage)):  # PATCH: P1-TM"
+    sites = (
+        (old_append, new_append, 1),
+        (old_conversion, new_conversion, 2),
+    )
+    old_counts = tuple(source.count(old) for old, _, _ in sites)
+    new_counts = tuple(source.count(new) for _, new, _ in sites)
+    expected = tuple(count for _, _, count in sites)
+    if old_counts == (0, 0) and new_counts == expected:
+        return source
+    if old_counts != expected or new_counts != (0, 0):
+        raise RequiredPatchError(
+            f"P1-TM: expected original counts {expected} or patched counts {expected}; "
+            f"found original {old_counts}, patched {new_counts}"
+        )
+    patched = source
+    for old, new, count in sites:
+        patched = patched.replace(old, new, count)
+    if any(patched.count(old) for old, _, _ in sites) or tuple(
+        patched.count(new) for _, new, _ in sites
+    ) != expected:
+        raise RequiredPatchError("P1-TM: incomplete postcondition after replacement")
+    return patched
+
+
+def apply_notebook_install_guard_patch(source: str) -> str:
+    """Wrap notebook package installation in an IDD_SKIP_NOTEBOOK_INSTALLS check.
+
+    Fail fast if:
+      - the install anchor is missing
+      - multiple unexpected install anchors appear
+      - the guard is only partially present
+      - the expected generated postcondition is absent
+    """
+    guard_marker = "# PATCH: P2-SKIP-INSTALLS"
+    skip_flag_code = (
+        '_skip_notebook_installs = (\n'
+        '    os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS", "")\n'
+        '    .strip()\n'
+        '    .lower()\n'
+        '    in {"1", "true", "yes", "on"}\n'
+        ')'
+    )
+    skip_print_code = (
+        'if _skip_notebook_installs:\n'
+        '    print(\n'
+        '        "Skipping in-notebook dependency installation; "\n'
+        '        "using the pre-provisioned runtime environment."\n'
+        '    )'
+    )
+
+    is_patched = guard_marker in source
+    has_active_pip = any(re.match(r"^\s*!pip\b", line) for line in source.splitlines())
+    has_partial = ("IDD_SKIP_NOTEBOOK_INSTALLS" in source or "_skip_notebook_installs" in source or "Skipping in-notebook dependency installation;" in source)
+
+    if has_partial and not is_patched:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: partial install skip guard detected without patch marker")
+
+    anchor_original = (
+        "if use_local_llm:\n"
+        "    !pip install -U langchain_huggingface sentence_transformers\n\n"
+        "# Install or upgrade the required packages directly from within the notebook using pip.\n"
+        "# WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.\n"
+        "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite"
+    )
+    anchor_with_bleach = (
+        "if use_local_llm:\n"
+        "    !pip install -U langchain_huggingface sentence_transformers\n\n"
+        "# Install or upgrade the required packages directly from within the notebook using pip.\n"
+        "# WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.\n"
+        "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown bleach joblib langchain langchain-core langchain-openai langchain_experimental langgraph chromadb pydantic python-dotenv tiktoken openpyxl scipy openai langgraph-checkpoint-sqlite"
+    )
+
+    replacement_block = (
+        f"{guard_marker}\n"
+        f"{skip_flag_code}\n\n"
+        f"{skip_print_code}\n"
+        "else:\n"
+        "    if use_local_llm:\n"
+        "        subprocess.check_call(\n"
+        "            [\n"
+        "                sys.executable,\n"
+        '                "-m",\n'
+        '                "pip",\n'
+        '                "install",\n'
+        '                "-U",\n'
+        '                "langchain_huggingface",\n'
+        '                "sentence_transformers",\n'
+        "            ]\n"
+        "        )\n\n"
+        "    # Install or upgrade the required packages directly from within the notebook using pip.\n"
+        "    # WARN: This mutates the live kernel environment; occasionally a kernel restart is needed for major updates.\n"
+        "    subprocess.check_call(\n"
+        "        [\n"
+        "            sys.executable,\n"
+        '            "-m",\n'
+        '            "pip",\n'
+        '            "install",\n'
+        '            "-U",\n'
+        '            "langmem",\n'
+        '            "langchain-community",\n'
+        '            "tavily-python",\n'
+        '            "scikit-learn",\n'
+        '            "xhtml2pdf",\n'
+        '            "pypdf",\n'
+        '            "pymupdf",\n'
+        '            "pillow",\n'
+        '            "markdown",\n'
+        '            "bleach",\n'
+        '            "joblib",\n'
+        '            "langchain",\n'
+        '            "langchain-core",\n'
+        '            "langchain-openai",\n'
+        '            "langchain_experimental",\n'
+        '            "langgraph",\n'
+        '            "chromadb",\n'
+        '            "pydantic",\n'
+        '            "python-dotenv",\n'
+        '            "tiktoken",\n'
+        '            "openpyxl",\n'
+        '            "scipy",\n'
+        '            "openai",\n'
+        '            "langgraph-checkpoint-sqlite",\n'
+        "        ]\n"
+        "    )"
+    )
+
+    if is_patched:
+        if source.count(guard_marker) != 1 or source.count(replacement_block) != 1 or has_active_pip:
+            raise RequiredPatchError("P2-SKIP-INSTALLS: incomplete guard or corrupted postcondition in already patched source")
+        return source
+
+    matched_anchor = None
+    if source.count(anchor_original) == 1 and source.count(anchor_with_bleach) == 0:
+        matched_anchor = anchor_original
+    elif source.count(anchor_with_bleach) == 1 and source.count(anchor_original) == 0:
+        matched_anchor = anchor_with_bleach
+    elif source.count(anchor_original) > 1 or source.count(anchor_with_bleach) > 1:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: multiple install anchors found in source")
+    else:
+        if has_active_pip:
+            raise RequiredPatchError("P2-SKIP-INSTALLS: unexpected or malformed pip install anchor in source")
+        raise RequiredPatchError("P2-SKIP-INSTALLS: required install anchor not found")
+
+    patched = source.replace(matched_anchor, replacement_block, 1)
+
+    if patched.count(guard_marker) != 1:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: patch marker count != 1 after replacement")
+    if "IDD_SKIP_NOTEBOOK_INSTALLS" not in patched:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: IDD_SKIP_NOTEBOOK_INSTALLS missing after replacement")
+    if "Skipping in-notebook dependency installation;" not in patched:
+        raise RequiredPatchError("P2-SKIP-INSTALLS: skip print missing after replacement")
+    if any(re.match(r"^\s*!pip\b", line) for line in patched.splitlines()):
+        raise RequiredPatchError("P2-SKIP-INSTALLS: raw !pip install remains after replacement")
+
+    try:
+        ast.parse(patched)
+    except SyntaxError as syn_err:
+        raise RequiredPatchError(f"P2-SKIP-INSTALLS: generated cell is not valid Python: {syn_err}") from syn_err
+
+    return patched
+
+
+def apply_dataframe_registry_path_binding_patch(source: str) -> str:
+    """Ensure DataFrameRegistry.register_dataframe binds path for new df_ids.
+
+    Fixes UnboundLocalError: cannot access local variable 'path' where it is not associated with a value
+    when register_dataframe is called for a new df_id.
+
+    Fail fast if:
+      - the target anchor is missing
+      - multiple unexpected anchors appear
+      - the guard is only partially present
+      - the expected generated postcondition is absent
+    """
+    guard_marker = "# PATCH: P3-DF-REG-PATH"
+    anchor_old = (
+        '          if raw_path == "" or raw_path is None:\n'
+        '              raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()\n'
+        '              raw_path = str(raw_path)\n'
+        '\n'
+        '          # new id: must have either df or an existing path\n'
+        '          if df is None and not path.exists():'
+    )
+    anchor_new = (
+        '          if raw_path == "" or raw_path is None:\n'
+        '              raw_path = (WORKING_DIRECTORY / f"{df_id}.csv").resolve()\n'
+        '              raw_path = str(raw_path)\n'
+        f'          path = self._norm_path(raw_path)  {guard_marker}\n'
+        '\n'
+        '          # new id: must have either df or an existing path\n'
+        '          if df is None and not path.exists():'
+    )
+
+    is_patched = guard_marker in source
+    path_norm_count = source.count("path = self._norm_path(raw_path)")
+
+    if is_patched:
+        if (
+            source.count(guard_marker) != 1
+            or source.count(anchor_new) != 1
+            or source.count(anchor_old) != 0
+            or path_norm_count != 2
+        ):
+            raise RequiredPatchError("P3-DF-REG-PATH: corrupted patch marker without path binding")
+        return source
+
+    if source.count(anchor_old) != 1:
+        raise RequiredPatchError(
+            f"P3-DF-REG-PATH: expected 1 anchor occurrence, found {source.count(anchor_old)}"
+        )
+
+    patched = source.replace(anchor_old, anchor_new, 1)
+
+    if patched.count(guard_marker) != 1:
+        raise RequiredPatchError("P3-DF-REG-PATH: patch marker count != 1 after replacement")
+    if patched.count("path = self._norm_path(raw_path)") != 2:
+        raise RequiredPatchError("P3-DF-REG-PATH: expected 2 path binding occurrences after replacement")
+
+    try:
+        ast.parse(patched)
+    except SyntaxError as syn_err:
+        raise RequiredPatchError(f"P3-DF-REG-PATH: generated cell is not valid Python: {syn_err}") from syn_err
+
+    return patched
+
+
+def apply_dataframe_registry_retained_path_patch(source: str) -> str:
+    """Keep the new-ID reload metadata identical to the normalized I/O path."""
+    old = (
+        '          self.registry[df_id] = {"df": df, "raw_path": str(raw_path)}\n'
+        '          self.df_id_to_raw_path[df_id] = str(raw_path)'
+    )
+    new = (
+        '          self.registry[df_id] = {"df": df, "raw_path": str(path)}\n'
+        '          self.df_id_to_raw_path[df_id] = str(path)  # PATCH: P3-RETAINED-PATH'
+    )
+    if "# PATCH: P3-RETAINED-PATH" in source:
+        if source.count(new) != 1 or source.count(old) != 0 or source.count("# PATCH: P3-RETAINED-PATH") != 1:
+            raise RequiredPatchError("P3-RETAINED-PATH: corrupted retained path metadata")
+        return source
+    return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -450,19 +702,32 @@ def main():
         f"{prompt_brace_fixes} cell(s) updated"
     )
 
-    # --- Patch cell idx 4 (dependency setup) ---
+    # --- Patch cell idx 4 (dependency setup / headless install suppression) ---
     c4 = cells[4]
     src4 = join_source(c4["source"])
-    if "!pip install -U  langmem" in src4 and "bleach" not in src4:
-        c4["source"] = src4.replace(
-            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf joblib",
-            "!pip install -U  langmem langchain-community tavily-python scikit-learn xhtml2pdf pypdf pymupdf pillow markdown bleach joblib",
-            1,
+    c4["source"] = apply_notebook_install_guard_patch(src4)
+    if c4["cell_type"] == "code":
+        c4["outputs"] = []
+        c4["execution_count"] = None
+    print("✅ Cell idx 4: applied headless install suppression guard (P2-SKIP-INSTALLS)")
+
+    # --- Patch DataFrameRegistry (cell idx 19): fix unbound 'path' for new df_id (P3-DF-REG-PATH) ---
+    df_reg_cells = [
+        (idx, cell)
+        for idx, cell in enumerate(cells)
+        if cell.get("cell_type") == "code"
+        and "class DataFrameRegistry:" in join_source(cell["source"])
+    ]
+    if len(df_reg_cells) != 1:
+        raise RequiredPatchError(
+            f"P3-DF-REG-PATH: expected 1 DataFrameRegistry target cell, found {len(df_reg_cells)}"
         )
-        if c4["cell_type"] == "code":
-            c4["outputs"] = []
-            c4["execution_count"] = None
-        print("✅ Cell idx 4: added pypdf pymupdf pillow markdown bleach to notebook dependencies")
+    idx, cell = df_reg_cells[0]
+    cell["source"] = apply_dataframe_registry_path_binding_patch(join_source(cell["source"]))
+    cell["source"] = apply_dataframe_registry_retained_path_patch(cell["source"])
+    cell["outputs"] = []
+    cell["execution_count"] = None
+    print(f"✅ Cell idx {idx}: fixed DataFrameRegistry path binding (P3-DF-REG-PATH)")
 
     # --- Patch cell idx 48 (dataset preparation) ---
     c48 = cells[48]
@@ -2819,6 +3084,29 @@ def main():
         break
     if not sv_assert_patched:
         print("⚠️  P1-G assert fallback: supervisor cell not found")
+
+    # --- Patch supervisor_node: P1-TM convert ToolMessage and AIMessage to HumanMessage ---
+    # Convert ToolMessage and AIMessage to HumanMessage to avoid "No tool call found" errors
+    # when worker agent responses are passed back as supervisor context.
+    sv_tm_conv_patched = False
+    for idx, cell in enumerate(cells):
+        if cell.get("cell_type") != "code":
+            continue
+        src = join_source(cell["source"])
+        if "def supervisor_node" not in src or "make_supervisor_node" not in src:
+            continue
+        new_src = apply_p1_tm_supervisor_patch(src)
+        if new_src != src:
+            cell["source"] = new_src
+            cell["outputs"] = []
+            cell["execution_count"] = None
+            print(f"✅ Cell idx {idx}: P1-TM ToolMessage/AIMessage to HumanMessage conversion patched")
+        else:
+            print(f"ℹ️  Cell idx {idx}: supervisor already has complete P1-TM conversion")
+        sv_tm_conv_patched = True
+        break
+    if not sv_tm_conv_patched:
+        raise RequiredPatchError("P1-TM: supervisor cell not found")
 
     # viz_worker calls visualization_agent.invoke() with recursion_limit=400 (inherited).
     # Like all ToolStrategy agents, it loops indefinitely → GraphRecursionError.

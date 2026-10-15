@@ -197,3 +197,258 @@ If any fail, route to a remediation node (or fail loudly) — **not** to FINAL w
 The managed block above (line 50–52) still says "Always use `MyChatOpenai`". As of 2026-04-23 the user has marked `MyChatOpenai` as **legacy** and prefers `ChatOpenAI` direct (see `decisionLog.md` ADR). The managed block is intentionally NOT edited. Treat the ADR as authoritative for new code; treat the managed block as the regenerable scaffold contract.
 <!-- session-curated:2026-04-23-phase6:end -->
 
+<!-- session-curated:2026-10-12-cp1-corrective-pass:start -->
+### Pattern: Lossless DataFrameRegistry Backing Persistence (CP1 Corrective Pass)
+**Pattern:** Internal backing snapshots in `DataFrameRegistry` must strictly use `.pkl` for disk serialization on LRU cache eviction, while external files (`raw_path`) preserve user formats.
+```python
+# Internal backing files in self.data_dir:
+filename = f"{safe_prefix}_{digest[:16]}.pkl"
+# Saved via pd.to_pickle(df, path) and reloaded via pd.read_pickle(path)
+```
+**Why:** CSV serialization silently discards integer column name types (`0` stringified to `'0'`), timezone metadata on datetimes, MultiIndex column/row hierarchies, and nullable dtypes (`pd.NA`, `Int64`, `boolean`). Using `.pkl` provides 100% lossless representation fidelity across cache eviction while keeping unpickling strictly confined to verified paths within `self.data_dir` (`_get_owned_backing_path`).
+<!-- session-curated:2026-10-12-cp1-corrective-pass:end -->
+
+<!-- session-curated:2026-10-13-cp1-private-storage-security:start -->
+### Pattern: Private Storage Boundary & Filesystem Security Discipline (CP1 Security Pass)
+**Pattern:** Registry-owned snapshot storage must be strictly isolated per instance, permission-hardened, and validated against untrusted filesystem locations to protect pickle serialization:
+```python
+# 1. Default storage directory allocation:
+tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))
+# Enforced 0700 permissions (drwx------) on POSIX
+
+# 2. Backing file writes via atomic staging:
+tmp_path = path.parent / f".tmp_{uuid.uuid4().hex[:12]}_{path.name}"
+# Mode 0600 (-rw-------) applied on POSIX before atomic os.replace(tmp_path, path)
+
+# 3. Directory pre-validation on explicit data_dir:
+# - Rejects filesystem root (path == path.parent)
+# - Rejects non-directory files
+# - On POSIX: rejects world-writable dirs (st.st_mode & stat.S_IWOTH)
+# - On POSIX: rejects unowned dirs (st.st_uid != os.getuid())
+
+# 4. Deserialization trust boundary check:
+if path.suffix.lower() in (".pkl", ".pickle"):
+    resolved = path.resolve()
+    resolved_data_dir = self.data_dir.resolve()
+    if not resolved.is_relative_to(resolved_data_dir) or resolved == resolved_data_dir:
+        raise DataFrameRegistryError(...)
+```
+**Why:** Deserializing pickles from world-writable or multi-user shared directories without strict permission enforcement creates local privilege escalation and tampering risks. By creating isolated directories via `mkdtemp(0700)`, restricting snapshot permissions to `0600`, and enforcing containment within verified `self.data_dir`, the registry maintains a secure deserialization boundary. On Windows, security relies on NTFS DACL inheritance within `%TEMP%` / `%USERPROFILE%`.
+<!-- session-curated:2026-10-13-cp1-private-storage-security:end -->
+
+<!-- session-curated:2026-10-13-cp2-canonical-tools:start -->
+### Pattern: Standardized Tool Error Contract & Exception Sanitization (CP2)
+**Pattern:** Data tools return a standardized 4-field user-safe dictionary rather than raw strings:
+```python
+{
+    "status": "error",
+    "operation": func.__name__,
+    "reason": "An unexpected data-processing failure occurred." | specific_reason,
+    "action": "User-actionable remediation instructions",
+}
+```
+**Why:** Standardizing the error dictionary matches notebook Cell 32 and provides actionable guidance for LLM agent reflection. Unexpected internal exceptions are logged with full traceback via `logger.exception()` but sanitized in the response to prevent leaking internal stack traces, system paths, or environment secrets to model prompts. Known domain exceptions (`FileNotFoundError`, `KeyError`, `ValueError`, `EmptyDataError`, `ParserError`, `DtypeWarning`) return distinct, actionable diagnostics.
+
+### Pattern: Signature-Aware Argument Binding in Tool Decorator (CP2)
+**Pattern:** Decorators inspecting parameters (such as `df_id` for DataFrame validation) must use Python's `inspect.signature` rather than positional indexing:
+```python
+func_sig = inspect.signature(func)
+bound_args = func_sig.bind(*args, **kwargs)
+bound_args.apply_defaults()
+
+if "df_id" in bound_args.arguments:
+    df_id = bound_args.arguments["df_id"]
+    # validate registered DataFrame exists
+```
+**Why:** Blind `args[0]` checks (the root cause of Claim 7 and historical test failures) erroneously treat the first argument of any tool as a DataFrame identifier. When decorating functions without a `df_id` parameter (e.g. `func(message: str, count: int)`), passing `"hello"` fails because `"hello"` is not in the registry. Signature binding accurately extracts `df_id` regardless of positional index, keyword argument order, or parameter object attribute (`.df_id`), and cleanly skips DataFrame validation for functions that do not take a DataFrame ID.
+
+### Pattern: Artifact Path Containment & Multi-Root Verification (CP2 / PR #149)
+**Pattern:** All tool writes must use single-root containment, while report aggregators use multi-root read validation:
+```python
+# Single-root write containment (tools):
+def _resolve_artifact_path(file_name: str, config=None, subdir=None, create_parents=True):
+    base = _get_artifacts_base(config)
+    path = (base / file_name).resolve()
+    if not _is_subpath(path, base):
+        raise ValueError("Path outside artifacts root")
+    if create_parents:
+        path.parent.mkdir(parents=True, exist_ok=True)  # Delayed mkdir only after validation
+    return path
+
+# Multi-root read verification (report/packager nodes):
+def is_safe_artifact_path(candidate, allowed_roots, require_file=False):
+    # Verifies candidate is within at least one authorized root and rejects URI schemes
+```
+**Why:** Single-root containment protects against path traversal attacks (`../`), absolute path escapes, and symlink escapes, ensuring tool artifacts are written strictly into the designated run directory. Delayed directory creation prevents malicious or malformed paths from creating directories before validation. Multi-root read verification allows downstream publication nodes to verify images across artifacts, working directories, and run directories without weakening write containment.
+
+### Pattern: Exception Boundary, Diagnostic Integrity & Path Pre-Filter Security (CP2 Final Corrective Pass)
+**Pattern:** Enclose pre-execution reflection in exception-safe boundaries, enforce exact 4-key error schema equality with canary secret leak prevention, and reject remote RFC URIs, single-letter schemes, drive-relative paths, and POSIX UNC notation:
+```python
+# 1. Closed decorator boundary:
+@wraps(func)
+def wrapper(*args, **kwargs):
+    try:
+        # Pre-execution: signature binding, parameter property access, DataFrame validation
+        ...
+        return func(*args, **kwargs)
+    except Exception as e:
+        # Unexpected descriptor / infrastructure exceptions logged locally with traceback
+        # but sanitized to user-safe dictionary without leaking secret canaries
+        return _tool_failure(func.__name__, e)
+
+# 2. Strict DataFrame validation vs infrastructure error separation:
+def _validate_dataframe_for_tool(df_id: str):
+    # Distinguishes genuine missing/empty DataFrame from unexpected registry RuntimeError.
+    # Registry errors re-raise to propagate cleanly to _tool_failure sanitization.
+
+# 3. Ambiguous URI, Drive-Relative & POSIX UNC Path Rejection:
+_URI_SCHEME_PATTERN = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
+_WINDOWS_DRIVE_PATTERN = re.compile(r"^[A-Za-z]:[/\\]")
+
+def _is_uri_scheme(path_str: str) -> bool:
+    # Only unambiguous absolute Windows drive paths (^[A-Za-z]:[/\\\\]) are exempted.
+    # Rejects remote schemes (http:, https:, data:, etc.), single-letter schemes (a:payload),
+    # and Windows drive-relative paths (C:relative.png, D:folder\file.txt) on all platforms
+    # before path resolution, without creating directories.
+
+# In _resolve_artifact_path / is_safe_artifact_path:
+if os.name != "nt" and (_WINDOWS_DRIVE_PATTERN.match(fn_stripped) or fn_stripped.startswith(r"\\")):
+    raise ValueError(...)  # POSIX UNC and drive letter rejection before resolution
+
+# 4. Diagnostic Probe Hardening (Claim 6):
+def probe_claim_6():
+    # Enforces exact 4-key schema equality:
+    # set(res.keys()) == {'status', 'operation', 'reason', 'action'}
+    # and serializes entire payload (json.dumps(res, default=str)) to verify
+    # complete absence of synthetic canary secrets in all fields.
+```
+**Why:** 
+1. If a caller passes an object whose attribute descriptor (like `.df_id`) raises `RuntimeError`, or if argument binding fails unexpectedly, raw exceptions could bypass `@handle_tool_errors`, crash the agent node, or leak confidential canaries in prompt context. Enclosing all wrapper operations in a unified `try...except` guarantees complete sanitization.
+2. In `_validate_dataframe_for_tool`, treating an unexpected registry crash as a missing dataframe misinforms the agent to "check the dataframe ID". Propagating unexpected errors to `_tool_failure` yields a system error response with local diagnostic logging.
+3. Rejecting ambiguous URI schemes and Windows drive-relative paths (`C:foo`) prevents remote URLs or unanchored drives from creating directories before validation. Rejecting UNC paths on POSIX (`\\\\server\\share`) prevents OS-dependent path traversal, while on Windows UNC paths are contained within authorized roots.
+4. Serializing the entire dictionary payload in `probe_claim_6` guarantees that canary secrets do not leak into undeclared dictionary keys or metadata, avoiding false-green diagnostic certifications.
+<!-- session-curated:2026-10-13-cp2-canonical-tools:end -->
+
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:start -->
+### Pattern: Canonical State, Reducer Discipline & Channel Invariants (CP3)
+**Pattern:** Canonical State (`idd_state.py`) defines 70 fields (39 with custom reducers, 31 plain fields) with strict channel discipline:
+```python
+class State(TypedDict, total=False):
+    # BR-7 Invariant: declared directly, never inheriting from AgentState
+    messages: Annotated[list[AnyMessage], add_messages]
+    
+    # W9-SR-DROP Invariant: structured_response intentionally OMITTED from supervisor State
+    
+    # Turn accounting & boolean state
+    _report_dispatched: Annotated[Optional[bool], bool_or]
+    ...
+
+# Safe boolean-OR reducer:
+def bool_or(a: Optional[bool], b: Optional[bool]) -> Optional[bool]:
+    """Safe boolean-OR reducer: treats None as False, avoids TypeError."""
+    return b if a is None else (a if b is None else bool(a | b))
+```
+**Why:**
+1. **BR-7**: Inheriting `State` from LangChain's `AgentState` drags in the `remaining_steps` managed channel which LangGraph's `InputSchema` rejects at graph compilation. Direct declaration avoids managed channel collisions.
+2. **W9-SR-DROP**: In `langgraph.prebuilt.create_agent`, each agent subgraph manages its own `AgentState[ResponseT]`. Colliding a supervisor custom-reducer channel with `AgentState.structured_response` causes `_resolve_schemas` set-iteration nondeterminism and `InvalidUpdateError` on concurrent writes across steps. Wrapper nodes read structured responses from the `agent.invoke()` Python dictionary return (`result["structured_response"]`) and map fields into dedicated supervisor State keys.
+3. **Safe Reducers (`bool_or`)**: Naive bitwise OR (`a | b`) crashes with `TypeError` when either operand is `None` during intermediate supersteps. Checking `None` first ensures robust multi-agent state accumulation.
+
+### Pattern: Canonical Graph Assembly & Offline Pass-Through Architecture (CP3)
+**Pattern:** `idd_graph.py` encapsulates `build_graph()` to construct the authoritative 15-node, 33-edge StateGraph matching `validate_graph.py`:
+```python
+def build_graph(
+    node_overrides: Optional[Dict[str, Callable]] = None,
+    checkpointer: Any = None,
+    store: Any = None,
+    cache: Any = None,
+    structural_only: bool = True,
+    **kwargs: Any,
+) -> CompiledStateGraph:
+    ...
+```
+**Why:**
+1. **Offline Testability**: Providing default lightweight pass-through nodes (`_make_pass_through_node`) allows compiling and verifying the exact 15-node graph topology without live LLM calls, external API keys, or side-effect SQLite database file creation (`checkpointer=None`).
+2. **Barrier & Fan-In Preservation**: Preserves all structural graph barriers (`viz_join`, `report_join`, `EMERGENCY_MSG` fan-in edge back to `supervisor`), eliminating unreachable nodes and dead ends.
+3. **Strict Layering DAG**: Establishes a clean unidirectional DAG (`idd_models` -> `idd_state` -> `idd_graph` -> `idd_core`), completely decoupling graph compilation from execution adapters.
+<!-- session-curated:2026-10-14-cp3-canonical-state-graph:end -->
+
+<!-- session-curated:2026-10-14-cp3-corrective-pass:start -->
+### Pattern: Dual-Mode Graph Assembly & Fail-Closed Node Validation (CP3 Corrective Pass)
+**Pattern:** `build_graph()` distinguishes structural compile/topology checks from executable pipelines:
+```python
+# In idd_graph.py:
+def _make_pass_through_node(name: str) -> Callable[[State], dict]:
+    def pass_through_node(state: State) -> dict:
+        raise RuntimeError(
+            f"Cannot execute placeholder node '{name}'. "
+            "Graph was assembled with structural_only=True. "
+            "To execute the graph, provide node_overrides and compile with structural_only=False."
+        )
+    pass_through_node.__name__ = f"{name}_node"
+    return pass_through_node
+
+def build_graph(
+    node_overrides: Optional[Dict[str, Callable]] = None,
+    ...,
+    structural_only: bool = True,
+    **kwargs: Any,
+) -> CompiledStateGraph:
+    ...
+    if not structural_only:
+        required_nodes = set(PRODUCTION_NODE_NAMES) - {"FINISH"}
+        missing = required_nodes - set(overrides.keys())
+        if missing:
+            raise ValueError(f"Cannot build executable graph (structural_only=False): missing node override(s): {sorted(missing)}")
+```
+**Why:**
+1. **Safety Boundary**: Structural compilation allows fast unit testing and topology validation without requiring mock implementations for all 14 nodes.
+2. **Fail-Closed Execution**: If a test or runtime invokes a placeholder node, it immediately raises `RuntimeError` rather than silently passing through an empty dictionary.
+3. **Executable Mode Validation**: When `structural_only=False`, the graph builder validates upfront that all required production/mock nodes are present, failing closed with `ValueError` on missing or unrecognized node overrides.
+
+### Pattern: Fail-Closed Supervisor Routing & Self-Loop Rejection (CP3 Corrective Pass)
+**Pattern:** `route_from_supervisor()` rigorously validates routing targets and rejects supervisor self-loops:
+```python
+def route_from_supervisor(state: State) -> str:
+    # W13N-RT completion route:
+    if bool(state.get("report_generator_complete")) and state.get("report_results"):
+        return "FINISH" if bool(state.get("file_writer_complete")) else "file_writer"
+
+    nxt = state.get("next")
+    if not nxt:
+        raise ValueError("Supervisor routing failed: destination 'next' is missing or empty in State.")
+
+    allowed: Set[str] = {
+        "initial_analysis", "data_cleaner", "analyst", "viz_worker", "viz_join",
+        "viz_evaluator", "visualization", "report_orchestrator", "report_section_worker",
+        "report_join", "report_packager", "file_writer", "FINISH", "EMERGENCY_MSG",
+    }
+    if nxt not in allowed:
+        raise ValueError(f"Supervisor routing failed: destination {nxt!r} is invalid. Allowed destinations: {sorted(allowed)}")
+    return nxt
+```
+**Why:**
+1. **Self-Loop Prevention**: Removing `'supervisor'` from `allowed` prevents infinite self-routing loops and catastrophic `KeyError: 'supervisor'` during conditional edge resolution.
+2. **Deterministic Error Halting**: Missing, empty, or unmapped worker destinations fail immediately with descriptive `ValueError` rather than propagating undefined states or falling back to a default node.
+
+### Pattern: Pydantic v2 Required-Nullable Contract & Schema Parity (CP3 Corrective Pass)
+**Pattern:** Strict field parity with Cell 7 schemas:
+```python
+# AgentMembers: strictly 2 fields (membership listing, not routing)
+class AgentMembers(BaseModel):
+    description: str = Field(default="Members of an agent list.")
+    agent_type: Literal[...]
+
+# Router: next_agent_metadata required in JSON schema but nullable
+class Router(BaseNoExtrasModel):
+    next: AgentId = Field(..., description="The next agent to route to.")
+    next_agent_prompt: str = Field(..., description="Instructions for the next agent.")
+    next_agent_metadata: Optional[NextAgentMetadata] = Field(
+        ...,
+        description="Metadata for the next agent.",
+    )
+```
+**Why:**
+1. **AgentMembers Separation of Concerns**: Routing is dynamic and determined by `Router` during execution. Embedding `next` on `AgentMembers` caused confusion between static worker definitions and dynamic routing decisions.
+2. **Pydantic v2 Required-Nullable Serialization**: Using `Field(...)` with `Optional[T]` places `next_agent_metadata` in `schema['required']` while configuring `anyOf: [..., {'type': 'null'}]`. This requires the LLM or caller to explicitly evaluate metadata (passing `None` if absent) rather than omitting the field from JSON payloads.
+<!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
+

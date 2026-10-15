@@ -1,0 +1,65 @@
+{
+  "scope": "PR #153 bootstrap/registry prerequisite repairs; no paid model calls, report routing changes, or end-to-end production certification",
+  "execution_context": "local agent sandbox, revised worktree following b633da5; hosted validation is a separate gate",
+  "python": "3.12.3",
+  "dependencies": {
+    "pytest": "9.1.1",
+    "numpy": "2.5.3",
+    "pandas": "3.0.6",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "matplotlib": "3.11.2",
+    "nbclient": "0.11.0",
+    "nbformat": "5.11.1",
+    "jupyter-client": "8.10.0",
+    "ipykernel": "7.4.0"
+  },
+  "commands": [
+    {
+      "command": "python -m pytest test_validate_run.py tests/unit tests/integration -q -rs",
+      "result": "451 passed, 9 skipped",
+      "skip_reasons": {
+        "missing Run 88 fixture": 1,
+        "pyarrow not installed": 1,
+        "OPENAI_API_KEY not set": 4,
+        "AGENT_MEMBERS/members not exposed in idd_core": 1,
+        "options not exposed in idd_core": 1,
+        "AgentMembers has no next field": 1
+      }
+    },
+    {
+      "command": "python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py test_prompt_formatting.py test_prompt_template_fixes.py -q",
+      "result": "94 passed"
+    },
+    {
+      "command": "python -m pytest test_error_handling_framework.py -q --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures",
+      "result": "15 passed, 1 deselected; exact existing CI exception, not an aggregate failure allowance"
+    },
+    {
+      "command": "python -m pytest test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures -q",
+      "result": "1 failed (existing function-signature test). Assertion expected df_id: test_df but received invalid DataFrame ID test. Existing CI runs this exact test in a separate non-blocking step; no policy or test changes made."
+    },
+    {
+      "command": "IDD_RUN_KERNEL_SMOKE=1 IDD_KERNEL_NAME=idd-preflight python -m pytest tests/smoke/test_scientific_kernel.py -q -s",
+      "result": "3 passed, no skips; actual registered idd-preflight Jupyter kernel imported six scientific modules and verified inherited default, normalized truthy, and install-enabled flag values"
+    }
+  ],
+  "kernel_provisioning": [
+    "python -m pip install nbclient==0.11.0 nbformat==5.11.1 jupyter-client==8.10.0 ipykernel==7.4.0",
+    "python -m ipykernel install --user --name idd-preflight --display-name 'IDD scientific smoke'"
+  ],
+  "lint_and_format": "Existing CI black/flake8 commands and changed-file E9,F63,F7,F82 checks passed; git diff --check passed. Textual export is not whole-file compiled.",
+  "generated_notebook": {
+    "cells": 99,
+    "sha256": "e46724f21bbd950c5884d1f966f27a2a078b8ef5911580a7254fb9ebfbfa1bc2",
+    "regeneration": "tests/unit/test_patcher_integrity.py regenerates twice and checks deterministic bytes and generated structure"
+  },
+  "initial_fixture_failure": "Isolated registry fixture initially omitted typing.List (20 setup errors); corrected and all 21 production-registry/retained-path tests passed.",
+  "hosted_validation": "Reviewed-head run 37654270378 refreshed: action_required, zero jobs. Final-candidate execution/review outcomes are reported on PR #153, not inferred from these local results.",
+  "deferrals": {
+    "140": "whole-runtime consolidation of textual export",
+    "141": "registry ownership, deduplication, and broader persistence policy",
+    "152": "Antigravity activation/discovery and preserved memory-rule proposals",
+    "115/119": "report pipeline completion and fresh correctly attributed 12/12 + 9/9 proof"
+  }
+}
