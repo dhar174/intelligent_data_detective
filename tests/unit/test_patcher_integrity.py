@@ -243,9 +243,22 @@ def test_generated_file_writer_final_semantics_and_branch_selection(
 
 
 def test_generated_route_to_writer_uses_only_reachable_state(generated_notebook):
-    source = _cell_source(generated_notebook["notebook"], "route_to_writer")
-    function = _function_node(source, "route_to_writer")
-    function_source = ast.get_source_segment(source, function)
+    nb = generated_notebook["notebook"]
+    has_def = any(
+        "def route_to_writer(" in "".join(c.get("source", []))
+        for c in nb["cells"]
+        if c.get("cell_type") == "code"
+    )
+    if has_def:
+        source = _cell_source(nb, "route_to_writer")
+        function = _function_node(source, "route_to_writer")
+        function_source = ast.get_source_segment(source, function)
+    else:
+        import inspect
+        import idd_graph
+
+        function_source = inspect.getsource(idd_graph.route_to_writer)
+        function = ast.parse(function_source).body[0]
 
     for dead_field in (
         "report_sections_agent_generated",
@@ -261,15 +274,20 @@ def test_generated_route_to_writer_uses_only_reachable_state(generated_notebook)
     class ReportResults:
         pass
 
-    module = ast.Module(body=[function], type_ignores=[])
-    ast.fix_missing_locations(module)
-    namespace = {
-        "Literal": __import__("typing").Literal,
-        "ReportOutline": ReportOutline,
-        "ReportResults": ReportResults,
-    }
-    exec(compile(module, "<route_to_writer>", "exec"), namespace)
-    route_to_writer = namespace["route_to_writer"]
+    if has_def:
+        module = ast.Module(body=[function], type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = {
+            "Literal": __import__("typing").Literal,
+            "ReportOutline": ReportOutline,
+            "ReportResults": ReportResults,
+        }
+        exec(compile(module, "<route_to_writer>", "exec"), namespace)
+        route_to_writer = namespace["route_to_writer"]
+    else:
+        import idd_graph
+
+        route_to_writer = idd_graph.route_to_writer
 
     complete = {
         "report_generator_complete": True,
@@ -641,13 +659,19 @@ def test_generated_dataframe_registry_cell_registers_dataframe(generated_noteboo
     import pandas as pd
     nb = generated_notebook["notebook"]
     reg_cell_src = None
+    is_canonical = False
     for cell in nb["cells"]:
         src = "".join(cell.get("source", []))
-        if "class DataFrameRegistry:" in src:
+        if "# PATCH: CP4-CANONICAL-REGISTRY" in src:
+            reg_cell_src = src
+            is_canonical = True
+            break
+        elif "class DataFrameRegistry:" in src:
             reg_cell_src = src
             break
     assert reg_cell_src is not None
-    assert "# PATCH: P3-DF-REG-PATH" in reg_cell_src
+    if not is_canonical:
+        assert "# PATCH: P3-DF-REG-PATH" in reg_cell_src
 
     # Compile and execute DataFrameRegistry in an isolated namespace
     import uuid
@@ -710,6 +734,15 @@ def production_registry(request, generated_notebook, tmp_path):
     import pandas as pd
 
     if request.param == "notebook":
+        has_inline_class = any(
+            cell.get("cell_type") == "code"
+            and "class DataFrameRegistry:" in "".join(cell.get("source", []))
+            for cell in generated_notebook["notebook"]["cells"]
+        )
+        if not has_inline_class:
+            pytest.skip(
+                "Notebook uses canonical idd_registry module under CP4 (verified by test_core_parity_guard.py)"
+            )
         source = next(
             "".join(cell["source"])
             for cell in generated_notebook["notebook"]["cells"]

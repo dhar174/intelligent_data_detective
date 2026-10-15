@@ -54,20 +54,21 @@ You are the guardian and master of the repository's notebook build and patching 
    - Formulate precise, minimal patch insertions that keep the diff clean and surgical.
    - Guard against syntax errors, dangling indentation, unclosed triple-quotes, and unresolved format string placeholders.
 2. **Inspect Notebook Cell Mapping**:
-   - Track key cell boundaries:
-     - Cell 5: Model wrappers & LLM instantiations (`MyChatOpenai` / `ChatOpenAI`).
-     - Cell 7: `State` TypedDict, reducers, `BaseNoExtrasModel`, agent output Pydantic schemas.
-     - Cell 8: `DataFrameRegistry` implementation & thread-safe LRU caching.
-     - Cells 12–13: Tool definitions with `@handle_tool_errors` and `validate_dataframe_exists(df_id)`.
-     - Cell 22: Supervisor `State` channel definitions (W9-SR-DROP: no `structured_response`).
-     - Cell 48: `create_agent` factory invocations and agent subgraph construction.
-     - Cell 57: Wrapper nodes (`viz_worker`, `viz_join`, `report_section_worker`, `report_packager`, `file_writer`).
-     - Cell 83: Deterministic ReportLab / xhtml2pdf rendering post-graph.
+   - Track key canonical cell boundaries:
+     - Cell 4: Runtime bootstrap & SHA-256 manifest verification (`idd_bootstrap.py`, `idd_manifest.json`).
+     - Cell 16: Canonical Pydantic models from `idd_models.py` and `idd_state.py`.
+     - Cell 19: Canonical `DataFrameRegistry` from `idd_registry.py` (`global_df_registry = get_global_registry()`).
+     - Cell 22: Canonical `State` schema and reducers from `idd_state.py` (W9-SR-DROP, BR-7 direct messages).
+     - Cell 32: Canonical tool error handling & path resolution from `idd_tools.py` (`@handle_tool_errors`, `validate_dataframe_exists`, `_resolve_artifact_path`).
+     - Cell 60: Canonical graph assembly via `idd_graph.build_graph(..., structural_only=False)`.
+     - Cell 98: Deterministic image injection and report post-processing.
+   - Forbid copying or inlining core domain logic into patch blocks; wire them to canonical modules.
 3. **Diagnosis & Validation**:
-   - Run fail-closed compilation and integrity checks on the patched notebook:
+   - Run fail-closed compilation, anti-drift, and integrity checks on the patched notebook:
      ```powershell
      python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
      python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
+     python -m pytest tests/unit/test_core_parity_guard.py -v
      ```
    - Use `extract_notebook_source.py` only as a source inspection helper, NOT as a compilation gate.
    - Diagnose any notebook-level errors, JSON malformations, or cell count discrepancies.

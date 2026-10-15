@@ -248,4 +248,36 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Notebook integrity suite: **33 passed**.
   - Notebook & graph invariants: `validate_notebook_integrity.py` PASSED (99 cells intact, 0 churn), `validate_graph.py` PASSED (15 nodes, 33 edges, 70 fields).
   - Code quality: `black --check` 100% clean, `flake8` 0 errors.
+  - Remote Hosted CI: GitHub Actions run `#38647374243`: **100% green**.
+  - All 8 GitHub PR review comments replied to and resolved. PR #161 maintained in Draft.
+  - Head commit: `e059d73`.
 - Status: **CP3 REVIEW PASS COMPLETE — READY FOR FINAL APPROVAL & MERGE GATE** (Issue #160, PR #161).
+
+### 2026-10-15 — Checkpoint 4 (CP4): Canonical Notebook Integration, Anti-Drift Enforcement, and Control-Plane Alignment (Issue #162, PR #163)
+- Scope Delivered:
+  - Canonical Bootstrap & Integrity Manifest:
+    - Created `idd_manifest.json` recording SHA-256 hashes of all 6 canonical modules (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`).
+    - Added `!idd_manifest.json` exception to `.gitignore` so integrity digest is checked into git.
+    - Created `idd_bootstrap.py` for runtime environment setup, provenance verification, and SHA-256 hash validation.
+  - Canonical Module Enhancements:
+    - Updated `idd_graph.py` to support `node_cache_policies: Optional[Union[Any, Dict[str, Any]]] = None`, preserving `CachePolicy(ttl=120)` on `builder.add_node()`. Re-exported in `idd_core.py`.
+    - Added duck-type tolerance in `route_to_writer` (`idd_graph.py`) for `ReportOutline` (checking `.sections`) and `ReportResults` (`type(report_results).__name__ == "ReportResults"`).
+    - Added default config in `idd_state.py`: `default_an_config = AnalysisConfig(...)` and re-exported in `idd_core.py`.
+  - Notebook Patcher Integration (`_patch_notebook.py`):
+    - **Cell 4**: `# PATCH: CP4-BOOTSTRAP` (`idd_bootstrap.bootstrap_environment()`).
+    - **Cell 16**: `# PATCH: CP4-CANONICAL-MODELS` (`idd_models.Plan`, `BaseNoExtrasModel`, `idd_state.AnalysisConfig`).
+    - **Cell 19**: `# PATCH: CP4-CANONICAL-REGISTRY` (`idd_registry.DataFrameRegistry`, `global_df_registry = get_global_registry()`, `get_global_df_registry`).
+    - **Cell 22**: `# PATCH: CP4-CANONICAL-STATE` (`idd_state.State`, `VizWorkerState`, all 15 reducers).
+    - **Cell 32**: `# PATCH: CP4-CANONICAL-TOOLS` (`idd_tools.handle_tool_errors`, `validate_dataframe_exists`, `_resolve_artifact_path`).
+    - **Cell 60**: `# PATCH: CP4-CANONICAL-GRAPH` (`idd_graph.build_graph(..., structural_only=False, node_cache_policies=CachePolicy(ttl=120))`).
+    - Eliminated duplicate redefinitions of models, state, registry, tools, and graph across the notebook.
+  - Verification & Anti-Drift Guard:
+    - `IntelligentDataDetective_beta_v5_patched.ipynb` regenerated cleanly: strictly 99 cells maintained (`validate_notebook_integrity.py` passes).
+    - Graph topology verified (`validate_graph.py` passes: 15 nodes, 33 edges [21 conditional], 70 fields).
+    - Created `tests/unit/test_core_parity_guard.py` (22/22 tests passing): static AST import and redefinition absence checks, runtime object identity assertions (`is`), behavioral validation (Codex Findings 1 & 2), and negative controls (tampered digest, missing module, redefinition detection).
+    - Modernized `tests/unit/test_patcher_integrity.py` to support canonical CP4 imports (108 passed, 10 skipped).
+  - Control-Plane Documentation Alignment:
+    - Aligned `AGENTS.md`, `GEMINI.md`, `.agents/rules/code-architecture.md`, `.agents/rules/validation-and-gates.md`, `.agents/agents/*`, `.github/copilot-instructions.md`, `.github/instructions/backend.instructions.md`, `.github/instructions/notebook.instructions.md`.
+    - Removed stale 15/16 error test exceptions; all 16 tests in `test_error_handling_framework.py` are mandatory and strictly blocking.
+- Status: **CP4 CANONICAL NOTEBOOK INTEGRATION COMPLETE — READY FOR QUALITY GATES AND DRAFT PR** (Issues #140, #144, #145, #162).
+

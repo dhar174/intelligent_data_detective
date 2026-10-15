@@ -37,7 +37,7 @@ try:
     from langgraph.constants import END, START
     from langgraph.graph import StateGraph
     from langgraph.graph.state import CompiledStateGraph
-    from langgraph.types import Command, Send
+    from langgraph.types import CachePolicy, Command, Send
 
     HAS_LANGGRAPH = True
 except ImportError:
@@ -48,6 +48,7 @@ except ImportError:
     CompiledStateGraph = object  # type: ignore[misc,assignment]
     Command = Any  # type: ignore[misc,assignment]
     Send = Any  # type: ignore[misc,assignment]
+    CachePolicy = Any  # type: ignore[misc,assignment]
     RunnableConfig = dict  # type: ignore[misc,assignment]
     AIMessage = Any  # type: ignore[misc,assignment]
     HumanMessage = Any  # type: ignore[misc,assignment]
@@ -205,12 +206,20 @@ def route_to_writer(
     report_results = state.get("report_results")
     outline = state.get("report_outline")
     expected_sections = (
-        len(outline.sections) if isinstance(outline, ReportOutline) else 0
+        len(outline.sections)
+        if (isinstance(outline, ReportOutline) or hasattr(outline, "sections"))
+        else 0
     )
     written_sections = state.get("written_sections", []) or []
     report_ready = bool(
         report_done
-        and isinstance(report_results, ReportResults)
+        and (
+            isinstance(report_results, ReportResults)
+            or (
+                report_results is not None
+                and type(report_results).__name__ == "ReportResults"
+            )
+        )
         and expected_sections > 0
         and len(written_sections) >= expected_sections
         and state.get("report_draft")
@@ -391,6 +400,7 @@ def build_graph(
     store: Any = None,
     cache: Any = None,
     structural_only: bool = True,
+    node_cache_policies: Optional[Union[Any, Dict[str, Any]]] = None,
     **kwargs: Any,
 ) -> CompiledStateGraph:
     """Construct, wire, and compile the authoritative 15-node IDD StateGraph.
@@ -407,6 +417,8 @@ def build_graph(
             If False, fails closed with ValueError unless all 14 production worker
             and supervisor nodes are provided in node_overrides (FINISH defaults to
             write_output_to_file).
+        node_cache_policies: Optional CachePolicy or dict of node name -> CachePolicy
+            attached to registered nodes during graph assembly.
         **kwargs: Accepted for backward compatibility (e.g. api_key=...).
 
     Returns:
@@ -452,7 +464,16 @@ def build_graph(
             node_fn = write_output_to_file
         else:
             node_fn = _make_pass_through_node(name)
-        builder.add_node(name, node_fn)
+
+        policy = (
+            node_cache_policies.get(name)
+            if isinstance(node_cache_policies, dict)
+            else node_cache_policies
+        )
+        if policy is not None:
+            builder.add_node(name, node_fn, cache_policy=policy)
+        else:
+            builder.add_node(name, node_fn)
 
     # 2. Entry edge
     builder.add_edge(START, "initial_analysis")

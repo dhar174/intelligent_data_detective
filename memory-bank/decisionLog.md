@@ -292,5 +292,95 @@ During the canonical core migration (Roadmap Issue #140, Checkpoint 2 Issue #158
 - Single-root write containment protects against arbitrary filesystem traversal, while multi-root read validation safely supports document publishing.
 - 0 notebook lines modified across 99 cells; state graph topology verified across 15 nodes and 33 edges.
 
+---
 
+## 2026-10-14 — ADR: Canonical State, Reducers, 15-Node LangGraph Assembly, and Review Resolutions (CP3, Issue #160, PR #161)
+
+### Status
+✅ Accepted and verified (Remote Hosted CI run `#38647374243` 100% green; 650 unit/integration tests pass, 54 canonical state graph tests pass, 49 diagnostic tests pass, all 8 review comments resolved on PR #161).
+
+### Context
+Under Roadmap Issue #140 (Checkpoint 3, Issue #160), the goal was extracting the state schema, reducers, agent models, and 15-node StateGraph assembly from the 99-cell notebook into canonical root modules (`idd_state.py`, `idd_graph.py`), while re-exporting through `idd_core.py`.
+Subsequent code reviews from Codex and Copilot on PR #161 identified several architectural and resilience findings:
+1. Codex #1 & #2: `assign_viz_workers` and `dispatch_sections` constructed `Send` objects with minimal task/section parameters, starving downstream workers of essential parent context (`cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`). Also, section items required dictionary normalization.
+2. Copilot #1: When `HAS_LANGCHAIN = False`, `idd_core.py` lacked fallback stubs for 7 LangChain message symbols and `MyChatOpenai`, causing `AttributeError` on `from idd_core import *`.
+3. Copilot #2 & #3: Suggested rewiring `viz_evaluator` directly to `report_orchestrator`/`analyst` and deleting the `report_orchestrator -> report_join` edge.
+4. Copilot #4: `AGENT_MEMBERS` in `idd_graph.py` listed only 6 agents instead of all 10 worker agents.
+5. Copilot #5: `Router.next` did not type `EMERGENCY_MSG`, and `"END"` was unhandled in `route_from_supervisor()`.
+6. Copilot #6: Diagnostic Claim 11 calculated `cond_edge_count` but omitted it from the condition check in `reproduce_drift.py`.
+
+### Decision
+1. **Canonical State Schema & Reducer Architecture (`idd_state.py`)**:
+   - Implemented authoritative 70-field `State(TypedDict, total=False)` matching notebook Cell 22 (39 fields with reducers, 31 plain fields).
+   - Enforced **BR-7 Invariant**: `State.messages` declared directly as `Annotated[list[AnyMessage], add_messages]`.
+   - Enforced **W9-SR-DROP Invariant**: `structured_response` omitted from supervisor `State`.
+   - Preserved `AgentId` at exact 14 values matching Cell 7.
+2. **Canonical Dual-Mode Graph Assembly (`idd_graph.py`)**:
+   - `build_graph()` constructs the authoritative 15-node, 33-edge (21 conditional) StateGraph matching `validate_graph.py`.
+   - Dual compilation modes: `structural_only=True` (placeholder nodes raise `RuntimeError` if executed); `structural_only=False` (validates all 14 node overrides, failing closed with `ValueError` on missing/unknown nodes).
+   - Defined `SupervisorRouteTarget` (typed with 'END', 'FINISH', 'EMERGENCY_MSG') for `Router.next`; normalized `nxt == 'END'` to `'FINISH'` in `route_from_supervisor()`.
+   - Expanded `AGENT_MEMBERS` to 10 worker agents; retained `AGENT_OPTIONS` with 6 direct delegation targets.
+3. **Fan-Out State Context Propagation & Normalization**:
+   - `assign_viz_workers` injects `cleaning_metadata`, `analysis_insights`, `available_df_ids`, `_config`, `messages`, and `final_turn_msgs_list` alongside `task` and `spec`.
+   - `dispatch_sections` normalizes sections to dicts and injects `cleaning_metadata`, `analysis_insights`, `viz_results`, `available_df_ids`, `_config`, and `user_request`.
+4. **Topology Invariant Defense**:
+   - Firmly rejected rewiring suggestions: defended `viz_evaluator -> supervisor` under Cell 60 patch `W2-BR6` and defended `report_orchestrator -> report_join` as a required barrier synchronization edge.
+5. **Façade Resilience (`idd_core.py`)**:
+   - Added complete fallback stubs for `HumanMessage`, `AIMessage`, `SystemMessage`, `ToolMessage`, `BaseMessage`, `AnyMessage`, `add_messages`, and `MyChatOpenai` when `HAS_LANGCHAIN = False`.
+6. **Diagnostic Dynamic Verification**:
+   - Enforced `cond_edge_count != 21` check in `probe_claim_11()` and added regression simulation test in `test_cp0_diagnostics.py` (49/49 pass).
+
+### Consequences
+- PR #161 has all 8 review comments replied to and resolved, with GitHub Actions CI run `#38647374243` 100% green.
+- Claim 11 verified as `OBSERVED INVARIANT`.
+- 15-node, 33-edge graph topology preserved with 0 churn on 99-cell notebook.
+- Clean separation of concerns between `AgentId` (agent membership) and `SupervisorRouteTarget` (routing targets).
+- Subworkers in fan-out executions receive full context, eliminating state-starvation crashes and premature aborts.
+
+---
+
+## 2026-10-15 — ADR: Canonical Notebook Integration, Anti-Drift Guard, and Control-Plane Alignment (CP4, Issue #162, PR #163)
+
+### Status
+✅ Accepted and verified (`test_core_parity_guard.py` 22/22 pass, `test_patcher_integrity.py` 108 pass / 10 skipped, `validate_notebook_integrity.py` passes with 99 cells, `validate_graph.py` passes with 15 nodes / 33 edges / 70 fields).
+
+### Context
+Following the completion and review of Checkpoints 1–3, the canonical Python modules (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`) were verified in offline unit and integration tests, but the production runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb` still carried internal inline definitions of models, registry, state reducers, tools, and graph assembly.
+To eliminate this split-brain (Roadmap Issue #140, Companion Issues #144 and #145, Implementation Issue #162), Checkpoint 4 (CP4) requires:
+1. Rewiring the notebook via `_patch_notebook.py` to import and execute the canonical modules directly.
+2. Eliminating duplicate inline redefinitions.
+3. Establishing an automated anti-drift regression guard (`test_core_parity_guard.py`) asserting static AST invariants, runtime symbol identity (`is`), behavioral parity, and negative control failures.
+4. Aligning control-plane instructions, agent personas, and documentation across the repository.
+
+### Decision
+1. **Canonical Module Execution in Notebook (`_patch_notebook.py`)**:
+   - Updated patch sentinels:
+     - **Cell 4**: `# PATCH: CP4-BOOTSTRAP` (`idd_bootstrap.bootstrap_environment()`).
+     - **Cell 16**: `# PATCH: CP4-CANONICAL-MODELS` (`idd_models.Plan`, `BaseNoExtrasModel`, `idd_state.AnalysisConfig`).
+     - **Cell 19**: `# PATCH: CP4-CANONICAL-REGISTRY` (`idd_registry.DataFrameRegistry`, `global_df_registry = get_global_registry()`, `get_global_df_registry`).
+     - **Cell 22**: `# PATCH: CP4-CANONICAL-STATE` (`idd_state.State`, `VizWorkerState`, all 15 reducers).
+     - **Cell 32**: `# PATCH: CP4-CANONICAL-TOOLS` (`idd_tools.handle_tool_errors`, `validate_dataframe_exists`, `_resolve_artifact_path`).
+     - **Cell 60**: `# PATCH: CP4-CANONICAL-GRAPH` (`idd_graph.build_graph(..., structural_only=False, node_cache_policies=CachePolicy(ttl=120))`).
+   - Regenerated `IntelligentDataDetective_beta_v5_patched.ipynb` maintaining strictly 99 cells.
+2. **Canonical Module Capabilities**:
+   - `idd_graph.py`: Added support for `node_cache_policies: Optional[Union[Any, Dict[str, Any]]] = None`, preserving `CachePolicy(ttl=120)` on `builder.add_node()`. Re-exported in `idd_core.py`.
+   - `idd_graph.py`: Supported duck-typing in `route_to_writer` for mock/test objects while enforcing schema validation on real instances.
+   - `idd_state.py`: Exported `default_an_config = AnalysisConfig(...)` and re-exported in `idd_core.py`.
+3. **Integrity Manifest & Bootstrap**:
+   - Created `idd_manifest.json` recording SHA-256 digests of all 6 canonical modules. Added `!idd_manifest.json` exception in `.gitignore`.
+   - Created `idd_bootstrap.py` for runtime environment configuration and provenance/digest verification.
+4. **Anti-Drift Guard Suite (`tests/unit/test_core_parity_guard.py`)**:
+   - Implemented 22 comprehensive tests covering static AST sweeps across all 99 cells, runtime object identity assertions (`is`), behavioral validation (Codex Findings 1 & 2), and negative controls (tampered digest, missing module, redefinition detection).
+5. **Patcher Test Modernization (`tests/unit/test_patcher_integrity.py`)**:
+   - Updated patcher integrity tests to accommodate canonical imports and skip redundant inline AST compilation when notebook uses canonical modules.
+6. **Control-Plane Documentation Alignment**:
+   - Updated `AGENTS.md`, `GEMINI.md`, `.agents/rules/code-architecture.md`, `.agents/rules/validation-and-gates.md`, `.agents/agents/*`, `.github/copilot-instructions.md`, `.github/instructions/backend.instructions.md`, `.github/instructions/notebook.instructions.md`.
+   - Removed stale 15/16 error test exceptions; all 16 tests in `test_error_handling_framework.py` are mandatory and strictly blocking.
+
+### Consequences
+- The architectural split-brain is fully resolved: the notebook executes canonical modules directly.
+- The 99-cell notebook structure is strictly preserved.
+- Future drifts are prevented by `test_core_parity_guard.py` running in CI.
+- All 16 error handling tests and all anti-drift tests must pass in CI without exclusions.
+- Ready for Stage 4 full test gate execution and Stage 5 knowledge closeout.
 

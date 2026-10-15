@@ -855,5 +855,55 @@ This is now the strongest completion baseline:
 - Formatting & Linting:
   - `black --check`: **100% clean across all files**.
   - `flake8`: **0 errors, 0 warnings**.
+- CI Gate & Remote Validation:
+  - Remote Hosted CI: GitHub Actions run `#38647374243`: **100% green**.
+- PR & Review Status:
+  - Branch: `antigravity/cp3-canonical-state-graph`.
+  - Head commit: `e059d73`.
+  - All 8 GitHub PR review comments (Codex #1-#2, Copilot #1-#6) replied to and resolved.
+  - PR #161 maintained in Draft awaiting Charles's merge-gate review.
+  - Status: **CP3 REVIEW PASS COMPLETE — PR #161 IN DRAFT AWAITING MERGE GATE**.
 <!-- session-curated:2026-10-14-cp3-review-resolutions:end -->
+
+<!-- session-curated:2026-10-15-cp4-notebook-integration:start -->
+## 2026-10-15 — Checkpoint 4 (CP4): Canonical Notebook Integration, Anti-Drift Enforcement, and Control-Plane Alignment
+
+### Objective
+Eliminate the architectural split-brain between the canonical Python modules (`idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`) and the runnable 99-cell notebook `IntelligentDataDetective_beta_v5_patched.ipynb`. Ensure the notebook directly executes the canonical modules without duplicate redefinitions, guarded by an automated anti-drift test suite and full control-plane alignment.
+
+### Accomplishments
+1. **Canonical Module Enhancements & Bootstrap**:
+   - `idd_graph.py`: Supported `node_cache_policies: Optional[Union[Any, Dict[str, Any]]] = None`, preserving `CachePolicy(ttl=120)` on `builder.add_node()`. Re-exported in `idd_core.py`.
+   - `idd_graph.py`: Added duck-type tolerance in `route_to_writer` for `ReportOutline` (checking `.sections`) and `ReportResults` (`type(report_results).__name__ == "ReportResults"`).
+   - `idd_state.py`: Exported `default_an_config = AnalysisConfig(...)` and re-exported in `idd_core.py`.
+   - `idd_manifest.json`: Created SHA-256 integrity manifest tracking all 6 canonical modules. Added `!idd_manifest.json` to `.gitignore`.
+   - `idd_bootstrap.py`: Created bootstrap module for runtime environment setup and provenance/digest verification.
+2. **Notebook Patcher & Regeneration (`_patch_notebook.py`)**:
+   - Updated patcher with canonical wiring sentinels:
+     - **Cell 4**: `# PATCH: CP4-BOOTSTRAP` (`idd_bootstrap.bootstrap_environment()`).
+     - **Cell 16**: `# PATCH: CP4-CANONICAL-MODELS` (`idd_models.Plan`, `BaseNoExtrasModel`, `idd_state.AnalysisConfig`).
+     - **Cell 19**: `# PATCH: CP4-CANONICAL-REGISTRY` (`idd_registry.DataFrameRegistry`, `global_df_registry = get_global_registry()`, `get_global_df_registry`).
+     - **Cell 22**: `# PATCH: CP4-CANONICAL-STATE` (`idd_state.State`, `VizWorkerState`, all 15 reducers).
+     - **Cell 32**: `# PATCH: CP4-CANONICAL-TOOLS` (`idd_tools.handle_tool_errors`, `validate_dataframe_exists`, `_resolve_artifact_path`).
+     - **Cell 60**: `# PATCH: CP4-CANONICAL-GRAPH` (`idd_graph.build_graph(..., structural_only=False, node_cache_policies=CachePolicy(ttl=120))`).
+   - Regenerated `IntelligentDataDetective_beta_v5_patched.ipynb`:
+     - Strictly 99 cells maintained (`validate_notebook_integrity.py` passes).
+     - Graph topology verified (`validate_graph.py` passes: 15 nodes, 33 edges [21 conditional], 70 fields).
+     - Zero duplicate class/function/schema definitions in notebook cells.
+3. **Anti-Drift Guard Suite (`tests/unit/test_core_parity_guard.py`)**:
+   - 22/22 unit tests passing:
+     - Static AST validation of imports and redefinition absence across all 99 cells.
+     - Runtime object identity assertions (`Plan is idd_models.Plan`, `State is idd_state.State`, `DataFrameRegistry is idd_registry.DataFrameRegistry`, `global_df_registry is get_global_registry()`, `handle_tool_errors is idd_tools.handle_tool_errors`, `build_graph is idd_graph.build_graph`).
+     - Behavioral checks: Codex Finding 1 (positional string non-`df_id` argument), Codex Finding 2 (pre-mkdir traversal rejection), registry reload, executable graph assembly.
+     - Negative controls: synthetic redefinition detection, manifest digest tampering, missing module, missing file on disk.
+4. **Patcher Integrity Test Suite (`tests/unit/test_patcher_integrity.py`)**:
+   - Modernized tests to accommodate canonical CP4 imports (108 passed, 10 skipped).
+5. **Control-Plane Documentation Alignment**:
+   - Updated `AGENTS.md`, `GEMINI.md`, `.agents/rules/code-architecture.md`, `.agents/rules/validation-and-gates.md`, `.agents/agents/*`, `.github/copilot-instructions.md`, `.github/instructions/backend.instructions.md`, `.github/instructions/notebook.instructions.md`.
+   - Removed stale 15/16 error test exceptions; all 16 tests in `test_error_handling_framework.py` are mandatory and strictly blocking.
+6. **PR & Issue Status**:
+   - Parent Architecture Issue: #140. Companion Issues: #144, #145.
+   - Implementation Issue: #162. Branch: `antigravity/cp4-canonical-notebook-integration`.
+<!-- session-curated:2026-10-15-cp4-notebook-integration:end -->
+
 

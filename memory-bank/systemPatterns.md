@@ -452,3 +452,115 @@ class Router(BaseNoExtrasModel):
 2. **Pydantic v2 Required-Nullable Serialization**: Using `Field(...)` with `Optional[T]` places `next_agent_metadata` in `schema['required']` while configuring `anyOf: [..., {'type': 'null'}]`. This requires the LLM or caller to explicitly evaluate metadata (passing `None` if absent) rather than omitting the field from JSON payloads.
 <!-- session-curated:2026-10-14-cp3-corrective-pass:end -->
 
+<!-- session-curated:2026-10-14-cp3-review-resolutions:start -->
+### Pattern: Fan-Out Parent State Context Propagation & Dict Normalization (CP3 Review Resolution)
+**Pattern:** In `idd_graph.py`, fan-out routing functions (`assign_viz_workers` and `dispatch_sections`) creating `Send` objects MUST forward parent state context alongside targeted items:
+```python
+# assign_viz_workers: forwards context aligned with notebook Cell 57 Fix AM-1
+return [
+    Send("viz_worker", {
+        "task": task, "spec": spec,
+        "cleaning_metadata": state.get("cleaning_metadata"),
+        "analysis_insights": state.get("analysis_insights"),
+        "available_df_ids": state.get("available_df_ids"),
+        "_config": state.get("_config"),
+        "messages": state.get("messages", []),
+        "final_turn_msgs_list": state.get("final_turn_msgs_list", []),
+    })
+    for task, spec in zip(tasks, specs)
+]
+
+# dispatch_sections: normalizes models to dicts and injects section worker dependencies
+return [
+    Send("report_section_worker", {
+        "section": s.model_dump() if hasattr(s, "model_dump") else s,
+        "cleaning_metadata": state.get("cleaning_metadata"),
+        "analysis_insights": state.get("analysis_insights"),
+        "viz_results": state.get("viz_results"),
+        "available_df_ids": state.get("available_df_ids"),
+        "_config": state.get("_config"),
+        "user_request": state.get("user_request"),
+    })
+    for s in sections
+]
+```
+**Why:**
+1. **Prevent State Starvation**: In LangGraph, `Send` payloads initialize the worker's input state. If parent channels (`cleaning_metadata`, `analysis_insights`) are omitted, worker guards trigger fail-safes (e.g., `section_worker` immediately aborting to `data_cleaner`), resulting in 0 completed tasks and supervisor loops.
+2. **Dict Serialization Parity**: Subworkers expect `dict` structures for section inputs rather than raw Pydantic model objects, avoiding serialization errors across process boundaries.
+
+### Pattern: LangChain Fallback Stubs in Compatibility Façade (CP3 Review Resolution)
+**Pattern:** Façade modules (`idd_core.py`) re-exporting framework symbols must provide complete fallback stubs when third-party packages are absent (`HAS_LANGCHAIN = False`):
+```python
+if not HAS_LANGCHAIN:
+    class HumanMessage: ...
+    class AIMessage: ...
+    class SystemMessage: ...
+    class ToolMessage: ...
+    class BaseMessage: ...
+    AnyMessage = Any
+    def add_messages(left, right): return (left or []) + (right or [])
+    class MyChatOpenai: ...
+```
+**Why:**
+Guarantees `from idd_core import *` never raises `AttributeError` in lightweight, offline, or test environments lacking LangChain installations.
+
+### Pattern: Separation of AgentId and SupervisorRouteTarget with EMERGENCY_MSG (CP3 Review Resolution)
+**Pattern:** Preserve `AgentId` in `idd_state.py` for exact 14-value member typing, while defining `SupervisorRouteTarget` in `idd_graph.py` for supervisor routing:
+```python
+# idd_state.py: 14 canonical agents
+AgentId: TypeAlias = Literal[
+    "supervisor", "initial_analysis", "data_cleaner", "analyst",
+    "visualization", "viz_evaluator", "viz_worker", "viz_join",
+    "report_orchestrator", "report_section_worker", "report_join",
+    "report_packager", "file_writer", "FINISH",
+]
+
+# idd_graph.py: supervisor routing targets including emergency & terminal tokens
+SupervisorRouteTarget: TypeAlias = Literal[
+    "initial_analysis", "data_cleaner", "analyst", "visualization",
+    "report_orchestrator", "file_writer", "viz_worker", "viz_join",
+    "viz_evaluator", "report_section_worker", "report_join", "report_packager",
+    "END", "FINISH", "EMERGENCY_MSG",
+]
+
+# route_from_supervisor normalizes 'END' to 'FINISH'
+if nxt == "END":
+    nxt = "FINISH"
+```
+**Why:**
+1. **Contract Invariant**: Modifying `AgentId` breaks downstream test assertions and message models expecting 14 agent identifiers.
+2. **Emergency Routing**: The supervisor must be able to route to `EMERGENCY_MSG` on unrecoverable failures.
+3. **Terminal Normalization**: Both `"END"` and `"FINISH"` cleanly transition to the 15-node graph's terminal `FINISH` node.
+
+### Pattern: Authoritative 15-Node, 33-Edge LangGraph Topology Defense (CP3 Review Resolution)
+**Pattern:** Reject external suggestions to simplify or rewire edges that violate verified notebook architecture:
+1. **`viz_evaluator` -> `supervisor`**: Under patch sentinel `W2-BR6` (Cell 60), `viz_evaluator` routes both `"Accepted"` and `"Revise"` back to `supervisor` for centralized orchestration.
+2. **`report_orchestrator` -> `report_join`**: Direct static edge (`# ensure join waits for all`) acts as a mandatory barrier synchronization edge.
+**Why:**
+Eliminating these edges or rerouting directly between workers causes race conditions, circumvents supervisor state reconciliation, and violates `validate_graph.py` assertions (15 nodes, 33 edges, 21 conditional).
+<!-- session-curated:2026-10-14-cp3-review-resolutions:end -->
+
+<!-- session-curated:2026-10-15-cp4-notebook-integration:start -->
+### Pattern: Canonical Module Notebook Execution & Provenance Bootstrap (CP4)
+**Pattern:** The production notebook (`IntelligentDataDetective_beta_v5_patched.ipynb`) directly imports core functionality from canonical Python modules at repo root rather than defining duplicate classes:
+- **Cell 4**: `idd_bootstrap.bootstrap_environment()` verifies system path, working directory, and validates cryptographic SHA-256 digests in `idd_manifest.json` against on-disk canonical modules.
+- **Cell 16**: `from idd_models import Plan, BaseNoExtrasModel, ...; from idd_state import AnalysisConfig`
+- **Cell 19**: `from idd_registry import DataFrameRegistry, get_global_registry, get_global_df_registry; global_df_registry = get_global_registry()`
+- **Cell 22**: `from idd_state import State, VizWorkerState, keep_first, ...` (all 15 reducers)
+- **Cell 32**: `from idd_tools import handle_tool_errors, validate_dataframe_exists, _resolve_artifact_path`
+- **Cell 60**: `from idd_graph import build_graph; data_analysis_team_builder = build_graph(..., structural_only=False, node_cache_policies=CachePolicy(ttl=120))`
+
+**Why:**
+1. **Eliminate Split-Brain**: Prevents drift between tested Python modules and runnable notebook logic. Any improvement or bugfix in `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, or `idd_graph.py` is immediately active in the notebook without dual-editing.
+2. **Provenance & Tamper Detection**: `idd_bootstrap.py` checks that canonical files on disk match their recorded SHA-256 hashes in `idd_manifest.json`, failing loudly if an untracked change or file corruption occurs.
+
+### Pattern: Automated Anti-Drift Parity Guard (`test_core_parity_guard.py`) (CP4)
+**Pattern:** Continuous regression suite enforcing three layers of architectural anti-drift:
+1. **Static AST Analysis**: Sweeps all 99 notebook cells to assert canonical import statements are present in Cells 4, 16, 19, 22, 32, 60, and verifies zero duplicate definitions of `Plan`, `State`, `DataFrameRegistry`, `handle_tool_errors`, `_resolve_artifact_path`, or `build_graph` across any other cell.
+2. **Runtime Object Identity**: Asserts `Plan is idd_models.Plan`, `State is idd_state.State`, `DataFrameRegistry is idd_registry.DataFrameRegistry`, `global_df_registry is get_global_registry()`, `handle_tool_errors is idd_tools.handle_tool_errors`, and `build_graph is idd_graph.build_graph`.
+3. **Behavioral Invariants**: Verifies Codex Findings 1 & 2 (positional non-`df_id` strings do not trigger registry lookup, directory traversal in subdirs is blocked before mkdir), cache reload, and 15-node executable graph compilation with cache policies.
+4. **Negative Controls**: Tests synthetic redefinitions, manifest digest tampering, missing modules, and missing files to guarantee the guard fails closed.
+<!-- session-curated:2026-10-15-cp4-notebook-integration:end -->
+
+
+

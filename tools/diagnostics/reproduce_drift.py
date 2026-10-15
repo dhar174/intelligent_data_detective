@@ -1000,12 +1000,21 @@ def probe_claim_6() -> ClaimResult:
 
     # 3. Static inspection of notebook Cell 32 structured error implementation
     nb_src = _extract_notebook_cell_source(32)
-    has_tool_error_dict = "def _tool_error" in nb_src and (
+    has_canonical_import = (
+        "from idd_tools import" in nb_src and "handle_tool_errors" in nb_src
+    ) or ("import idd_tools" in nb_src)
+    has_inline_tool_error = "def _tool_error" in nb_src and (
         "'status': 'error'" in nb_src or '"status": "error"' in nb_src
     )
-    has_sanitization = (
+    has_inline_sanitization = (
         "logging.exception" in nb_src
         and "An unexpected data-processing failure occurred." in nb_src
+    )
+    has_tool_error_dict = has_inline_tool_error or (
+        has_canonical_import and HAS_IDD_CORE
+    )
+    has_sanitization = has_inline_sanitization or (
+        has_canonical_import and HAS_IDD_CORE
     )
 
     observed = (
@@ -1930,17 +1939,42 @@ class _InMemoryRegistry:
         with self._lock:
             self.frames[df_id] = df.copy(deep=False)
             self.paths[df_id] = raw_path
+            if HAS_IDD_CORE:
+                try:
+                    idd_core.get_global_registry().register_dataframe(
+                        df, df_id, raw_path=raw_path
+                    )
+                except Exception:
+                    pass
             return df_id
 
     def get_dataframe(
         self, df_id: str, load_if_not_exists: bool = False
     ) -> Optional[pd.DataFrame]:
         with self._lock:
-            return self.frames.get(df_id)
+            df = self.frames.get(df_id)
+            if df is None and HAS_IDD_CORE:
+                try:
+                    df = idd_core.get_global_registry().get_dataframe(
+                        df_id, load_if_not_exists=load_if_not_exists
+                    )
+                    if df is not None:
+                        self.frames[df_id] = df
+                except Exception:
+                    pass
+            return df
 
     def get_raw_path_from_id(self, df_id: str) -> Optional[str]:
         with self._lock:
-            return self.paths.get(df_id)
+            p = self.paths.get(df_id)
+            if p is None and HAS_IDD_CORE:
+                try:
+                    p = idd_core.get_global_registry().get_raw_path_from_id(df_id)
+                    if p is not None:
+                        self.paths[df_id] = p
+                except Exception:
+                    pass
+            return p
 
 
 def _extract_production_delete_rows_tool(
@@ -1948,8 +1982,9 @@ def _extract_production_delete_rows_tool(
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Extract and compile the actual production delete_rows tool from Notebook Cell 32.
 
-    Extracts the genuine AST nodes for _tool_error, _tool_failure, validate_dataframe_exists,
-    handle_tool_errors, _build_query_view, and delete_rows from IntelligentDataDetective_beta_v5_patched.ipynb.
+    Extracts the genuine AST nodes for _build_query_view and delete_rows, plus any
+    inline helpers (_tool_error, _tool_failure, validate_dataframe_exists, handle_tool_errors)
+    or canonical imports from IntelligentDataDetective_beta_v5_patched.ipynb.
     Returns (delete_rows_callable, error_string).
     """
     try:
@@ -1961,21 +1996,27 @@ def _extract_production_delete_rows_tool(
         lines = cell32_src.splitlines()
         tree = ast.parse(cell32_src)
 
-        nodes_to_extract = [
+        core_nodes = ["_build_query_view", "delete_rows"]
+        optional_inline_helpers = [
             "_tool_error",
             "_tool_failure",
             "validate_dataframe_exists",
             "handle_tool_errors",
-            "_build_query_view",
-            "delete_rows",
         ]
-        extracted_nodes = [
-            n for n in tree.body if getattr(n, "name", None) in nodes_to_extract
-        ]
-        if len(extracted_nodes) < len(nodes_to_extract):
-            missing = set(nodes_to_extract) - {
-                getattr(n, "name", None) for n in extracted_nodes
-            }
+
+        extracted_nodes = []
+        for n in tree.body:
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                extracted_nodes.append(n)
+            elif (
+                getattr(n, "name", None) in core_nodes
+                or getattr(n, "name", None) in optional_inline_helpers
+            ):
+                extracted_nodes.append(n)
+
+        extracted_names = {getattr(n, "name", None) for n in extracted_nodes}
+        if not all(k in extracted_names for k in core_nodes):
+            missing = set(core_nodes) - extracted_names
             return None, f"Missing required nodes in Cell 32: {missing}"
 
         code_chunks = []
@@ -2001,6 +2042,11 @@ def _extract_production_delete_rows_tool(
             "tool": lambda *a, **k: (lambda fn: fn),
             "cap_output": lambda *a, **k: (lambda fn: fn),
             "global_df_registry": registry,
+            "handle_tool_errors": getattr(idd_core, "handle_tool_errors", None),
+            "validate_dataframe_exists": getattr(
+                idd_core, "validate_dataframe_exists", None
+            ),
+            "_resolve_artifact_path": getattr(idd_core, "_resolve_artifact_path", None),
         }
         exec(full_extracted_code, ns)
         fn = ns.get("delete_rows")

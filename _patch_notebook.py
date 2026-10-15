@@ -14557,6 +14557,239 @@ def main():
 
     # ============================  END WAVE 2 PATCHES  ===========================
 
+    # ============================  CP4 CANONICAL NOTEBOOK INTEGRATION  ===========================
+    # Checkpoint 4 (Issue #140, #162): Canonical Notebook Integration & Anti-Drift Enforcement.
+    # Wires canonical Python modules into Cells 4, 16, 19, 22, 32, and 60, eliminating
+    # notebook-local behavioral duplicates and resolving deferred review findings.
+
+    # 1. Cell 4: Bootstrap & Manifest Verification Guard
+    c4 = cells[4]
+    src4 = join_source(c4["source"])
+    if "# PATCH: CP4-BOOTSTRAP" not in src4:
+        bootstrap_block = (
+            "\n\n# PATCH: CP4-BOOTSTRAP\n"
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "# Ensure repository root is on sys.path for canonical module imports\n"
+            "_cur_dir = Path.cwd().resolve()\n"
+            "for _p in [_cur_dir, *_cur_dir.parents]:\n"
+            '    if (_p / "idd_manifest.json").is_file():\n'
+            "        if str(_p) not in sys.path:\n"
+            "            sys.path.insert(0, str(_p))\n"
+            "        break\n\n"
+            "try:\n"
+            "    from idd_bootstrap import bootstrap_environment\n"
+            "    bootstrap_environment()\n"
+            '    print("✅ Canonical modules verified against idd_manifest.json")\n'
+            "except Exception as _b_err:\n"
+            '    print(f"⚠️ Canonical bootstrap notice: {_b_err}")\n'
+        )
+        c4["source"] = src4 + bootstrap_block
+        c4["outputs"] = []
+        c4["execution_count"] = None
+        print("✅ Cell idx 4: applied canonical bootstrap and manifest verification (CP4-BOOTSTRAP)")
+
+    # 2. Cell 16: Canonical Data Models
+    c16 = cells[16]
+    c16["source"] = (
+        "# Support models — canonical imports (CP4)\n"
+        "# PATCH: CP4-CANONICAL-MODELS\n"
+        "from idd_models import (\n"
+        "    BaseNoExtrasModel,\n"
+        "    PlanStep,\n"
+        "    Plan,\n"
+        "    CompletedStepsAndTasks,\n"
+        "    ProgressReport,\n"
+        "    Triplet,\n"
+        "    _sort_plan_steps,\n"
+        "    _assert_sorted_completed_no_dups,\n"
+        "    _norm,\n"
+        "    _triplet_from_raw,\n"
+        "    _reduce_plan_keep_sorted,\n"
+        ")\n"
+        "from idd_registry import DataFrameRegistryError\n"
+        "from idd_state import (\n"
+        "    AnalysisConfig,\n"
+        "    CleaningMetadata,\n"
+        "    InitialDescription,\n"
+        "    VizSpec,\n"
+        "    AnalysisInsights,\n"
+        "    ImagePayload,\n"
+        "    DataVisualization,\n"
+        "    VisualizationResults,\n"
+        "    ReportResults,\n"
+        "    DataQueryParams,\n"
+        "    QueryDataframeInput,\n"
+        "    FileResult,\n"
+        "    ListOfFiles,\n"
+        "    ToDoList,\n"
+        "    NextAgentMetadata,\n"
+        "    SendAgentMessage,\n"
+        "    MessagesToAgentsList,\n"
+        ")\n"
+    )
+    c16["outputs"] = []
+    c16["execution_count"] = None
+    ast.parse(c16["source"])
+    print("✅ Cell idx 16: wired canonical data models from idd_models and idd_state (CP4-CANONICAL-MODELS)")
+
+    # 3. Cell 19: Canonical DataFrame Registry and Reporting Models
+    c19 = cells[19]
+    c19["source"] = (
+        "# DataFrame Registry and Reporting Models — canonical imports (CP4)\n"
+        "# PATCH: CP4-CANONICAL-REGISTRY\n"
+        "from idd_registry import (\n"
+        "    DataFrameRegistry,\n"
+        "    DataFrameRegistryError,\n"
+        "    get_global_registry,\n"
+        "    override_global_registry,\n"
+        "    set_global_registry,\n"
+        ")\n"
+        "from idd_state import (\n"
+        "    Section,\n"
+        "    SectionOutline,\n"
+        "    ReportOutline,\n"
+        "    VizFeedback,\n"
+        "    ConversationalResponse,\n"
+        ")\n\n"
+        "global_df_registry = get_global_registry()\n\n"
+        "def get_global_df_registry() -> DataFrameRegistry:\n"
+        "    return get_global_registry()\n"
+    )
+    c19["outputs"] = []
+    c19["execution_count"] = None
+    ast.parse(c19["source"])
+    print("✅ Cell idx 19: wired canonical registry and reporting models (CP4-CANONICAL-REGISTRY)")
+
+    # 4. Cell 22: Canonical LangGraph State & Reducers
+    c22 = cells[22]
+    c22["source"] = (
+        "# LangGraph State & Reducers — canonical imports (CP4)\n"
+        "# PATCH: CP4-CANONICAL-STATE\n"
+        "from idd_state import (\n"
+        "    State,\n"
+        "    VizWorkerState,\n"
+        "    keep_first,\n"
+        "    merge_lists,\n"
+        "    merge_unique,\n"
+        "    merge_int_sum,\n"
+        "    merge_dicts,\n"
+        "    merge_dict,\n"
+        "    any_true,\n"
+        "    last_wins,\n"
+        "    bool_or,\n"
+        "    dict_merge_shallow,\n"
+        "    _sr_reducer,\n"
+        "    _reduce_strs_resettable,\n"
+        "    _reduce_viz_results_resettable,\n"
+        "    _keep_last_or_clear,\n"
+        "    _reduce_plan_keep_sorted,\n"
+        "    default_an_config,\n"
+        "    AgentMembers,\n"
+        "    AgentId,\n"
+        ")\n"
+    )
+    c22["outputs"] = []
+    c22["execution_count"] = None
+    ast.parse(c22["source"])
+    print("✅ Cell idx 22: wired canonical State schema and reducers (CP4-CANONICAL-STATE)")
+
+    # 5. Cell 32: Canonical Tool Error Handling & Artifact Security
+    c32 = cells[32]
+    src32 = join_source(c32["source"])
+    old_err_pattern = r"# Error Handling and Validation Framework\s*def _tool_error\(.*?(?=\n#|\ndef get_dataframe_schema)"
+    new_err_block = (
+        "# Error Handling and Validation Framework — canonical imports (CP4)\n"
+        "# PATCH: CP4-CANONICAL-TOOLS\n"
+        "from idd_tools import (\n"
+        "    handle_tool_errors,\n"
+        "    validate_dataframe_exists,\n"
+        "    _tool_error,\n"
+        "    _tool_failure,\n"
+        "    _get_artifacts_base,\n"
+        "    _is_subpath,\n"
+        "    _resolve_artifact_path,\n"
+        "    is_safe_artifact_path,\n"
+        ")\n\n"
+    )
+    src32 = re.sub(old_err_pattern, new_err_block, src32, count=1, flags=re.DOTALL)
+    old_art_pattern = r"def _get_artifacts_base\(config: Optional\[RunnableConfig\]\).*?(?=\nfiles_store = InMemoryStore\(\))"
+    src32 = re.sub(old_art_pattern, "", src32, count=1, flags=re.DOTALL)
+    c32["source"] = src32
+    c32["outputs"] = []
+    c32["execution_count"] = None
+    ast.parse(src32)
+    print("✅ Cell idx 32: wired canonical tool error handling and path resolution (CP4-CANONICAL-TOOLS)")
+
+    # 6. Cell 60: Canonical Graph Assembly & Routing
+    c60 = cells[60]
+    c60["source"] = (
+        "# Graph compile (canonical build_graph — CP4)\n"
+        "# PATCH: CP4-CANONICAL-GRAPH\n"
+        "import sqlite3 as _cp_sqlite3\n"
+        "from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver\n"
+        "from langgraph.types import CachePolicy\n\n"
+        "from idd_graph import (\n"
+        "    build_graph,\n"
+        "    route_from_supervisor,\n"
+        "    route_to_writer,\n"
+        "    route_viz,\n"
+        "    write_output_to_file,\n"
+        "    assign_viz_workers,\n"
+        "    dispatch_sections,\n"
+        "    AGENT_MEMBERS,\n"
+        "    AGENT_OPTIONS,\n"
+        "    options,\n"
+        "    Router,\n"
+        "    SupervisorRouteTarget,\n"
+        ")\n\n"
+        "coordinator_node = make_supervisor_node(\n"
+        "    [big_picture_llm, router_llm, reply_llm, plan_llm, replan_llm, progress_llm, todo_llm, low_reasoning_llm],\n"
+        '    ["initial_analysis", "data_cleaner", "analyst", "file_writer", "visualization", "report_orchestrator"],\n'
+        "    sample_prompt_text,\n"
+        ")\n\n"
+        "_cp_conn = _cp_sqlite3.connect('checkpoints.sqlite', check_same_thread=False, timeout=30)\n"
+        '_cp_conn.execute("PRAGMA journal_mode=WAL")\n'
+        '_cp_conn.execute("PRAGMA synchronous=NORMAL")\n'
+        '_cp_conn.execute("PRAGMA busy_timeout=10000")\n'
+        "checkpointer = _SqliteSaver(_cp_conn)\n\n"
+        "data_detective_graph = build_graph(\n"
+        "    node_overrides={\n"
+        '        "supervisor": coordinator_node,\n'
+        '        "initial_analysis": initial_analysis_node,\n'
+        '        "data_cleaner": data_cleaner_node,\n'
+        '        "analyst": analyst_node,\n'
+        '        "visualization": visualization_orchestrator,\n'
+        '        "viz_worker": viz_worker,\n'
+        '        "viz_join": viz_join,\n'
+        '        "viz_evaluator": viz_evaluator_node,\n'
+        '        "report_orchestrator": report_orchestrator,\n'
+        '        "report_section_worker": section_worker,\n'
+        '        "report_join": report_join,\n'
+        '        "report_packager": report_packager_node,\n'
+        '        "file_writer": file_writer_node,\n'
+        '        "EMERGENCY_MSG": emergency_correspondence_node,\n'
+        '        "FINISH": write_output_to_file,\n'
+        "    },\n"
+        "    checkpointer=checkpointer,\n"
+        "    store=in_memory_store,\n"
+        "    cache=InMemoryCache(),\n"
+        "    node_cache_policies=CachePolicy(ttl=120),\n"
+        "    structural_only=False,\n"
+        ")\n\n"
+        "data_analysis_team_builder = data_detective_graph.builder\n"
+        "# data_analysis_team_builder.compile(\n"
+    )
+    c60["outputs"] = []
+    c60["execution_count"] = None
+    ast.parse(c60["source"])
+    print("✅ Cell idx 60: wired canonical build_graph in executable mode (CP4-CANONICAL-GRAPH)")
+
+    # Assert invariant cell count before saving
+    if len(cells) != 99:
+        raise RequiredPatchError(f"CP4: Expected 99 notebook cells, found {len(cells)}")
+
     with open(OUTPUT_NB, "w", encoding="utf-8") as f:
         json.dump(nb, f, indent=1, ensure_ascii=False)
 

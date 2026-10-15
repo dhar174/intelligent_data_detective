@@ -119,6 +119,7 @@ from idd_state import (
     ReportOutline,
     VizFeedback,
     ConversationalResponse,
+    default_an_config,
 )
 
 # Canonical graph assembly and routing (Checkpoint 3)
@@ -136,6 +137,7 @@ from idd_graph import (
     write_output_to_file,
     assign_viz_workers,
     dispatch_sections,
+    CachePolicy,
 )
 
 # Optional LangChain imports (needed for MyChatOpenai and State only)
@@ -510,18 +512,8 @@ def get_global_df_registry() -> DataFrameRegistry:
 
 
 # ---------------------------------------------------------------------------
-# Default config and class-to-agent mapping
+# Class-to-agent mapping
 # ---------------------------------------------------------------------------
-
-default_an_config = AnalysisConfig(
-    default_visualization_style="seaborn-v0_8-whitegrid",
-    report_author="Your Name",
-    datetime_format_preference="%Y-%m-%d %H:%M:%S",
-    large_dataframe_preview_rows=5,
-    expect_reply=False,
-    reply_msg_to_supervisor="No message",
-    finished_this_task=True,
-)
 
 CLASS_TO_AGENT: dict[type, AgentId] = {
     InitialDescription: "initial_analysis",
@@ -645,8 +637,10 @@ __all__ = [
     "ReportOutline",
     "VizFeedback",
     "ConversationalResponse",
-    # Re-exports: idd_graph (CP3)
+    "default_an_config",
+    # Re-exports: idd_graph (CP3/CP4)
     "build_graph",
+    "CachePolicy",
     "AGENT_MEMBERS",
     "AGENT_OPTIONS",
     "options",
