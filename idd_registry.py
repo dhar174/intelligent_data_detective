@@ -42,6 +42,7 @@ WORKING_DIRECTORY = Path(
 # Registry Exception Class
 # ---------------------------------------------------------------------------
 
+
 class DataFrameRegistryError(Exception):
     """Exception raised for errors in the DataFrameRegistry."""
 
@@ -62,6 +63,7 @@ class DataFrameRegistryError(Exception):
 # ---------------------------------------------------------------------------
 # Canonical DataFrameRegistry
 # ---------------------------------------------------------------------------
+
 
 class DataFrameRegistry:
     """Thread-safe LRU cache and persistent registry for DataFrames.
@@ -154,7 +156,9 @@ class DataFrameRegistry:
         """
         if data_dir is None:
             WORKING_DIRECTORY.mkdir(parents=True, exist_ok=True)
-            created = tempfile.mkdtemp(prefix="idd_registry_", dir=str(WORKING_DIRECTORY))
+            created = tempfile.mkdtemp(
+                prefix="idd_registry_", dir=str(WORKING_DIRECTORY)
+            )
             resolved = Path(created).resolve()
             if os.name == "posix":
                 try:
@@ -229,7 +233,9 @@ class DataFrameRegistry:
         Internal backing storage is strictly contained within the registry's private data directory;
         user-supplied external files continue to use their respective external formats.
         """
-        digest = hashlib.sha256(df_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+        digest = hashlib.sha256(
+            df_id.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
         safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", df_id)[:24].strip("_")
         if safe_prefix:
             return f"{safe_prefix}_{digest[:16]}.pkl"
@@ -257,7 +263,9 @@ class DataFrameRegistry:
         """Return True when the path uses a pickle serialization extension."""
         return Path(path).suffix.lower() in (".pkl", ".pickle")
 
-    def _validate_internal_snapshot_path(self, df_id: str, reload_p: Union[str, Path]) -> Path:
+    def _validate_internal_snapshot_path(
+        self, df_id: str, reload_p: Union[str, Path]
+    ) -> Path:
         """Verify a recorded reload path is this registry's expected owned snapshot.
 
         Fails closed (raises DataFrameRegistryError) unless ALL of the following hold:
@@ -279,7 +287,11 @@ class DataFrameRegistry:
         expected_unresolved = self.data_dir / self._safe_backing_filename(df_id)
         expected = self._get_owned_backing_path(df_id)
         supplied = Path(reload_p)
-        if not supplied.is_absolute() or supplied.resolve() != expected or expected != expected_unresolved:
+        if (
+            not supplied.is_absolute()
+            or supplied.resolve() != expected
+            or expected != expected_unresolved
+        ):
             raise DataFrameRegistryError(
                 f"Security violation: pickle reload path '{supplied}' for df_id '{df_id}' is not "
                 f"the expected registry-owned snapshot '{expected_unresolved}'; refusing to unpickle."
@@ -460,7 +472,9 @@ class DataFrameRegistry:
                     # Preserve external source file; write to registry-owned backing storage.
                     backing_path = self._get_owned_backing_path(df_id)
                     if not self._write_df(df, backing_path):
-                        print(f"Error: failed to persist updated DataFrame '{df_id}' to backing storage")
+                        print(
+                            f"Error: failed to persist updated DataFrame '{df_id}' to backing storage"
+                        )
                         return None
 
                     # Backing write succeeded; update metadata and in-memory cache atomically
@@ -499,7 +513,9 @@ class DataFrameRegistry:
                     entry["reload_path"] = str(norm_path)
                     entry["raw_path"] = str(norm_path)
                     entry["reload_is_owned_snapshot"] = False
-                    entry["trusted_external_pickle"] = bool(is_pickle and trust_external_pickle)
+                    entry["trusted_external_pickle"] = bool(
+                        is_pickle and trust_external_pickle
+                    )
                     self.df_id_to_raw_path[df_id] = str(norm_path)
                     self._touch_cache(df_id, loaded)
                     return df_id
@@ -531,7 +547,9 @@ class DataFrameRegistry:
                         "reload_path": str(norm_path),
                         "raw_path": str(norm_path),
                         "reload_is_owned_snapshot": False,
-                        "trusted_external_pickle": bool(is_pickle and trust_external_pickle),
+                        "trusted_external_pickle": bool(
+                            is_pickle and trust_external_pickle
+                        ),
                     }
                     self.df_id_to_raw_path[df_id] = str(norm_path)
                     self._touch_cache(df_id, df)
@@ -544,7 +562,9 @@ class DataFrameRegistry:
                         # Persist supplied working DataFrame to registry-owned backing storage.
                         backing_path = self._get_owned_backing_path(df_id)
                         if not self._write_df(df, backing_path):
-                            print(f"Error: failed to persist initial DataFrame '{df_id}' to backing storage")
+                            print(
+                                f"Error: failed to persist initial DataFrame '{df_id}' to backing storage"
+                            )
                             return None
                         self.registry[df_id] = {
                             "df": df,
@@ -569,7 +589,9 @@ class DataFrameRegistry:
                             # reload. Reload from a registry-owned snapshot instead.
                             backing_path = self._get_owned_backing_path(df_id)
                             if not self._write_df(df, backing_path):
-                                print(f"Error: failed to persist initial DataFrame '{df_id}' to backing storage")
+                                print(
+                                    f"Error: failed to persist initial DataFrame '{df_id}' to backing storage"
+                                )
                                 return None
                             reload_path = str(backing_path)
                             reload_is_owned = True
@@ -639,8 +661,12 @@ class DataFrameRegistry:
                 path = self._norm_path(str(reload_p))
                 if self._is_pickle_path(path):
                     if info.get("reload_is_owned_snapshot"):
-                        path = self._validate_internal_snapshot_path(df_id, str(reload_p))
-                    elif info.get("trusted_external_pickle") and str(path) == str(info.get("source_path")):
+                        path = self._validate_internal_snapshot_path(
+                            df_id, str(reload_p)
+                        )
+                    elif info.get("trusted_external_pickle") and str(path) == str(
+                        info.get("source_path")
+                    ):
                         pass  # Explicit caller trust decision recorded at import time.
                     else:
                         raise DataFrameRegistryError(
@@ -678,7 +704,11 @@ class DataFrameRegistry:
         with self._lock:
             info = self.registry.get(df_id)
             if info:
-                return info.get("source_path") or info.get("raw_path") or info.get("reload_path")
+                return (
+                    info.get("source_path")
+                    or info.get("raw_path")
+                    or info.get("reload_path")
+                )
             return self.df_id_to_raw_path.get(df_id)
 
     def get_source_path_from_id(self, df_id: str) -> Optional[str]:
@@ -806,3 +836,38 @@ def override_global_registry(registry: DataFrameRegistry):
         yield registry
     finally:
         _registry_override.reset(token)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Global Registry Proxy (ContextVar-aware)
+# ---------------------------------------------------------------------------
+
+
+class _DynamicGlobalRegistryProxy(DataFrameRegistry):
+    """Dynamic proxy that transparently routes all operations to get_global_registry().
+
+    Ensures that any tool or module accessing the module-level `global_df_registry`
+    always operates on the active ContextVar registry override (e.g. during test
+    isolation or per-run overrides) rather than freezing on a stale default instance.
+    """
+
+    def __init__(self) -> None:
+        # Do not initialize a separate storage directory; delegate dynamically
+        pass
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in ("__class__", "__doc__", "__repr__", "_is_proxy"):
+            return super().__getattribute__(name)
+        return getattr(get_global_registry(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(get_global_registry(), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(get_global_registry(), name)
+
+    def __repr__(self) -> str:
+        return f"<DynamicGlobalRegistryProxy -> {get_global_registry()!r}>"
+
+
+global_df_registry: DataFrameRegistry = _DynamicGlobalRegistryProxy()

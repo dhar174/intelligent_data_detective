@@ -255,6 +255,17 @@ class AnalysisConfig(BaseNoExtrasModel):
     )
 
 
+default_an_config = AnalysisConfig(
+    default_visualization_style="seaborn-v0_8-whitegrid",
+    report_author="Intelligent Data Detective",
+    datetime_format_preference="%Y-%m-%d %H:%M:%S",
+    large_dataframe_preview_rows=5,
+    reply_msg_to_supervisor="Default AnalysisConfig initialized",
+    finished_this_task=True,
+    expect_reply=False,
+)
+
+
 class CleaningMetadata(BaseNoExtrasModel):
     """Metadata about the data cleaning actions taken."""
 

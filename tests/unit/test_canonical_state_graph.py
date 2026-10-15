@@ -834,3 +834,12 @@ class TestPydanticSchemas:
         """Every symbol in idd_core.__all__ must exist as an attribute on idd_core without raising AttributeError."""
         for name in idd_core.__all__:
             assert hasattr(idd_core, name), f"idd_core missing exported symbol {name!r}"
+
+    def test_build_graph_with_node_cache_policy(self):
+        """build_graph attaches node_cache_policies to registered nodes."""
+        from langgraph.types import CachePolicy
+
+        policy = CachePolicy(ttl=120)
+        g = idd_graph.build_graph(node_cache_policies=policy, structural_only=True)
+        assert g is not None
+        assert idd_core.CachePolicy is idd_graph.CachePolicy

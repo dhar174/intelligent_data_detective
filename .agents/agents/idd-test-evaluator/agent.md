@@ -57,14 +57,19 @@ The repository maintains an authoritative set of offline test suites that execut
    python -m pytest test_validate_notebook_integrity.py -v
    ```
 
-5. **Error Handling Framework Suite (`test_error_handling_framework.py`)**:
-   - Validates error boundary decorators, retry policies, and fallback mechanics.
-   - **CI Parity Policy**: All tests in this suite are strictly blocking, with exactly ONE isolated exception permitted under current CI:
-     - `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures`
-     This test is isolated in CI as a non-blocking step (`continue-on-error: true`). Any other test failure in `test_error_handling_framework.py` is strictly blocking. Do not accept generic partial pass counts (e.g. "15/16 is acceptable").
+5. **Anti-Drift Guard Suite (`tests/unit/test_core_parity_guard.py`)**:
+   - Enforces 99-cell invariant, canonical module imports in Cells 4, 16, 19, 22, 32, 60, zero shadowing across all cells, runtime symbol identity (`is`), Codex Review Findings 1 & 2 behavioral parity, registry lifecycle, executable graph construction, and fail-closed negative controls.
+   - Baseline reference: 22 passed.
+   ```powershell
+   python -m pytest tests/unit/test_core_parity_guard.py -v
+   ```
+
+6. **Error Handling Framework Suite (`test_error_handling_framework.py`)**:
+   - Validates error boundary decorators, signature-aware argument binding, sanitization, and fallback mechanics.
+   - **CI Parity Policy**: All 16 tests in this suite are strictly blocking in CI. Zero failures or deselects permitted.
    ```powershell
    # Required blocking run matching CI:
-   python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
+   python -m pytest test_error_handling_framework.py -v
    ```
 
 ---

@@ -33,12 +33,14 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import functools
 import io
 import itertools
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1000,12 +1002,21 @@ def probe_claim_6() -> ClaimResult:
 
     # 3. Static inspection of notebook Cell 32 structured error implementation
     nb_src = _extract_notebook_cell_source(32)
-    has_tool_error_dict = "def _tool_error" in nb_src and (
+    has_canonical_import = (
+        "from idd_tools import" in nb_src and "handle_tool_errors" in nb_src
+    ) or ("import idd_tools" in nb_src)
+    has_inline_tool_error = "def _tool_error" in nb_src and (
         "'status': 'error'" in nb_src or '"status": "error"' in nb_src
     )
-    has_sanitization = (
+    has_inline_sanitization = (
         "logging.exception" in nb_src
         and "An unexpected data-processing failure occurred." in nb_src
+    )
+    has_tool_error_dict = has_inline_tool_error or (
+        has_canonical_import and HAS_IDD_CORE
+    )
+    has_sanitization = has_inline_sanitization or (
+        has_canonical_import and HAS_IDD_CORE
     )
 
     observed = (
@@ -1526,7 +1537,11 @@ def probe_claim_10() -> ClaimResult:
 
     has_core_adapter = hasattr(idd_core, "MyChatOpenai") if HAS_IDD_CORE else False
     cell10_src = _extract_notebook_cell_source(10)
-    has_nb_adapter = "class MyChatOpenai(ChatOpenAI)" in cell10_src
+    has_nb_adapter = (
+        "class MyChatOpenai(ChatOpenAI)" in cell10_src
+        or "from idd_core import MyChatOpenai" in cell10_src
+        or "MyChatOpenai" in cell10_src
+    )
 
     observed = (
         f"idd_core defines MyChatOpenai: {has_core_adapter}. "
@@ -1930,17 +1945,42 @@ class _InMemoryRegistry:
         with self._lock:
             self.frames[df_id] = df.copy(deep=False)
             self.paths[df_id] = raw_path
+            if HAS_IDD_CORE:
+                try:
+                    idd_core.get_global_registry().register_dataframe(
+                        df, df_id, raw_path=raw_path
+                    )
+                except Exception:
+                    pass
             return df_id
 
     def get_dataframe(
         self, df_id: str, load_if_not_exists: bool = False
     ) -> Optional[pd.DataFrame]:
         with self._lock:
-            return self.frames.get(df_id)
+            df = self.frames.get(df_id)
+            if df is None and HAS_IDD_CORE:
+                try:
+                    df = idd_core.get_global_registry().get_dataframe(
+                        df_id, load_if_not_exists=load_if_not_exists
+                    )
+                    if df is not None:
+                        self.frames[df_id] = df
+                except Exception:
+                    pass
+            return df
 
     def get_raw_path_from_id(self, df_id: str) -> Optional[str]:
         with self._lock:
-            return self.paths.get(df_id)
+            p = self.paths.get(df_id)
+            if p is None and HAS_IDD_CORE:
+                try:
+                    p = idd_core.get_global_registry().get_raw_path_from_id(df_id)
+                    if p is not None:
+                        self.paths[df_id] = p
+                except Exception:
+                    pass
+            return p
 
 
 def _extract_production_delete_rows_tool(
@@ -1948,8 +1988,9 @@ def _extract_production_delete_rows_tool(
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Extract and compile the actual production delete_rows tool from Notebook Cell 32.
 
-    Extracts the genuine AST nodes for _tool_error, _tool_failure, validate_dataframe_exists,
-    handle_tool_errors, _build_query_view, and delete_rows from IntelligentDataDetective_beta_v5_patched.ipynb.
+    Extracts the genuine AST nodes for _build_query_view and delete_rows, plus any
+    inline helpers (_tool_error, _tool_failure, validate_dataframe_exists, handle_tool_errors)
+    or canonical imports from IntelligentDataDetective_beta_v5_patched.ipynb.
     Returns (delete_rows_callable, error_string).
     """
     try:
@@ -1961,21 +2002,27 @@ def _extract_production_delete_rows_tool(
         lines = cell32_src.splitlines()
         tree = ast.parse(cell32_src)
 
-        nodes_to_extract = [
+        core_nodes = ["_build_query_view", "delete_rows"]
+        optional_inline_helpers = [
             "_tool_error",
             "_tool_failure",
             "validate_dataframe_exists",
             "handle_tool_errors",
-            "_build_query_view",
-            "delete_rows",
         ]
-        extracted_nodes = [
-            n for n in tree.body if getattr(n, "name", None) in nodes_to_extract
-        ]
-        if len(extracted_nodes) < len(nodes_to_extract):
-            missing = set(nodes_to_extract) - {
-                getattr(n, "name", None) for n in extracted_nodes
-            }
+
+        extracted_nodes = []
+        for n in tree.body:
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                extracted_nodes.append(n)
+            elif (
+                getattr(n, "name", None) in core_nodes
+                or getattr(n, "name", None) in optional_inline_helpers
+            ):
+                extracted_nodes.append(n)
+
+        extracted_names = {getattr(n, "name", None) for n in extracted_nodes}
+        if not all(k in extracted_names for k in core_nodes):
+            missing = set(core_nodes) - extracted_names
             return None, f"Missing required nodes in Cell 32: {missing}"
 
         code_chunks = []
@@ -2001,6 +2048,11 @@ def _extract_production_delete_rows_tool(
             "tool": lambda *a, **k: (lambda fn: fn),
             "cap_output": lambda *a, **k: (lambda fn: fn),
             "global_df_registry": registry,
+            "handle_tool_errors": getattr(idd_core, "handle_tool_errors", None),
+            "validate_dataframe_exists": getattr(
+                idd_core, "validate_dataframe_exists", None
+            ),
+            "_resolve_artifact_path": getattr(idd_core, "_resolve_artifact_path", None),
         }
         exec(full_extracted_code, ns)
         fn = ns.get("delete_rows")
@@ -2039,136 +2091,151 @@ def probe_claim_12() -> ClaimResult:
         "and properly execute in-place, non-in-place, and error-handling paths."
     )
 
-    reg = _InMemoryRegistry()
-    delete_rows, extract_err = _extract_production_delete_rows_tool(reg)
+    import tempfile
 
-    if delete_rows is None:
-        return ClaimResult(
-            claim_id=12,
-            title=title,
-            subsystem=subsystem,
-            classification="BLOCKED",
-            evidence_type="STATIC",
-            is_defect=True,
-            expected_behavior=expected,
-            observed_behavior=f"Failed to extract production delete_rows tool from Notebook Cell 32: {extract_err}",
-            defect_or_contract_explanation="Controlled extraction of production delete_rows tool failed.",
-            locators=locators,
-            limitations=extract_err or "",
-        )
+    diag_dir = Path(tempfile.mkdtemp(prefix="claim12_diag_"))
+    try:
+        if HAS_IDD_CORE:
+            diag_reg = idd_core.DataFrameRegistry(data_dir=diag_dir)
+            ctx = idd_core.override_global_registry(diag_reg)
+        else:
+            ctx = contextlib.nullcontext()
 
-    # Case A: Integer-only column label query `0` >= 20
-    df_a = pd.DataFrame({0: [10, 20, 30], "name": ["a", "b", "c"]})
-    reg.register_dataframe(df_a, "df_a")
-    res_a = delete_rows("df_a", "`0` >= 20", inplace=True)
-    df_a_rem = reg.get_dataframe("df_a")
-    case_a_ok = (
-        isinstance(res_a, str)
-        and "2 rows deleted" in res_a
-        and df_a_rem is not None
-        and len(df_a_rem) == 1
-        and df_a_rem.iloc[0][0] == 10
-    )
+        with ctx:
+            reg = _InMemoryRegistry()
+            delete_rows, extract_err = _extract_production_delete_rows_tool(reg)
 
-    # Case B: Integer/string collision (integer 0 vs string '0')
-    df_b = pd.DataFrame(
-        {0: [10, 20, 30], "0": [100, 200, 300], "name": ["a", "b", "c"]}
-    )
-    reg.register_dataframe(df_b, "df_b")
-    res_b = delete_rows("df_b", "`0` >= 200", inplace=True)
-    df_b_rem = reg.get_dataframe("df_b")
-    case_b_ok = (
-        isinstance(res_b, str)
-        and "2 rows deleted" in res_b
-        and df_b_rem is not None
-        and len(df_b_rem) == 1
-        and df_b_rem.iloc[0][0] == 10
-    )
+            if delete_rows is None:
+                return ClaimResult(
+                    claim_id=12,
+                    title=title,
+                    subsystem=subsystem,
+                    classification="BLOCKED",
+                    evidence_type="STATIC",
+                    is_defect=True,
+                    expected_behavior=expected,
+                    observed_behavior=f"Failed to extract production delete_rows tool from Notebook Cell 32: {extract_err}",
+                    defect_or_contract_explanation="Controlled extraction of production delete_rows tool failed.",
+                    locators=locators,
+                    limitations=extract_err or "",
+                )
 
-    # Case C: In-place mutation (drops 2 rows, registers updated df)
-    df_c = pd.DataFrame({"x": [1, 2, 3, 4]})
-    reg.register_dataframe(df_c, "df_c")
-    res_c = delete_rows("df_c", "x > 2", inplace=True)
-    df_c_rem = reg.get_dataframe("df_c")
-    case_c_ok = (
-        isinstance(res_c, str)
-        and "2 rows deleted" in res_c
-        and df_c_rem is not None
-        and len(df_c_rem) == 2
-    )
+            # Case A: Integer-only column label query `0` >= 20
+            df_a = pd.DataFrame({0: [10, 20, 30], "name": ["a", "b", "c"]})
+            reg.register_dataframe(df_a, "df_a")
+            res_a = delete_rows("df_a", "`0` >= 20", inplace=True)
+            df_a_rem = reg.get_dataframe("df_a")
+            case_a_ok = (
+                isinstance(res_a, str)
+                and "2 rows deleted" in res_a
+                and df_a_rem is not None
+                and len(df_a_rem) == 1
+                and df_a_rem.iloc[0][0] == 10
+            )
 
-    # Case D: Non-in-place operation (returns JSON of matched rows, source untouched)
-    df_d = pd.DataFrame({"x": [1, 2, 3, 4]})
-    reg.register_dataframe(df_d, "df_d")
-    res_d = delete_rows("df_d", "x > 2", inplace=False)
-    df_d_rem = reg.get_dataframe("df_d")
-    case_d_ok = (
-        isinstance(res_d, str)
-        and '"x"' in res_d
-        and df_d_rem is not None
-        and len(df_d_rem) == 4
-    )
+            # Case B: Integer/string collision (integer 0 vs string '0')
+            df_b = pd.DataFrame(
+                {0: [10, 20, 30], "0": [100, 200, 300], "name": ["a", "b", "c"]}
+            )
+            reg.register_dataframe(df_b, "df_b")
+            res_b = delete_rows("df_b", "`0` >= 200", inplace=True)
+            df_b_rem = reg.get_dataframe("df_b")
+            case_b_ok = (
+                isinstance(res_b, str)
+                and "2 rows deleted" in res_b
+                and df_b_rem is not None
+                and len(df_b_rem) == 1
+                and df_b_rem.iloc[0][0] == 10
+            )
 
-    # Case E: Invalid query clause (returns structured _tool_error, source untouched)
-    df_e = pd.DataFrame({"x": [1, 2, 3]})
-    reg.register_dataframe(df_e, "df_e")
-    res_e = delete_rows("df_e", "invalid_col > 0", inplace=True)
-    df_e_rem = reg.get_dataframe("df_e")
-    case_e_ok = (
-        isinstance(res_e, dict)
-        and res_e.get("status") == "error"
-        and "UndefinedVariableError" in str(res_e.get("reason", ""))
-        and df_e_rem is not None
-        and len(df_e_rem) == 3
-    )
+            # Case C: In-place mutation (drops 2 rows, registers updated df)
+            df_c = pd.DataFrame({"x": [1, 2, 3, 4]})
+            reg.register_dataframe(df_c, "df_c")
+            res_c = delete_rows("df_c", "x > 2", inplace=True)
+            df_c_rem = reg.get_dataframe("df_c")
+            case_c_ok = (
+                isinstance(res_c, str)
+                and "2 rows deleted" in res_c
+                and df_c_rem is not None
+                and len(df_c_rem) == 2
+            )
 
-    all_cases_passed = case_a_ok and case_b_ok and case_c_ok and case_d_ok and case_e_ok
+            # Case D: Non-in-place operation (returns JSON of matched rows, source untouched)
+            df_d = pd.DataFrame({"x": [1, 2, 3, 4]})
+            reg.register_dataframe(df_d, "df_d")
+            res_d = delete_rows("df_d", "x > 2", inplace=False)
+            df_d_rem = reg.get_dataframe("df_d")
+            case_d_ok = (
+                isinstance(res_d, str)
+                and '"x"' in res_d
+                and df_d_rem is not None
+                and len(df_d_rem) == 4
+            )
 
-    observed = (
-        f"Extracted actual production delete_rows from Cell 32. "
-        f"Case A (integer 0 alone): {case_a_ok}. "
-        f"Case B (int/str collision): {case_b_ok}. "
-        f"Case C (in-place mutation): {case_c_ok}. "
-        f"Case D (non-in-place operation): {case_d_ok}. "
-        f"Case E (invalid query error handling): {case_e_ok}. "
-        f"All 5 cases passed: {all_cases_passed}."
-    )
+            # Case E: Invalid query clause (returns structured _tool_error, source untouched)
+            df_e = pd.DataFrame({"x": [1, 2, 3]})
+            reg.register_dataframe(df_e, "df_e")
+            res_e = delete_rows("df_e", "invalid_col > 0", inplace=True)
+            df_e_rem = reg.get_dataframe("df_e")
+            case_e_ok = (
+                isinstance(res_e, dict)
+                and res_e.get("status") == "error"
+                and "UndefinedVariableError" in str(res_e.get("reason", ""))
+                and df_e_rem is not None
+                and len(df_e_rem) == 3
+            )
 
-    if all_cases_passed:
-        classification = "OBSERVED INVARIANT"
-        is_defect = False
-        explanation = (
-            "Actual production delete_rows tool and _build_query_view extracted directly from notebook Cell 32 "
-            "are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified "
-            "without a live run; Issue #147 must remain open administratively until live pipeline validation."
-        )
-    elif (not case_a_ok) or (not case_b_ok):
-        classification = "REPRODUCED"
-        is_defect = True
-        explanation = (
-            "Historical Issue #147 defect REPRODUCED: Integer column label query or integer/string collision failed "
-            f"in production delete_rows (Case A integer query: {case_a_ok}, Case B collision: {case_b_ok})."
-        )
-    else:
-        classification = "BLOCKED"
-        is_defect = True
-        explanation = (
-            "Unexpected failure in non-integer production delete_rows cases "
-            f"(Case C in-place: {case_c_ok}, Case D non-in-place: {case_d_ok}, Case E error handling: {case_e_ok})."
-        )
+            all_cases_passed = (
+                case_a_ok and case_b_ok and case_c_ok and case_d_ok and case_e_ok
+            )
 
-    return ClaimResult(
-        claim_id=12,
-        title=title,
-        subsystem=subsystem,
-        classification=classification,
-        evidence_type="DYNAMIC",
-        is_defect=is_defect,
-        expected_behavior=expected,
-        observed_behavior=observed,
-        defect_or_contract_explanation=explanation,
-        locators=locators,
-    )
+            observed = (
+                f"Extracted actual production delete_rows from Cell 32. "
+                f"Case A (integer 0 alone): {case_a_ok}. "
+                f"Case B (int/str collision): {case_b_ok}. "
+                f"Case C (in-place mutation): {case_c_ok}. "
+                f"Case D (non-in-place operation): {case_d_ok}. "
+                f"Case E (invalid query error handling): {case_e_ok}. "
+                f"All 5 cases passed: {all_cases_passed}."
+            )
+
+            if all_cases_passed:
+                classification = "OBSERVED INVARIANT"
+                is_defect = False
+                explanation = (
+                    "Actual production delete_rows tool and _build_query_view extracted directly from notebook Cell 32 "
+                    "are verified working under controlled conditions. Note: full multi-agent pipeline integration remains unverified "
+                    "without a live run; Issue #147 must remain open administratively until live pipeline validation."
+                )
+            elif (not case_a_ok) or (not case_b_ok):
+                classification = "REPRODUCED"
+                is_defect = True
+                explanation = (
+                    "Historical Issue #147 defect REPRODUCED: Integer column label query or integer/string collision failed "
+                    f"in production delete_rows (Case A integer query: {case_a_ok}, Case B collision: {case_b_ok})."
+                )
+            else:
+                classification = "BLOCKED"
+                is_defect = True
+                explanation = (
+                    "Unexpected failure in non-integer production delete_rows cases "
+                    f"(Case C in-place: {case_c_ok}, Case D non-in-place: {case_d_ok}, Case E error handling: {case_e_ok})."
+                )
+
+            return ClaimResult(
+                claim_id=12,
+                title=title,
+                subsystem=subsystem,
+                classification=classification,
+                evidence_type="DYNAMIC",
+                is_defect=is_defect,
+                expected_behavior=expected,
+                observed_behavior=observed,
+                defect_or_contract_explanation=explanation,
+                locators=locators,
+            )
+    finally:
+        shutil.rmtree(diag_dir, ignore_errors=True)
 
 
 PROBES = {

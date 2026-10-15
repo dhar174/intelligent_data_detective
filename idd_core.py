@@ -60,6 +60,7 @@ from idd_registry import (
     get_global_registry,
     set_global_registry,
     override_global_registry,
+    _DynamicGlobalRegistryProxy,
 )
 
 # Canonical tools and error handling (Checkpoint 2)
@@ -119,6 +120,7 @@ from idd_state import (
     ReportOutline,
     VizFeedback,
     ConversationalResponse,
+    default_an_config,
 )
 
 # Canonical graph assembly and routing (Checkpoint 3)
@@ -136,6 +138,7 @@ from idd_graph import (
     write_output_to_file,
     assign_viz_workers,
     dispatch_sections,
+    CachePolicy,
 )
 
 # Optional LangChain imports (needed for MyChatOpenai and State only)
@@ -446,6 +449,7 @@ if HAS_LANGCHAIN:
         return payload
 
     class MyChatOpenai(ChatOpenAI):
+        _INTERNAL_KWARGS: frozenset[str] = frozenset({"prompt_cache_key"})
 
         def _get_request_payload_mod(
             self,
@@ -458,7 +462,11 @@ if HAS_LANGCHAIN:
             if stop is not None:
                 kwargs["stop"] = stop
 
-            payload = {**self._default_params, **kwargs}
+            payload = {
+                k: v
+                for k, v in {**self._default_params, **kwargs}.items()
+                if k not in self._INTERNAL_KWARGS
+            }
 
             if self._use_responses_api(payload):
                 if self.use_previous_response_id:
@@ -495,6 +503,8 @@ else:
     class MyChatOpenai:  # type: ignore[no-redef]
         """Fallback stub for MyChatOpenai when LangChain is not installed."""
 
+        _INTERNAL_KWARGS: frozenset[str] = frozenset({"prompt_cache_key"})
+
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
@@ -510,18 +520,8 @@ def get_global_df_registry() -> DataFrameRegistry:
 
 
 # ---------------------------------------------------------------------------
-# Default config and class-to-agent mapping
+# Class-to-agent mapping
 # ---------------------------------------------------------------------------
-
-default_an_config = AnalysisConfig(
-    default_visualization_style="seaborn-v0_8-whitegrid",
-    report_author="Your Name",
-    datetime_format_preference="%Y-%m-%d %H:%M:%S",
-    large_dataframe_preview_rows=5,
-    expect_reply=False,
-    reply_msg_to_supervisor="No message",
-    finished_this_task=True,
-)
 
 CLASS_TO_AGENT: dict[type, AgentId] = {
     InitialDescription: "initial_analysis",
@@ -541,7 +541,7 @@ CLASS_TO_AGENT: dict[type, AgentId] = {
 # Public exports
 # ---------------------------------------------------------------------------
 
-__all__ = [
+__all__ = [  # noqa: F822
     # Framework / environment
     "HAS_LANGCHAIN",
     "WORKING_DIRECTORY",
@@ -593,6 +593,8 @@ __all__ = [
     "get_global_registry",
     "set_global_registry",
     "override_global_registry",
+    "_DynamicGlobalRegistryProxy",
+    "global_df_registry",
     # Re-exports: idd_tools (CP2)
     "_get_artifacts_base",
     "_is_subpath",
@@ -645,8 +647,10 @@ __all__ = [
     "ReportOutline",
     "VizFeedback",
     "ConversationalResponse",
-    # Re-exports: idd_graph (CP3)
+    "default_an_config",
+    # Re-exports: idd_graph (CP3/CP4)
     "build_graph",
+    "CachePolicy",
     "AGENT_MEMBERS",
     "AGENT_OPTIONS",
     "options",

@@ -19,15 +19,19 @@ Primary goals:
 
 ## Repo map
 Key files:
-- `_patch_notebook.py` — patch source for notebook changes; regenerates the patched notebook
-- `IntelligentDataDetective_beta_v5_patched.ipynb` — committed runnable W14 completion notebook
+- `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py` — canonical Python core modules (single source of truth)
+- `idd_core.py` — canonical compatibility façade re-exporting all core symbols with 100% object identity
+- `idd_bootstrap.py`, `idd_manifest.json` — runtime environment bootstrap and SHA-256 provenance manifest verification
+- `_patch_notebook.py` — patch source for notebook changes; wires canonical modules and regenerates the patched notebook
+- `IntelligentDataDetective_beta_v5_patched.ipynb` — committed runnable W14 completion notebook (99 cells)
 - `IntelligentDataDetective_beta_v5.ipynb` — source notebook input for the patcher
 - `validate_run.py`, `validate_artifact_quality.py` — final production/artifact proof validators
 - `memory_enhancements.py` — standalone memory lifecycle/categorization module
 - `memory_config.yaml` — per-agent memory namespace TTL and limits
 - `idd_v4_state_graph.mmd` — authoritative LangGraph state graph topology
+- `tests/unit/test_core_parity_guard.py` — 22 anti-drift guard tests (AST integrity, symbol identity, behavioral parity)
 - `test_intelligent_data_detective.py` — 22 core tests (no API keys needed)
-- `test_error_handling_framework.py` — 15/16 tests pass (1 known edge-case failure acceptable)
+- `test_error_handling_framework.py` — all 16 tests pass (mandatory blocking gate in CI)
 - `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py` — memory tests
 - `prompt_template_validator.py`, `test_prompt_formatting.py`, `test_prompt_template_fixes.py` — prompt template validator & test suite (17 tests)
 
@@ -51,9 +55,9 @@ pip install langchain langchain-core langchain-openai langchain_experimental lan
     pandas numpy scipy scikit-learn matplotlib seaborn pydantic python-dotenv \
     tiktoken openpyxl tavily-python chromadb joblib pytest black flake8
 
-# Run all tests (no API keys required)
+python3 -m pytest tests/unit/test_core_parity_guard.py -v             # 35 anti-drift tests
 python3 -m pytest test_intelligent_data_detective.py -v               # 22 tests
-python3 -m pytest test_error_handling_framework.py -v                 # 15/16 (1 known failure OK)
+python3 -m pytest test_error_handling_framework.py -v                 # 16/16 tests mandatory
 python3 -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
 python3 -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 
@@ -73,6 +77,7 @@ python validate_artifact_quality.py --latest
 ```
 
 ## Engineering conventions
+- **Canonical Python Modules**: `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, and `idd_core.py` are the single source of truth for all domain logic. The notebook imports from them directly.
 - **BaseNoExtrasModel**: all agent output models extend this; include `reply_msg_to_supervisor`, `finished_this_task`, `expect_reply`.
 - **State reducers**: never assign directly to reduced State fields; use reducer semantics (see Cell 7).
 - **`@handle_tool_errors`**: required on every tool function; `validate_dataframe_exists(df_id)` must be the first call for DataFrame-touching tools.
@@ -81,9 +86,11 @@ python validate_artifact_quality.py --latest
 - **Memory namespaces**: `('memories', '<kind>')`; limits from `memory_config.yaml`, not hardcoded.
 - **File writes**: always go through `_resolve_artifact_path()`.
 - **No `src/` directory**: all Python files are at repo root.
+- **Anti-Drift Guard**: `tests/unit/test_core_parity_guard.py` enforces 99 cells, canonical imports in Cells 4, 16, 19, 22, 32, 60, zero shadowing, and runtime object identity.
 
 ## Constraints / do-not rules
 - Do not edit the generated patched notebook directly; make notebook behavior changes through `_patch_notebook.py`.
+- Do not copy or duplicate core domain logic, state schemas, reducers, or tools into patch blocks; wire them to canonical imports.
 - Do not delete or reorder notebook cells.
 - Do not bypass `DataFrameRegistry` by passing DataFrames directly.
 - Do not hardcode memory TTL or limits — use `memory_config.yaml`.

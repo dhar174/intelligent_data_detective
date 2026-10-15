@@ -243,9 +243,22 @@ def test_generated_file_writer_final_semantics_and_branch_selection(
 
 
 def test_generated_route_to_writer_uses_only_reachable_state(generated_notebook):
-    source = _cell_source(generated_notebook["notebook"], "route_to_writer")
-    function = _function_node(source, "route_to_writer")
-    function_source = ast.get_source_segment(source, function)
+    nb = generated_notebook["notebook"]
+    has_def = any(
+        "def route_to_writer(" in "".join(c.get("source", []))
+        for c in nb["cells"]
+        if c.get("cell_type") == "code"
+    )
+    if has_def:
+        source = _cell_source(nb, "route_to_writer")
+        function = _function_node(source, "route_to_writer")
+        function_source = ast.get_source_segment(source, function)
+    else:
+        import inspect
+        import idd_graph
+
+        function_source = inspect.getsource(idd_graph.route_to_writer)
+        function = ast.parse(function_source).body[0]
 
     for dead_field in (
         "report_sections_agent_generated",
@@ -261,15 +274,20 @@ def test_generated_route_to_writer_uses_only_reachable_state(generated_notebook)
     class ReportResults:
         pass
 
-    module = ast.Module(body=[function], type_ignores=[])
-    ast.fix_missing_locations(module)
-    namespace = {
-        "Literal": __import__("typing").Literal,
-        "ReportOutline": ReportOutline,
-        "ReportResults": ReportResults,
-    }
-    exec(compile(module, "<route_to_writer>", "exec"), namespace)
-    route_to_writer = namespace["route_to_writer"]
+    if has_def:
+        module = ast.Module(body=[function], type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = {
+            "Literal": __import__("typing").Literal,
+            "ReportOutline": ReportOutline,
+            "ReportResults": ReportResults,
+        }
+        exec(compile(module, "<route_to_writer>", "exec"), namespace)
+        route_to_writer = namespace["route_to_writer"]
+    else:
+        import idd_graph
+
+        route_to_writer = idd_graph.route_to_writer
 
     complete = {
         "report_generator_complete": True,
@@ -311,13 +329,20 @@ def test_generated_supervisor_converts_tool_and_ai_messages_to_human_messages(
 ):
     notebook = generated_notebook["notebook"]
     source = _cell_source(notebook, "make_supervisor_node")
-    assert 'HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}"' in source
+    assert (
+        'HumanMessage(content=f"[Agent Tool Output]: {this_last_agent_reply_msg}"'
+        in source
+    )
     assert "isinstance(agent_msg, (ToolMessage, AIMessage))" in source
-    assert "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg" not in source
+    assert (
+        "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg" not in source
+    )
 
 
 def _source_supervisor():
-    return _cell_source(json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8")), "make_supervisor_node")
+    return _cell_source(
+        json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8")), "make_supervisor_node"
+    )
 
 
 def test_p1_tm_patch_is_complete_and_idempotent():
@@ -338,7 +363,9 @@ def test_p1_tm_patch_rejects_missing_or_partial_structure(damage):
             1,
         )
     elif damage == "conversion":
-        source = original.replace("if isinstance(agent_msg, ToolMessage):", "if agent_msg is None:", 1)
+        source = original.replace(
+            "if isinstance(agent_msg, ToolMessage):", "if agent_msg is None:", 1
+        )
     else:
         complete = apply_p1_tm_supervisor_patch(original)
         source = complete.replace(
@@ -380,7 +407,9 @@ def test_apply_notebook_install_guard_patch_complete_and_idempotent():
         "multiple_anchors",
     ],
 )
-def test_apply_notebook_install_guard_patch_rejects_missing_or_partial_structure(damage):
+def test_apply_notebook_install_guard_patch_rejects_missing_or_partial_structure(
+    damage,
+):
     original = _source_dependency_cell()
     if damage == "missing_anchor":
         source = "x = 1\ny = 2\n"
@@ -390,13 +419,17 @@ def test_apply_notebook_install_guard_patch_rejects_missing_or_partial_structure
         source = original + '\nos.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")\n'
     elif damage == "corrupted_postcondition":
         patched = apply_notebook_install_guard_patch(original)
-        source = patched.replace("Skipping in-notebook dependency installation;", "hello")
+        source = patched.replace(
+            "Skipping in-notebook dependency installation;", "hello"
+        )
     elif damage == "inverted_guard":
         source = apply_notebook_install_guard_patch(original).replace(
             "if _skip_notebook_installs:", "if not _skip_notebook_installs:", 1
         )
     elif damage == "duplicate_marker":
-        source = apply_notebook_install_guard_patch(original) + "\n# PATCH: P2-SKIP-INSTALLS"
+        source = (
+            apply_notebook_install_guard_patch(original) + "\n# PATCH: P2-SKIP-INSTALLS"
+        )
     else:  # multiple_anchors
         source = original + "\n" + original
     with pytest.raises(RequiredPatchError, match="P2-SKIP-INSTALLS"):
@@ -419,24 +452,35 @@ def test_generated_dependency_cell_contains_skip_contract(generated_notebook):
 
 @pytest.mark.parametrize("skip_value", ["1", " TRUE ", "yes", "on", "0", "false", ""])
 @pytest.mark.parametrize("use_local_llm", [False, True])
-def test_runtime_export_install_guard_matches_notebook(monkeypatch, skip_value, use_local_llm):
+def test_runtime_export_install_guard_matches_notebook(
+    monkeypatch, skip_value, use_local_llm
+):
     marker = "# PATCH: P2-SKIP-INSTALLS"
     end = "# Optional: Use pre-release versions"
     notebook_source = apply_notebook_install_guard_patch(_source_dependency_cell())
-    export_source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(encoding="utf-8")
+    export_source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(
+        encoding="utf-8"
+    )
     notebook_guard = notebook_source.split(marker, 1)[1].split(end, 1)[0].strip()
     export_guard = export_source.split(marker, 1)[1].split(end, 1)[0].strip()
     assert export_guard == notebook_guard
 
     monkeypatch.setenv("IDD_SKIP_NOTEBOOK_INSTALLS", skip_value)
     check_call = MagicMock()
-    exec(export_guard, {
-        "os": os,
-        "sys": sys,
-        "subprocess": SimpleNamespace(check_call=check_call),
-        "use_local_llm": use_local_llm,
-    })
-    expected_calls = 0 if skip_value.strip().lower() in {"1", "true", "yes", "on"} else 1 + use_local_llm
+    exec(
+        export_guard,
+        {
+            "os": os,
+            "sys": sys,
+            "subprocess": SimpleNamespace(check_call=check_call),
+            "use_local_llm": use_local_llm,
+        },
+    )
+    expected_calls = (
+        0
+        if skip_value.strip().lower() in {"1", "true", "yes", "on"}
+        else 1 + use_local_llm
+    )
     assert check_call.call_count == expected_calls
 
 
@@ -481,11 +525,17 @@ def test_kernel_preflight_checks_notebook_scientific_submodules(monkeypatch):
             result = {name: {"ok": True, "version": "test"} for name in modules}
             flag = os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")
             self.notebook.cells[0]["outputs"] = [
-                {"text": "SCIENTIFIC_STACK_PREFLIGHT=" + json.dumps({
-                    "modules": result,
-                    "install_flag": flag,
-                    "installs_skipped": (flag or "").strip().lower() in {"1", "true", "yes", "on"},
-                })}
+                {
+                    "text": "SCIENTIFIC_STACK_PREFLIGHT="
+                    + json.dumps(
+                        {
+                            "modules": result,
+                            "install_flag": flag,
+                            "installs_skipped": (flag or "").strip().lower()
+                            in {"1", "true", "yes", "on"},
+                        }
+                    )
+                }
             ]
 
     fake_nbformat = SimpleNamespace(
@@ -505,7 +555,9 @@ def test_kernel_preflight_checks_notebook_scientific_submodules(monkeypatch):
 
 
 @pytest.mark.parametrize("nbclient_available", [False, True])
-def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_available):
+def test_resume_preflight_failure_clears_flag(
+    monkeypatch, tmp_path, nbclient_available
+):
     import run_notebook_live
 
     (tmp_path / "current_run_thread_id.txt").write_text("thread-1", encoding="utf-8")
@@ -517,7 +569,9 @@ def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_av
     monkeypatch.setattr(run_notebook_live, "load_langsmith_env", lambda: {})
     monkeypatch.setattr(run_notebook_live, "check_nbclient", lambda: nbclient_available)
     monkeypatch.setattr(run_notebook_live, "select_kernel_name", lambda: "python3")
-    monkeypatch.setattr(run_notebook_live, "probe_kernel_scientific_stack", lambda _: False)
+    monkeypatch.setattr(
+        run_notebook_live, "probe_kernel_scientific_stack", lambda _: False
+    )
 
     with pytest.raises(SystemExit) as exc:
         run_notebook_live.main()
@@ -525,8 +579,12 @@ def test_resume_preflight_failure_clears_flag(monkeypatch, tmp_path, nbclient_av
     assert not (tmp_path / "_idd_resume.flag").exists()
 
 
-@pytest.mark.parametrize("skip_value", [None, "1", " TRUE ", "yes", "on", "0", "false", ""])
-def test_live_runner_preflight_respects_install_override(monkeypatch, tmp_path, skip_value):
+@pytest.mark.parametrize(
+    "skip_value", [None, "1", " TRUE ", "yes", "on", "0", "false", ""]
+)
+def test_live_runner_preflight_respects_install_override(
+    monkeypatch, tmp_path, skip_value
+):
     import run_notebook_live
 
     if skip_value is None:
@@ -543,11 +601,18 @@ def test_live_runner_preflight_respects_install_override(monkeypatch, tmp_path, 
     execute = MagicMock(return_value=({}, [], None))
     monkeypatch.setattr(run_notebook_live, "probe_kernel_scientific_stack", probe)
     monkeypatch.setattr(run_notebook_live, "execute_notebook", execute)
-    monkeypatch.setattr(run_notebook_live, "extract_output_paths_from_notebook", lambda _: [])
+    monkeypatch.setattr(
+        run_notebook_live, "extract_output_paths_from_notebook", lambda _: []
+    )
     monkeypatch.setattr(run_notebook_live, "scan_artifacts", lambda: {})
     monkeypatch.setattr(run_notebook_live, "print_artifact_summary", lambda *_: True)
 
-    installs_skipped = skip_value is None or skip_value.strip().lower() in {"1", "true", "yes", "on"}
+    installs_skipped = skip_value is None or skip_value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     with pytest.raises(SystemExit) as exc:
         run_notebook_live.main()
     assert exc.value.code == (1 if installs_skipped else 0)
@@ -569,12 +634,15 @@ def _source_dataframe_registry_cell():
 
 
 @pytest.mark.parametrize("registry_count", [0, 2])
-def test_patcher_rejects_missing_or_duplicate_registry_cells(monkeypatch, tmp_path, registry_count):
+def test_patcher_rejects_missing_or_duplicate_registry_cells(
+    monkeypatch, tmp_path, registry_count
+):
     import _patch_notebook
 
     notebook = json.loads(SOURCE_NOTEBOOK.read_text(encoding="utf-8"))
     registry_cells = [
-        cell for cell in notebook["cells"]
+        cell
+        for cell in notebook["cells"]
         if cell.get("cell_type") == "code"
         and "class DataFrameRegistry:" in _patch_notebook.join_source(cell["source"])
     ]
@@ -589,7 +657,10 @@ def test_patcher_rejects_missing_or_duplicate_registry_cells(monkeypatch, tmp_pa
     monkeypatch.setattr(_patch_notebook, "INPUT_NB", input_path)
     monkeypatch.setattr(_patch_notebook, "OUTPUT_NB", output_path)
 
-    with pytest.raises(RequiredPatchError, match=f"expected 1 DataFrameRegistry target cell, found {registry_count}"):
+    with pytest.raises(
+        RequiredPatchError,
+        match=f"expected 1 DataFrameRegistry target cell, found {registry_count}",
+    ):
         _patch_notebook.main()
     assert not output_path.exists()
 
@@ -617,7 +688,9 @@ def test_apply_dataframe_registry_path_binding_patch_complete_and_idempotent():
         "changed_condition",
     ],
 )
-def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_structure(damage):
+def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_structure(
+    damage,
+):
     original = _source_dataframe_registry_cell()
     if damage == "missing_anchor":
         source = "class DataFrameRegistry:\n    pass\n"
@@ -626,28 +699,44 @@ def test_apply_dataframe_registry_path_binding_patch_rejects_missing_or_partial_
     else:
         patched = apply_dataframe_registry_path_binding_patch(original)
         if damage == "corrupted_postcondition":
-            source = patched.replace("path = self._norm_path(raw_path)  # PATCH: P3-DF-REG-PATH", "# PATCH: P3-DF-REG-PATH")
+            source = patched.replace(
+                "path = self._norm_path(raw_path)  # PATCH: P3-DF-REG-PATH",
+                "# PATCH: P3-DF-REG-PATH",
+            )
         elif damage == "duplicate_marker":
             source = patched + "\n# PATCH: P3-DF-REG-PATH"
         elif damage == "extra_binding":
             source = patched + "\npath = self._norm_path(raw_path)"
         else:
-            source = patched.replace("if df is None and not path.exists():", "if df is not None and not path.exists():", 1)
+            source = patched.replace(
+                "if df is None and not path.exists():",
+                "if df is not None and not path.exists():",
+                1,
+            )
     with pytest.raises(RequiredPatchError, match="P3-DF-REG-PATH"):
         apply_dataframe_registry_path_binding_patch(source)
 
 
-def test_generated_dataframe_registry_cell_registers_dataframe(generated_notebook, tmp_path):
+def test_generated_dataframe_registry_cell_registers_dataframe(
+    generated_notebook, tmp_path
+):
     import pandas as pd
+
     nb = generated_notebook["notebook"]
     reg_cell_src = None
+    is_canonical = False
     for cell in nb["cells"]:
         src = "".join(cell.get("source", []))
-        if "class DataFrameRegistry:" in src:
+        if "# PATCH: CP4-CANONICAL-REGISTRY" in src:
+            reg_cell_src = src
+            is_canonical = True
+            break
+        elif "class DataFrameRegistry:" in src:
             reg_cell_src = src
             break
     assert reg_cell_src is not None
-    assert "# PATCH: P3-DF-REG-PATH" in reg_cell_src
+    if not is_canonical:
+        assert "# PATCH: P3-DF-REG-PATH" in reg_cell_src
 
     # Compile and execute DataFrameRegistry in an isolated namespace
     import uuid
@@ -710,15 +799,21 @@ def production_registry(request, generated_notebook, tmp_path):
     import pandas as pd
 
     if request.param == "notebook":
-        source = next(
+        reg_cell = next(
             "".join(cell["source"])
             for cell in generated_notebook["notebook"]["cells"]
             if cell.get("cell_type") == "code"
-            and "class DataFrameRegistry:" in "".join(cell["source"])
+            and "# PATCH: CP4-CANONICAL-REGISTRY" in "".join(cell["source"])
         )
-        node = next(node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == "DataFrameRegistry")
+        ns = {}
+        exec(reg_cell, ns)
+        reg = ns["DataFrameRegistry"](data_dir=tmp_path)
+        reg._is_canonical_idd = True
+        return reg
     else:
-        source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(encoding="utf-8")
+        source = (REPO_ROOT / "intelligentdatadetective_beta_v5.py").read_text(
+            encoding="utf-8"
+        )
         # The textual export is not importable; compile only the real registry class.
         registry_source = source.split("class DataFrameRegistry:", 1)[1]
         lines = []
@@ -727,13 +822,30 @@ def production_registry(request, generated_notebook, tmp_path):
                 break
             lines.append(line)
         node = ast.parse("class DataFrameRegistry:" + "\n".join(lines)).body[0]
-    namespace = {
-        "threading": threading, "uuid": uuid, "OrderedDict": OrderedDict,
-        "pd": pd, "PathlibPath": Path, "WORKING_DIRECTORY": tmp_path,
-        "Dict": Dict, "Optional": Optional, "List": List, "os": os, "logging": logging,
-    }
-    exec(compile(ast.Module(body=[node], type_ignores=[]), "<production_registry>", "exec"), namespace)
-    return namespace["DataFrameRegistry"]()
+        namespace = {
+            "threading": threading,
+            "uuid": uuid,
+            "OrderedDict": OrderedDict,
+            "pd": pd,
+            "PathlibPath": Path,
+            "WORKING_DIRECTORY": tmp_path,
+            "Dict": Dict,
+            "Optional": Optional,
+            "List": List,
+            "os": os,
+            "logging": logging,
+        }
+        exec(
+            compile(
+                ast.Module(body=[node], type_ignores=[]),
+                "<production_registry>",
+                "exec",
+            ),
+            namespace,
+        )
+        reg = namespace["DataFrameRegistry"]()
+        reg._is_canonical_idd = False
+        return reg
 
 
 @pytest.mark.parametrize("explicit_path", [False, True])
@@ -741,18 +853,35 @@ def test_production_registry_new_id_paths(production_registry, tmp_path, explici
     import pandas as pd
 
     df = pd.DataFrame({"value": [1, 2]})
-    path = tmp_path / ("explicit.csv" if explicit_path else "new.csv")
-    kwargs = {"raw_path": str(path)} if explicit_path else {}
-    assert production_registry.register_dataframe(df, "new", **kwargs) == "new"
-    assert path.is_file()
-    assert production_registry.registry["new"]["raw_path"] == str(path)
-    assert production_registry.get_raw_path_from_id("new") == str(path)
-    pd.testing.assert_frame_equal(production_registry.get_dataframe("new"), df)
+    is_canonical = getattr(production_registry, "_is_canonical_idd", False)
+    if is_canonical and not explicit_path:
+        # Canonical registry writes auto-generated backing storage (.pkl in data_dir)
+        assert production_registry.register_dataframe(df, "new") == "new"
+        actual_path = Path(production_registry.get_raw_path_from_id("new"))
+        assert actual_path.is_file()
+        assert production_registry.registry["new"]["raw_path"] == str(actual_path)
+        pd.testing.assert_frame_equal(production_registry.get_dataframe("new"), df)
+        # Verify reload from disk on cache eviction
+        production_registry.cache.clear()
+        production_registry.registry["new"]["df"] = None
+        pd.testing.assert_frame_equal(
+            production_registry.get_dataframe("new", load_if_not_exists=True), df
+        )
+    else:
+        path = tmp_path / ("explicit.csv" if explicit_path else "new.csv")
+        kwargs = {"raw_path": str(path)} if explicit_path else {}
+        assert production_registry.register_dataframe(df, "new", **kwargs) == "new"
+        assert path.is_file()
+        assert production_registry.registry["new"]["raw_path"] == str(path)
+        assert production_registry.get_raw_path_from_id("new") == str(path)
+        pd.testing.assert_frame_equal(production_registry.get_dataframe("new"), df)
 
 
 @pytest.mark.parametrize("raw_path", ["", None, "explicit.csv"])
 @pytest.mark.parametrize("with_dataframe", [False, True])
-def test_production_registry_existing_id_paths(production_registry, tmp_path, raw_path, with_dataframe):
+def test_production_registry_existing_id_paths(
+    production_registry, tmp_path, raw_path, with_dataframe
+):
     import pandas as pd
 
     df = pd.DataFrame({"value": [1]})
@@ -761,28 +890,55 @@ def test_production_registry_existing_id_paths(production_registry, tmp_path, ra
     updated = pd.DataFrame({"value": [2]}) if with_dataframe else None
     explicit = str(tmp_path / raw_path) if raw_path else raw_path
     production_registry.register_dataframe(updated, "existing", explicit)
-    if raw_path:
+    is_canonical = getattr(production_registry, "_is_canonical_idd", False)
+    if is_canonical and not raw_path and with_dataframe:
+        # In canonical registry, updating with dataframe without explicit raw_path
+        # writes to owned backing storage in data_dir, preserving original_path as source
+        expected = Path(production_registry.get_raw_path_from_id("existing"))
+        assert expected.is_file()
+        assert production_registry.registry["existing"]["raw_path"] == str(expected)
+        # Verify original user file was not overwritten
+        assert pd.read_csv(original_path)["value"].iloc[0] == 1
+    elif (
+        is_canonical and raw_path and not with_dataframe and not Path(explicit).exists()
+    ):
+        # Canonical registry validates that reload source path exists when df is None;
+        # if file does not exist, registration is rejected and original path is preserved
+        expected = original_path
+        assert production_registry.registry["existing"]["raw_path"] == str(expected)
+        assert production_registry.get_raw_path_from_id("existing") == str(expected)
+    elif raw_path:
         expected = tmp_path / raw_path
+        assert production_registry.registry["existing"]["raw_path"] == str(expected)
+        assert production_registry.get_raw_path_from_id("existing") == str(expected)
     elif with_dataframe:
         expected = tmp_path / "existing.csv"
         pd.testing.assert_frame_equal(pd.read_csv(expected), updated)
+        assert production_registry.registry["existing"]["raw_path"] == str(expected)
+        assert production_registry.get_raw_path_from_id("existing") == str(expected)
     else:
         expected = original_path
-    assert production_registry.registry["existing"]["raw_path"] == str(expected)
-    assert production_registry.get_raw_path_from_id("existing") == str(expected)
+        assert production_registry.registry["existing"]["raw_path"] == str(expected)
+        assert production_registry.get_raw_path_from_id("existing") == str(expected)
     if updated is not None:
-        pd.testing.assert_frame_equal(production_registry.get_dataframe("existing"), updated)
+        pd.testing.assert_frame_equal(
+            production_registry.get_dataframe("existing"), updated
+        )
 
 
 @pytest.mark.parametrize("with_dataframe", [False, True])
-def test_production_registry_relative_path_reload_after_chdir(production_registry, tmp_path, monkeypatch, with_dataframe):
+def test_production_registry_relative_path_reload_after_chdir(
+    production_registry, tmp_path, monkeypatch, with_dataframe
+):
     import pandas as pd
 
     monkeypatch.chdir(tmp_path)
     df = pd.DataFrame({"value": [3, 4]})
     original_path = tmp_path / "relative.csv"
     df.to_csv(original_path, index=False)
-    production_registry.register_dataframe(df if with_dataframe else None, "relative", "relative.csv")
+    production_registry.register_dataframe(
+        df if with_dataframe else None, "relative", "relative.csv"
+    )
     assert production_registry.registry["relative"]["raw_path"] == str(original_path)
     assert production_registry.get_raw_path_from_id("relative") == str(original_path)
     production_registry.cache.clear()
@@ -817,7 +973,12 @@ def _supervisor_message_statements(source):
 
 
 def _execute_message_statement(statement, **values):
-    namespace = {"AIMessage": AIMessage, "HumanMessage": HumanMessage, "ToolMessage": ToolMessage, **values}
+    namespace = {
+        "AIMessage": AIMessage,
+        "HumanMessage": HumanMessage,
+        "ToolMessage": ToolMessage,
+        **values,
+    }
     module = ast.Module(body=[statement], type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, "<supervisor_message>", "exec"), namespace)
@@ -830,10 +991,18 @@ def _has_orphaned_tool_call(messages):
     return bool(calls - outputs or outputs - calls)
 
 
-def test_generated_supervisor_model_messages_have_safe_roles_and_tool_linkage(generated_notebook):
-    original_append, original_conversions = _supervisor_message_statements(_source_supervisor())
-    generated_source = _cell_source(generated_notebook["notebook"], "make_supervisor_node")
-    patched_append, patched_conversions = _supervisor_message_statements(generated_source)
+def test_generated_supervisor_model_messages_have_safe_roles_and_tool_linkage(
+    generated_notebook,
+):
+    original_append, original_conversions = _supervisor_message_statements(
+        _source_supervisor()
+    )
+    generated_source = _cell_source(
+        generated_notebook["notebook"], "make_supervisor_node"
+    )
+    patched_append, patched_conversions = _supervisor_message_statements(
+        generated_source
+    )
 
     def append_reply(statement):
         values = _execute_message_statement(
@@ -844,21 +1013,36 @@ def test_generated_supervisor_model_messages_have_safe_roles_and_tool_linkage(ge
         )
         return values["agent_rq_msgs"][0]
 
-    assert convert_to_openai_messages([append_reply(original_append)])[0]["role"] == "assistant"
+    assert (
+        convert_to_openai_messages([append_reply(original_append)])[0]["role"]
+        == "assistant"
+    )
     appended = convert_to_openai_messages([append_reply(patched_append)])
-    assert appended == [{"role": "user", "name": "analyst", "content": "[Agent Tool Output]: worker finished"}]
+    assert appended == [
+        {
+            "role": "user",
+            "name": "analyst",
+            "content": "[Agent Tool Output]: worker finished",
+        }
+    ]
 
     orphaned_call = AIMessage(
         content="worker requested tool",
         name="analyst",
         tool_calls=[{"name": "inspect_data", "args": {}, "id": "worker-call-1"}],
     )
-    orphaned_output = ToolMessage(content="tool result", tool_call_id="missing-call", name="analyst")
+    orphaned_output = ToolMessage(
+        content="tool result", tool_call_id="missing-call", name="analyst"
+    )
     for old_site, new_site in zip(original_conversions, patched_conversions):
-        old = _execute_message_statement(old_site, agent_msg=orphaned_call)["corresponding_agent_msg"]
+        old = _execute_message_statement(old_site, agent_msg=orphaned_call)[
+            "corresponding_agent_msg"
+        ]
         assert _has_orphaned_tool_call(convert_to_openai_messages([old]))
         for worker_message in (orphaned_call, orphaned_output):
-            normalized = _execute_message_statement(new_site, agent_msg=worker_message)["corresponding_agent_msg"]
+            normalized = _execute_message_statement(new_site, agent_msg=worker_message)[
+                "corresponding_agent_msg"
+            ]
             payload = convert_to_openai_messages([normalized])
             assert len(payload) == 1
             assert payload[0]["role"] == "user"
@@ -3300,7 +3484,7 @@ def test_markdown_parser_sanitizes_untrusted_html_and_unsafe_links(
         '<script>alert("evil")</script>\n\n'
         '<img src="../visualizations/chart_safe.png" onload="maliciousPayload()" alt="Test Image">\n\n'
         f'<a href="{unsafe_payload}">Untrusted Link</a>\n\n'
-        '[Click for safe hash](#section-safe)\n\n'
+        "[Click for safe hash](#section-safe)\n\n"
         f"![Safe Chart]({fig1})\n\n"
         f"![Safe Chart 2]({fig2})\n\n"
         f"![Safe Chart 3]({fig3})\n\n"
@@ -3955,6 +4139,7 @@ def test_final_manifest_rejects_outside_root_absolute_path(
 
 def test_artifact_resolution_rejects_traversal_and_symlink_escape(tmp_path):
     import types
+
     outside_dir = tmp_path.parent / "outside_jail"
     outside_dir.mkdir(parents=True, exist_ok=True)
     secret_file = outside_dir / "secret.png"
@@ -3963,7 +4148,9 @@ def test_artifact_resolution_rejects_traversal_and_symlink_escape(tmp_path):
     artifacts_dir = tmp_path / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     cfg = types.SimpleNamespace(
-        configurable={"runtime": types.SimpleNamespace(artifacts_dir=str(artifacts_dir))}
+        configurable={
+            "runtime": types.SimpleNamespace(artifacts_dir=str(artifacts_dir))
+        }
     )
 
     # 1. Path traversal escape
@@ -5018,7 +5205,12 @@ def _compile_generated_delete_rows(notebook, registry):
     import pandas as pd
 
     def _tool_error(operation, reason, action):
-        return {"status": "error", "operation": operation, "reason": reason, "action": action}
+        return {
+            "status": "error",
+            "operation": operation,
+            "reason": reason,
+            "action": action,
+        }
 
     ns = {
         "pd": pd,
@@ -5052,7 +5244,9 @@ def test_generated_delete_rows_collision_and_numeric_positive(generated_notebook
             return self.paths.get(df_id)
 
     registry = _TestRegistry()
-    delete_rows_fn = _compile_generated_delete_rows(generated_notebook["notebook"], registry)
+    delete_rows_fn = _compile_generated_delete_rows(
+        generated_notebook["notebook"], registry
+    )
 
     # 1. Collision case: ["0", 0]
     original = pd.DataFrame(
@@ -5076,7 +5270,9 @@ def test_generated_delete_rows_collision_and_numeric_positive(generated_notebook
     res_rev = delete_rows_fn("df_rev", ["`0` >= 20"], inplace=True)
     assert res_rev == "1 rows deleted successfully."
     remaining_rev = registry.get_dataframe("df_rev")
-    pd.testing.assert_frame_equal(remaining_rev, reversed_df.loc[["integer_column_match"]])
+    pd.testing.assert_frame_equal(
+        remaining_rev, reversed_df.loc[["integer_column_match"]]
+    )
 
     # 3. Numeric positive case: [0, "name"]
     numeric_df = pd.DataFrame(

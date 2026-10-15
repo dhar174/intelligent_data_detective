@@ -84,13 +84,14 @@ Every non-trivial engineering task MUST proceed through the following 5 phases:
 ### Stage 4: Testing & Quality Gate
 - Run offline verification suites matching current CI:
   ```powershell
+  python -m pytest tests/unit/test_core_parity_guard.py -v
   python -m pytest test_validate_run.py tests/unit tests/integration -q
   python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
   python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
   python -m pytest test_validate_notebook_integrity.py -v
-  python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
+  python -m pytest test_error_handling_framework.py -v
   ```
-  Note: Under current CI, only `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures` is an isolated non-blocking step; all other tests remain strictly blocking.
+  Note: Under current CI, all 16 tests in `test_error_handling_framework.py` and all 22 tests in `test_core_parity_guard.py` are strictly blocking. Zero deselects permitted.
 - For notebook behavior changes, regenerate notebook and run fail-closed verification:
   ```powershell
   python _patch_notebook.py

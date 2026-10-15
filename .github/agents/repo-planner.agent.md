@@ -33,12 +33,21 @@ You are the orchestrator for the Intelligent Data Detective (IDD) — a supervis
 - `memory-bank/`
 - `plans/`
 - `idd_v4_state_graph.mmd`
+- `idd_models.py`
+- `idd_registry.py`
+- `idd_state.py`
+- `idd_tools.py`
+- `idd_graph.py`
+- `idd_core.py`
+- `idd_bootstrap.py`
+- `idd_manifest.json`
 
 ## Validation commands
 ```bash
 python3 -m pytest test_intelligent_data_detective.py -v          # 22 tests, no API keys
-python3 -m pytest test_error_handling_framework.py -v            # 15/16 pass (1 known failure OK)
-python3 -c "import json; c=json.load(open('IntelligentDataDetective_beta_v5.ipynb'))['cells']; print(len(c),'cells')"
+python3 -m pytest test_error_handling_framework.py -v            # 16/16 pass (mandatory gate)
+python3 -m pytest tests/unit/test_core_parity_guard.py -v        # anti-drift guard
+python3 -c "import json; c=json.load(open('IntelligentDataDetective_beta_v5_patched.ipynb'))['cells']; print(len(c),'cells')"
 ```
 
 ## Collaboration rules
