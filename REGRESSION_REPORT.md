@@ -1,6 +1,6 @@
 # IDD Regression and Drift Report
 
-This report analyzes closed issues and tracks whether their corresponding changes have successfully made it across the three core representations of the codebase:
+This report analyzes issue history and current status, tracking whether corresponding changes have successfully made it across the three core representations of the codebase:
 - `IntelligentDataDetective_beta_v5.ipynb` (Source Notebook)
 - `_patch_notebook.py` (Patcher)
 - `idd_core.py` (Extracted core for testing)
