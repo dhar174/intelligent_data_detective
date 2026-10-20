@@ -85,6 +85,7 @@ dmypy.json
 # Data files (if not needed in repo)
 *.csv
 *.json
+!idd_manifest.json
 *.xlsx
 *.xls
 *.parquet

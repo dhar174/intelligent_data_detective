@@ -255,6 +255,17 @@ class AnalysisConfig(BaseNoExtrasModel):
     )
 
 
+default_an_config = AnalysisConfig(
+    default_visualization_style="seaborn-v0_8-whitegrid",
+    report_author="Intelligent Data Detective",
+    datetime_format_preference="%Y-%m-%d %H:%M:%S",
+    large_dataframe_preview_rows=5,
+    reply_msg_to_supervisor="Default AnalysisConfig initialized",
+    finished_this_task=True,
+    expect_reply=False,
+)
+
+
 class CleaningMetadata(BaseNoExtrasModel):
     """Metadata about the data cleaning actions taken."""
 
@@ -698,3 +709,22 @@ class VizWorkerState(TypedDict):
 
     task: str
     viz_results: Annotated[List[dict], _reduce_viz_results_resettable]
+
+
+# ---------------------------------------------------------------------------
+# Class-to-Agent Mapping (used by emergency_correspondence_node and routing)
+# ---------------------------------------------------------------------------
+
+CLASS_TO_AGENT: dict[type, AgentId] = {
+    InitialDescription: "initial_analysis",
+    CleaningMetadata: "data_cleaner",
+    AnalysisInsights: "analyst",
+    VisualizationResults: "viz_join",
+    DataVisualization: "viz_worker",
+    VizFeedback: "viz_evaluator",
+    SectionOutline: "report_orchestrator",
+    Section: "report_section_worker",
+    ReportOutline: "report_orchestrator",
+    ReportResults: "report_packager",
+    FileResult: "file_writer",
+}

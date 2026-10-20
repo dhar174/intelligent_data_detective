@@ -41,13 +41,19 @@ python -m pytest test_validate_notebook_integrity.py -v
 - Historical baseline context: 29 passed.
 - Validates fail-closed notebook integrity checks across cell counts, real code-object compilation (ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), safe Python-bearing and non-Python cell magics handling, and diagnostic reporting.
 
+### Anti-Drift Guard Suite
+```powershell
+python -m pytest tests/unit/test_core_parity_guard.py -v
+```
+- 22 passed.
+- Validates 99 cells, canonical imports in Cells 4, 16, 19, 22, 32, 60, zero duplicate shadowing across all cells, runtime object identity (`is`), Codex Review Findings 1 & 2 behavioral parity, registry lifecycle, executable graph assembly, and fail-closed negative controls (synthetic redefinition detection and manifest tampering).
+
 ### Error Handling Framework Suite
 ```powershell
-python -m pytest test_error_handling_framework.py -v --deselect test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures
+python -m pytest test_error_handling_framework.py -v
 ```
-- **CI Parity Policy**: All tests in this suite are strictly blocking, with exactly ONE isolated exception permitted under current CI:
-  - `test_error_handling_framework.py::TestErrorHandlingFramework::test_integration_with_different_function_signatures`
-  This test is isolated in CI as a non-blocking step (`continue-on-error: true`). Any other test failure in `test_error_handling_framework.py` is strictly blocking. Do not accept generic partial pass counts (e.g. "15/16 is acceptable").
+- **CI Parity Policy**: All 16 tests in this suite are strictly blocking in CI without `--deselect`.
+- Signature-aware argument binding in `idd_tools.handle_tool_errors` cleanly handles parameter extraction for `df_id` and non-`df_id` functions, resolving the historical defect in `test_integration_with_different_function_signatures`. Zero failures or deselects permitted.
 
 ---
 

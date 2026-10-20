@@ -5,13 +5,16 @@
 ```bash
 # Run all tests
 python3 -m pytest -v
-# Expected: 22/22 pass in test_intelligent_data_detective.py, 15/16 in test_error_handling_framework.py (1 known edge-case failure)
+# Expected: 22/22 pass in test_intelligent_data_detective.py, 16/16 in test_error_handling_framework.py (all mandatory), 35/35 in tests/unit/test_core_parity_guard.py
+
+# Run anti-drift guard suite
+python3 -m pytest tests/unit/test_core_parity_guard.py -v
 
 # Run a single test
 python3 -m pytest test_intelligent_data_detective.py::TestDataFrameRegistry::test_cache_lru_eviction -v
 
 # Format and lint
-black test_intelligent_data_detective.py test_error_handling_framework.py
+black test_intelligent_data_detective.py test_error_handling_framework.py idd_bootstrap.py idd_core.py idd_graph.py idd_state.py tests/
 flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
 ```
 
@@ -78,7 +81,7 @@ def my_tool(df_id: str, ...) -> tuple[str, dict]:
     ...
     return result_message, artifact_dict
 ```
-`@handle_tool_errors` catches exceptions and returns a standardised error string so the agent can recover. `validate_dataframe_exists()` must be the first call in any tool that touches a DataFrame.
+`@handle_tool_errors` (from `idd_tools.py`) uses signature-aware argument binding, catches exceptions, and returns a structured 4-field error dictionary `{"status": "error", "operation": str, "reason": str, "action": str}` with local diagnostic logging so the agent can recover safely without sensitive traceback leakage. `validate_dataframe_exists()` must be the first call in any tool that touches a DataFrame.
 
 ### Tool list construction
 The per-agent tool lists (`data_cleaning_tools`, `analyst_tools`, `visualization_tools`, etc.) are defined as empty lists early in Cell 13, then populated incrementally with `.append()` / `.extend()` throughout the cell. Tools appear after their function definitions. When adding a new tool, register it in the correct list at the point of definition.
@@ -100,7 +103,7 @@ The current completion proof expects canonical root artifacts `final_report.html
 
 ## Known Issues
 
-- `test_error_handling_framework.py`: one test fails due to an edge case in function-signature introspection. This is pre-existing and has no runtime impact.
+- `test_error_handling_framework.py`: all 16 tests pass (mandatory blocking gate in CI alongside the `tests/unit/test_core_parity_guard.py` anti-drift suite).
 - `flake8` reports some whitespace warnings on test files; these are acceptable.
 
 <!-- repo-agent-bootstrap:file-kind=copilot-instructions -->

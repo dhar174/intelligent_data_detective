@@ -15,7 +15,19 @@ This document defines the non-negotiable architectural invariants and code conve
    - `IntelligentDataDetective_beta_v5_patched.ipynb` is the committed, runnable notebook (99 cells in the W14 completion baseline).
    - `_patch_notebook.py` is the **authoritative generator and patch source**.
    - `IntelligentDataDetective_beta_v5.ipynb` is the original source input for the patcher.
-2. **Never Hand-Edit the Patched Notebook**:
+2. **Canonical Python Core Modules (Single Source of Truth)**:
+   - Core domain logic lives in canonical Python modules at the repository root:
+     - `idd_models.py`: Pydantic models, plan schemas, and validation contracts.
+     - `idd_registry.py`: `DataFrameRegistry` LRU caching, lossless backing storage, and context isolation.
+     - `idd_state.py`: Authoritative 70-field `State` schema, reducers, and domain data models.
+     - `idd_tools.py`: Signature-aware `@handle_tool_errors`, `validate_dataframe_exists`, and secure `_resolve_artifact_path`.
+     - `idd_graph.py`: 15-node, 33-edge LangGraph assembly (`build_graph`) and routing functions.
+     - `idd_core.py`: Canonical compatibility façade re-exporting all core symbols with 100% object identity.
+   - Notebook cells must import from these modules directly (Cells 4, 16, 19, 22, 32, 60).
+   - Never duplicate or inline core domain logic, state schemas, reducers, or tools into patch blocks in `_patch_notebook.py`.
+   - `idd_bootstrap.py` and `idd_manifest.json` verify SHA-256 provenance of canonical modules before execution.
+   - Anti-drift guard (`tests/unit/test_core_parity_guard.py`) strictly enforces 99 cells, canonical imports, zero duplicate redefinitions, and runtime symbol identity.
+3. **Never Hand-Edit the Patched Notebook**:
    - Direct edits to `IntelligentDataDetective_beta_v5_patched.ipynb` will be overwritten when `_patch_notebook.py` is run.
    - All behavioral fixes, prompt improvements, and logic additions MUST be introduced via `_patch_notebook.py` sentinel blocks.
    - After updating `_patch_notebook.py`, regenerate and verify:
@@ -24,7 +36,7 @@ This document defines the non-negotiable architectural invariants and code conve
      python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
      python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
      ```
-3. **Cell Structure Preservation**:
+4. **Cell Structure Preservation**:
    - Never delete or reorder notebook cells. The 99-cell structure is an architectural invariant.
 
 ---
