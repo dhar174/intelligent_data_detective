@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -80,6 +82,8 @@ jobs:
         shell: bash
         run: |
           python -c "import platform, sys; print('Platform:', platform.platform()); print('Python:', sys.version)"
+          git rev-parse HEAD
+          git log -1 --format='checkout %H parents %P'
           python -m pip freeze
 
       - name: Validate notebook integrity and canonical graph structure on Windows
@@ -88,7 +92,7 @@ jobs:
           python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb -v
           python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
 
-      - name: Run CP4 anti-drift guard and mandatory error-handling suites on Windows
+      - name: Run CP4 anti-drift guard, evidence integrity and mandatory error-handling suites on Windows
         shell: bash
         run: |
           python -m pytest tests/unit/test_core_parity_guard.py -v

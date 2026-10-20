@@ -15535,26 +15535,70 @@ def main():
                 "_FIX_U_SKIP_NONE_WRITER",
             ),
         )
-        # P2-5: Isolate demo migration target into checkpoints_demo.sqlite so it never self-copies into active checkpoints.sqlite
-        src94_isolated = replace_required(
-            src94,
-            'with SqliteSaver.from_conn_string("checkpoints.sqlite") as dst_cp:',
-            '_demo_db_path = str((WORKING_DIRECTORY / "checkpoints_demo.sqlite").resolve()) if "WORKING_DIRECTORY" in globals() else "checkpoints_demo.sqlite"\nwith SqliteSaver.from_conn_string(_demo_db_path) as dst_cp:',
-            patch_id="CP4-CELL94-ISOLATE-DB",
-        )
+        # P2-5: Isolate demo migration target into checkpoints_demo.sqlite so it never
+        # self-copies into active checkpoints.sqlite.
+        # ISSUE164-CELL94-LOSSLESS-MIGRATE: the legacy update_state() replay attributed each
+        # snapshot to metadata["writes"], which current LangGraph no longer records, so every
+        # snapshot was skipped and zero checkpoints were migrated without any failure signal.
+        # Replaying values through update_state() would also re-apply reducers (duplicating
+        # operator.add channels). Copy CheckpointTuples at the checkpointer level instead.
         c94["source"] = (
             "# PATCH: CP4-CELL94-GUARD\n"
+            "# PATCH: ISSUE164-CELL94-LOSSLESS-MIGRATE\n"
             "try:\n"
             "    import sqlite3\n"
             "    from langgraph.checkpoint.sqlite import SqliteSaver\n"
-            + "\n".join(
-                "    " + line
-                for line in src94_isolated.splitlines()
-                if not line.strip().startswith("import sqlite3")
-                and not line.strip().startswith("from langgraph.checkpoint.sqlite")
-            )
-            + "\nexcept (ImportError, ModuleNotFoundError):\n"
-            + "    print('ℹ️ SqliteSaver unavailable; checkpoint migration demonstration skipped.')\n"
+            "    # Source: the production graph compiled in Cell 60 (SqliteSaver or MemorySaver).\n"
+            "    src_graph = data_detective_graph\n"
+            "\n"
+            "    # Destination: isolated demo database (never the active checkpoints.sqlite).\n"
+            '    _demo_db_path = str((WORKING_DIRECTORY / "checkpoints_demo.sqlite").resolve()) if "WORKING_DIRECTORY" in globals() else "checkpoints_demo.sqlite"\n'
+            "\n"
+            "    def migrate_thread(thread_id: str, dst_cp, full_history: bool = False) -> int:\n"
+            '        """Copy one thread\'s checkpoints losslessly; return the number copied.\n'
+            "\n"
+            "        CheckpointTuples are copied verbatim (values, parent links, metadata and\n"
+            "        pending writes), so restored state, history and pending routing match the\n"
+            "        source exactly without re-applying reducers or relying on legacy metadata.\n"
+            '        """\n'
+            "        src_cp = src_graph.checkpointer\n"
+            '        tuples = list(src_cp.list({"configurable": {"thread_id": thread_id}}))  # newest first\n'
+            "        if not tuples:\n"
+            "            return 0\n"
+            "        seq = list(reversed(tuples)) if full_history else [tuples[0]]\n"
+            "        copied = 0\n"
+            "        for tup in seq:\n"
+            '            ns = tup.config["configurable"].get("checkpoint_ns", "")\n'
+            '            put_cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ns}}\n'
+            "            if full_history and tup.parent_config:\n"
+            '                parent_id = tup.parent_config["configurable"].get("checkpoint_id")\n'
+            "                if parent_id:\n"
+            '                    put_cfg["configurable"]["checkpoint_id"] = parent_id\n'
+            "            saved_cfg = dst_cp.put(\n"
+            "                put_cfg,\n"
+            "                tup.checkpoint,\n"
+            "                tup.metadata,\n"
+            '                dict(tup.checkpoint.get("channel_versions", {})),\n'
+            "            )\n"
+            "            writes_by_task = {}\n"
+            "            for task_id, channel, value in tup.pending_writes or []:\n"
+            "                writes_by_task.setdefault(task_id, []).append((channel, value))\n"
+            "            for task_id, task_writes in writes_by_task.items():\n"
+            "                dst_cp.put_writes(saved_cfg, task_writes, task_id)\n"
+            "            copied += 1\n"
+            "        return copied\n"
+            "\n"
+            "    with SqliteSaver.from_conn_string(_demo_db_path) as dst_cp:\n"
+            "        dst_graph = data_analysis_team_builder.compile(checkpointer=dst_cp)\n"
+            "        _migrated_checkpoint_count = migrate_thread(\n"
+            '            run_config["configurable"]["thread_id"], dst_cp, full_history=True\n'
+            "        )  # preserves time-travel history\n"
+            "    print(\n"
+            "        f\"✅ Checkpoint migration demonstration copied {_migrated_checkpoint_count} \"\n"
+            "        f\"checkpoint(s) into {_demo_db_path}.\"\n"
+            "    )\n"
+            "except (ImportError, ModuleNotFoundError):\n"
+            "    print('ℹ️ SqliteSaver unavailable; checkpoint migration demonstration skipped.')\n"
         )
         c94["outputs"] = []
         c94["execution_count"] = None
@@ -15564,11 +15608,11 @@ def main():
         )
         assert_patch_present(
             c94["source"],
-            "_FIX_U_SKIP_NONE_WRITER",
-            patch_id="CP4-CELL94-PRESERVE-FIX-U",
+            "# PATCH: ISSUE164-CELL94-LOSSLESS-MIGRATE",
+            patch_id="ISSUE164-CELL94-LOSSLESS-MIGRATE",
         )
         print(
-            "✅ Cell idx 94: guarded and isolated checkpoint migration demo (CP4-CELL94-GUARD)"
+            "✅ Cell idx 94: guarded, isolated, lossless checkpoint migration demo (CP4-CELL94-GUARD, ISSUE164-CELL94-LOSSLESS-MIGRATE)"
         )
 
     c96 = cells[96]
@@ -15587,6 +15631,7 @@ def main():
     )
     c96["source"] = (
         "# PATCH: CP4-CELL96-RECONCILE\n"
+        "# PATCH: ISSUE164-CELL96-VERIFIED-RESTORE\n"
         "# To restore a previous checkpointer state from an isolated SQL database file on disk (demo)\n"
         "try:\n"
         "    import sqlite3 as _restore_sqlite3\n"
@@ -15598,7 +15643,18 @@ def main():
         "        _restored_graph = data_analysis_team_builder.compile(\n"
         "            checkpointer=_restore_cp, store=in_memory_store, cache=InMemoryCache()\n"
         "        )\n"
-        "        print('✅ Previous checkpointer state restore demonstration compiled.')\n"
+        "        # Read the restored state while the backing connection is still open.\n"
+        '        _restore_cfg = {"configurable": {"thread_id": run_config["configurable"]["thread_id"]}}\n'
+        "        _restored_snapshot = _restored_graph.get_state(_restore_cfg)\n"
+        "        _restored_history_ids = [\n"
+        '            _snap.config["configurable"]["checkpoint_id"]\n'
+        "            for _snap in _restored_graph.get_state_history(_restore_cfg)\n"
+        "        ]\n"
+        "        _restored_next = tuple(_restored_snapshot.next)\n"
+        "        print(\n"
+        "            f'✅ Previous checkpointer state restored from demo database: '\n"
+        "            f'{len(_restored_history_ids)} checkpoint(s); next={_restored_next}.'\n"
+        "        )\n"
         "    finally:\n"
         "        _restore_conn.close()\n"
         "except (ImportError, ModuleNotFoundError):\n"
@@ -15609,6 +15665,11 @@ def main():
     ast.parse(c96["source"])
     assert_patch_present(
         c96["source"], "# PATCH: CP4-CELL96-RECONCILE", patch_id="CP4-CELL96-RECONCILE"
+    )
+    assert_patch_present(
+        c96["source"],
+        "# PATCH: ISSUE164-CELL96-VERIFIED-RESTORE",
+        patch_id="ISSUE164-CELL96-VERIFIED-RESTORE",
     )
     print(
         "✅ Cell idx 96: reconciled and isolated checkpoint restore demo without graph replacement (CP4-CELL96-RECONCILE)"
