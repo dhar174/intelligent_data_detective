@@ -103,7 +103,7 @@ The current completion proof expects canonical root artifacts `final_report.html
 
 ## Known Issues
 
-- `test_error_handling_framework.py`: one test fails due to an edge case in function-signature introspection. This is pre-existing and has no runtime impact.
+- `test_error_handling_framework.py`: all 16 tests pass (mandatory blocking gate in CI alongside the `tests/unit/test_core_parity_guard.py` anti-drift suite).
 - `flake8` reports some whitespace warnings on test files; these are acceptable.
 
 <!-- repo-agent-bootstrap:file-kind=copilot-instructions -->

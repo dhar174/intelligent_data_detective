@@ -709,3 +709,22 @@ class VizWorkerState(TypedDict):
 
     task: str
     viz_results: Annotated[List[dict], _reduce_viz_results_resettable]
+
+
+# ---------------------------------------------------------------------------
+# Class-to-Agent Mapping (used by emergency_correspondence_node and routing)
+# ---------------------------------------------------------------------------
+
+CLASS_TO_AGENT: dict[type, AgentId] = {
+    InitialDescription: "initial_analysis",
+    CleaningMetadata: "data_cleaner",
+    AnalysisInsights: "analyst",
+    VisualizationResults: "viz_join",
+    DataVisualization: "viz_worker",
+    VizFeedback: "viz_evaluator",
+    SectionOutline: "report_orchestrator",
+    Section: "report_section_worker",
+    ReportOutline: "report_orchestrator",
+    ReportResults: "report_packager",
+    FileResult: "file_writer",
+}

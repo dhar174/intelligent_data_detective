@@ -438,6 +438,70 @@ def assert_patch_present(source, marker, *, patch_id):
         )
 
 
+def _extract_top_level_ast_symbols(source: str):
+    """Extract top-level defined classes, functions, and assigned variable names via AST."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise RequiredPatchError(f"CP4 input cell syntax error: {exc}") from exc
+
+    classes = set()
+    functions = set()
+    assigns = set()
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            classes.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    assigns.add(t.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            assigns.add(node.target.id)
+    return classes, functions, assigns
+
+
+def verify_cp4_input_cell(
+    source: str,
+    *,
+    cell_idx: int,
+    patch_id: str,
+    expected_classes=None,
+    expected_functions=None,
+    expected_assigns=None,
+    required_anchors=(),
+) -> None:
+    """Fail-closed precondition validator for CP4 cell transformations (P2-2).
+
+    Verifies that the pre-CP4 input cell matches the expected top-level AST symbol
+    inventory and contains all required structural anchors before transformation.
+    Prevents silent destruction of newly added notebook-only declarations or changed source logic.
+    """
+    classes, functions, assigns = _extract_top_level_ast_symbols(source)
+    if expected_classes is not None and classes != set(expected_classes):
+        raise RequiredPatchError(
+            f"{patch_id} (Cell {cell_idx}): input class inventory drifted! "
+            f"Expected {sorted(expected_classes)}, got {sorted(classes)}"
+        )
+    if expected_functions is not None and functions != set(expected_functions):
+        raise RequiredPatchError(
+            f"{patch_id} (Cell {cell_idx}): input function inventory drifted! "
+            f"Expected {sorted(expected_functions)}, got {sorted(functions)}"
+        )
+    if expected_assigns is not None and assigns != set(expected_assigns):
+        raise RequiredPatchError(
+            f"{patch_id} (Cell {cell_idx}): input assignment inventory drifted! "
+            f"Expected {sorted(expected_assigns)}, got {sorted(assigns)}"
+        )
+    for anchor in required_anchors:
+        if anchor not in source:
+            raise RequiredPatchError(
+                f"{patch_id} (Cell {cell_idx}): missing required input structural anchor: {anchor!r}"
+            )
+
+
+
 def apply_p1_tm_supervisor_patch(source):
     """Replace all supervisor worker-message sites or reject a partial patch."""
     old_append = "agent_rq_msgs.append(AIMessage(content=this_last_agent_reply_msg, name=this_last_agent_id))"
@@ -14604,41 +14668,181 @@ def main():
 
     # ============================  CP4 CANONICAL NOTEBOOK INTEGRATION  ===========================
     # Checkpoint 4 (Issue #140, #144, #145, #162): Canonical Notebook Integration & Anti-Drift Enforcement.
-    # Wires canonical Python modules into Cells 4, 7, 10, 16, 19, 22, 32, 46, 60, 94, and 96,
+    # Wires canonical Python modules into Cells 4, 7, 10, 16, 19, 22, 32, 46, 48, 60, 94, and 96,
     # eliminating notebook-local behavioral duplicates and resolving all review findings fail-closed.
 
-    # 1. Cell 4: Fail-Closed Bootstrap & Manifest Verification Guard (P1-1)
+    # 1. Cell 4: Fail-Closed Bootstrap, Origin & Manifest Verification Guard (P1-1, P1-C, P2-2)
     c4 = cells[4]
     src4 = join_source(c4["source"])
     if "# PATCH: CP4-BOOTSTRAP" not in src4:
+        verify_cp4_input_cell(
+            src4,
+            cell_idx=4,
+            patch_id="CP4-BOOTSTRAP",
+            expected_classes=set(),
+            expected_functions=set(),
+            expected_assigns={"_skip_notebook_installs", "is_colab"},
+            required_anchors=(
+                "# PATCH: P2-SKIP-INSTALLS",
+                "from pathlib import Path as PathlibPath",
+            ),
+        )
         bootstrap_block = (
             "\n\n# PATCH: CP4-BOOTSTRAP\n"
+            "import hashlib as _cp4_hashlib\n"
+            "import json as _cp4_json\n"
             "import os\n"
             "import sys\n"
             "from pathlib import Path\n\n"
-            "# Ensure repository root is on sys.path for canonical module imports\n"
+            "# Ensure repository root is at sys.path[0] and pre-verify idd_bootstrap.py before import (P1-C)\n"
             "_cur_dir = Path.cwd().resolve()\n"
+            "_repo_root = None\n"
             "for _p in [_cur_dir, *_cur_dir.parents]:\n"
             '    if (_p / "idd_manifest.json").is_file():\n'
-            "        if str(_p) not in sys.path:\n"
-            "            sys.path.insert(0, str(_p))\n"
-            "        break\n\n"
+            "        _repo_root = _p.resolve()\n"
+            "        break\n"
+            "if _repo_root is None:\n"
+            '    raise RuntimeError("CP4 Bootstrap Integrity Error: idd_manifest.json not found in current or parent directories.")\n\n'
+            '_manifest_path = _repo_root / "idd_manifest.json"\n'
+            '_bootstrap_path = (_repo_root / "idd_bootstrap.py").resolve()\n'
+            "if not _bootstrap_path.is_file():\n"
+            '    raise RuntimeError(f"CP4 Bootstrap Integrity Error: missing {_bootstrap_path}")\n'
+            '_manifest_data = _cp4_json.loads(_manifest_path.read_text(encoding="utf-8"))\n'
+            '_manifest_files = _manifest_data.get("files") or _manifest_data.get("modules") or {}\n'
+            '_expected_bs_hash = _manifest_files.get("idd_bootstrap.py")\n'
+            "if isinstance(_expected_bs_hash, dict):\n"
+            '    _expected_bs_hash = _expected_bs_hash.get("sha256")\n'
+            "if not _expected_bs_hash:\n"
+            '    raise RuntimeError("CP4 Bootstrap Integrity Error: idd_bootstrap.py missing from idd_manifest.json")\n'
+            '_actual_bs_hash = _cp4_hashlib.sha256(_bootstrap_path.read_bytes().replace(b"\\r\\n", b"\\n")).hexdigest()\n'
+            "if _actual_bs_hash != _expected_bs_hash:\n"
+            "    raise RuntimeError(\n"
+            '        f"CP4 Bootstrap Integrity Error: idd_bootstrap.py SHA-256 mismatch "\n'
+            '        f"(expected {_expected_bs_hash[:12]}..., got {_actual_bs_hash[:12]}...)"\n'
+            "    )\n"
+            '_loaded_bs = sys.modules.get("idd_bootstrap")\n'
+            "if _loaded_bs is not None:\n"
+            '    _loaded_bs_file = getattr(_loaded_bs, "__file__", None)\n'
+            "    if not _loaded_bs_file or Path(_loaded_bs_file).resolve() != _bootstrap_path:\n"
+            "        raise RuntimeError(\n"
+            "            f\"CP4 Bootstrap Origin Error: sys.modules['idd_bootstrap'] loaded from foreign origin {_loaded_bs_file!r}\"\n"
+            "        )\n"
+            "_repo_root_str = str(_repo_root)\n"
+            "sys.path[:] = [_repo_root_str] + [p for p in sys.path if p != _repo_root_str]\n\n"
             "from idd_bootstrap import bootstrap_environment\n"
-            "bootstrap_environment()\n"
+            "bootstrap_environment(repo_root=_repo_root)\n"
             'print("✅ Canonical modules verified against idd_manifest.json")\n'
         )
         c4["source"] = src4 + bootstrap_block
         c4["outputs"] = []
         c4["execution_count"] = None
+        ast.parse(c4["source"])
         assert_patch_present(
             c4["source"], "# PATCH: CP4-BOOTSTRAP", patch_id="CP4-BOOTSTRAP"
         )
         print("✅ Cell idx 4: applied canonical fail-closed bootstrap (CP4-BOOTSTRAP)")
 
-    # 2. Cell 7: Canonical AgentMembers typing & Subclass Inheritance (P2-5)
+    # 2. Cell 7: Working Dir Sync, Canonical Reducers & AgentMembers Subclasses (P2-2, P2-4, P2-5)
     c7 = cells[7]
     src7 = join_source(c7["source"])
     if "# PATCH: CP4-CANONICAL-AGENT-MEMBERS" not in src7:
+        verify_cp4_input_cell(
+            src7,
+            cell_idx=7,
+            patch_id="CP4-CANONICAL-CELL7",
+            expected_classes={
+                "AgentMembers",
+                "Analyst",
+                "DataCleaner",
+                "FileWriter",
+                "InitialAnalysis",
+                "ReportGenerator",
+                "ReportOrchestrator",
+                "ReportSection",
+                "SuperVisor",
+                "Visualization",
+            },
+            expected_functions={
+                "_is_colab",
+                "_is_relative_to",
+                "_keep_last_or_clear",
+                "_make_idd_results_dir",
+                "_reduce_strs_resettable",
+                "_reduce_viz_results_resettable",
+                "agent_list_default_generator",
+                "bool_or",
+                "dict_merge_shallow",
+                "is_1d_vector",
+                "keep_first",
+                "persist_to_drive",
+            },
+            expected_assigns={
+                "AgentId",
+                "AgentOrSupervisor",
+                "Array1D",
+                "BinSpec",
+                "BinWidthSpec",
+                "ColumnSelector",
+                "Estimator",
+                "Number",
+                "RangeSpec",
+                "ScalarNum",
+                "Supervisor",
+                "WORKING_DIRECTORY",
+                "_",
+                "_TEMP_DIRECTORY",
+                "file_tools",
+                "toolkit",
+            },
+            required_anchors=(
+                "WORKING_DIRECTORY = PathlibPath(_TEMP_DIRECTORY.name)",
+                "def bool_or(a, b):",
+                "class AgentMembers(BaseModel):",
+            ),
+        )
+        # 2a. Synchronize WORKING_DIRECTORY with canonical modules (P2-4)
+        old_wd_anchor = (
+            "_TEMP_DIRECTORY = TemporaryDirectory()\n"
+            "WORKING_DIRECTORY = PathlibPath(_TEMP_DIRECTORY.name)"
+        )
+        new_wd_block = (
+            "_TEMP_DIRECTORY = TemporaryDirectory()\n"
+            "WORKING_DIRECTORY = PathlibPath(_TEMP_DIRECTORY.name)\n"
+            "# PATCH: CP4-WORKING-DIR-SYNC\n"
+            "import idd_core as _idd_core_wd\n"
+            "import idd_registry as _idd_registry_wd\n"
+            "import idd_tools as _idd_tools_wd\n"
+            "_idd_tools_wd.WORKING_DIRECTORY = WORKING_DIRECTORY\n"
+            "_idd_registry_wd.WORKING_DIRECTORY = WORKING_DIRECTORY\n"
+            "_idd_core_wd.WORKING_DIRECTORY = WORKING_DIRECTORY"
+        )
+        src7 = replace_required(
+            src7, old_wd_anchor, new_wd_block, patch_id="CP4-WORKING-DIR-SYNC"
+        )
+
+        # 2b. Replace inline reducers with canonical imports from idd_state (P2-2)
+        old_reducers_pattern = (
+            r"def bool_or\(a, b\):.*?(?=\n+# --- Pydantic v2 \(validators only\) ---)"
+        )
+        new_reducers_block = (
+            "# PATCH: CP4-CANONICAL-CELL7-REDUCERS\n"
+            "from idd_state import (\n"
+            "    bool_or,\n"
+            "    _reduce_viz_results_resettable,\n"
+            "    _reduce_strs_resettable,\n"
+            "    _keep_last_or_clear,\n"
+            "    keep_first,\n"
+            "    dict_merge_shallow,\n"
+            ")"
+        )
+        src7 = replace_required_regex(
+            src7,
+            old_reducers_pattern,
+            new_reducers_block,
+            patch_id="CP4-CANONICAL-CELL7-REDUCERS",
+        )
+
+        # 2c. Replace inline AgentMembers hierarchy with canonical imports
         old_agent_members_pattern = r"# --- Agent member typing \(retained\) ---\s*class AgentMembers\(BaseModel\):.*?(?=\n\n# ---|\Z)"
         new_agent_members_block = (
             "# --- Agent member typing — canonical imports (CP4) ---\n"
@@ -14674,17 +14878,39 @@ def main():
         ast.parse(src7)
         assert_patch_present(
             src7,
+            "# PATCH: CP4-WORKING-DIR-SYNC",
+            patch_id="CP4-WORKING-DIR-SYNC",
+        )
+        assert_patch_present(
+            src7,
+            "# PATCH: CP4-CANONICAL-CELL7-REDUCERS",
+            patch_id="CP4-CANONICAL-CELL7-REDUCERS",
+        )
+        assert_patch_present(
+            src7,
             "# PATCH: CP4-CANONICAL-AGENT-MEMBERS",
             patch_id="CP4-CANONICAL-AGENT-MEMBERS",
         )
         print(
-            "✅ Cell idx 7: wired canonical AgentMembers subclasses (CP4-CANONICAL-AGENT-MEMBERS)"
+            "✅ Cell idx 7: synced WORKING_DIRECTORY and wired canonical reducers & AgentMembers (CP4-CANONICAL-CELL7)"
         )
 
-    # 3. Cell 10: Canonical MyChatOpenai LLM Adapter (P2-5)
+    # 3. Cell 10: Canonical MyChatOpenai LLM Adapter (P2-2, P2-5)
     c10 = cells[10]
     src10 = join_source(c10["source"])
     if "# PATCH: CP4-CANONICAL-MYCHATOPENAI" not in src10:
+        verify_cp4_input_cell(
+            src10,
+            cell_idx=10,
+            patch_id="CP4-CANONICAL-MYCHATOPENAI",
+            expected_classes={"MyChatOpenai"},
+            expected_functions={"_construct_responses_api_payload"},
+            expected_assigns=set(),
+            required_anchors=(
+                "def _construct_responses_api_payload(",
+                "class MyChatOpenai(ChatOpenAI):",
+            ),
+        )
         c10["source"] = (
             "# MyChatOpenai adapter — canonical import (CP4)\n"
             "# PATCH: CP4-CANONICAL-MYCHATOPENAI\n"
@@ -14705,8 +14931,50 @@ def main():
             "✅ Cell idx 10: wired canonical MyChatOpenai adapter (CP4-CANONICAL-MYCHATOPENAI)"
         )
 
-    # 4. Cell 16: Canonical Data Models
+    # 4. Cell 16: Canonical Data Models (P2-2)
     c16 = cells[16]
+    src16 = join_source(c16["source"])
+    verify_cp4_input_cell(
+        src16,
+        cell_idx=16,
+        patch_id="CP4-CANONICAL-MODELS",
+        expected_classes={
+            "AnalysisConfig",
+            "AnalysisInsights",
+            "BaseNoExtrasModel",
+            "CleaningMetadata",
+            "CompletedStepsAndTasks",
+            "DataFrameRegistryError",
+            "DataQueryParams",
+            "DataVisualization",
+            "FileResult",
+            "ImagePayload",
+            "InitialDescription",
+            "ListOfFiles",
+            "MessagesToAgentsList",
+            "NextAgentMetadata",
+            "Plan",
+            "PlanStep",
+            "ProgressReport",
+            "QueryDataframeInput",
+            "ReportResults",
+            "SendAgentMessage",
+            "ToDoList",
+            "VisualizationResults",
+            "VizSpec",
+        },
+        expected_functions={
+            "_assert_sorted_completed_no_dups",
+            "_norm",
+            "_sort_plan_steps",
+            "_triplet_from_raw",
+        },
+        expected_assigns={"Triplet"},
+        required_anchors=(
+            "class BaseNoExtrasModel(BaseModel):",
+            "class MessagesToAgentsList(BaseNoExtrasModel):",
+        ),
+    )
     c16["source"] = (
         "# Support models — canonical imports (CP4)\n"
         "# PATCH: CP4-CANONICAL-MODELS\n"
@@ -14754,8 +15022,29 @@ def main():
         "✅ Cell idx 16: wired canonical data models from idd_models and idd_state (CP4-CANONICAL-MODELS)"
     )
 
-    # 5. Cell 19: Canonical DataFrame Registry and Reporting Models (P2-6)
+    # 5. Cell 19: Canonical DataFrame Registry and Reporting Models (P2-1, P2-2)
     c19 = cells[19]
+    src19 = join_source(c19["source"])
+    verify_cp4_input_cell(
+        src19,
+        cell_idx=19,
+        patch_id="CP4-CANONICAL-REGISTRY",
+        expected_classes={
+            "ConversationalResponse",
+            "DataFrameRegistry",
+            "ReportOutline",
+            "Section",
+            "SectionOutline",
+            "VizFeedback",
+        },
+        expected_functions={"get_global_df_registry"},
+        expected_assigns={"global_df_registry"},
+        required_anchors=(
+            "class DataFrameRegistry:",
+            "global_df_registry = DataFrameRegistry()",
+            "class ConversationalResponse(BaseNoExtrasModel):",
+        ),
+    )
     c19["source"] = (
         "# DataFrame Registry and Reporting Models — canonical imports (CP4)\n"
         "# PATCH: CP4-CANONICAL-REGISTRY\n"
@@ -14763,10 +15052,10 @@ def main():
         "    DataFrameRegistry,\n"
         "    DataFrameRegistryError,\n"
         "    get_global_registry,\n"
+        "    get_global_df_registry,\n"
         "    override_global_registry,\n"
         "    set_global_registry,\n"
         "    global_df_registry,\n"
-        "    _DynamicGlobalRegistryProxy,\n"
         ")\n"
         "from idd_state import (\n"
         "    Section,\n"
@@ -14774,9 +15063,7 @@ def main():
         "    ReportOutline,\n"
         "    VizFeedback,\n"
         "    ConversationalResponse,\n"
-        ")\n\n"
-        "def get_global_df_registry() -> DataFrameRegistry:\n"
-        "    return get_global_registry()\n"
+        ")\n"
     )
     c19["outputs"] = []
     c19["execution_count"] = None
@@ -14790,14 +15077,41 @@ def main():
         "✅ Cell idx 19: wired canonical registry and reporting models (CP4-CANONICAL-REGISTRY)"
     )
 
-    # 6. Cell 22: Canonical LangGraph State & Reducers
+    # 6. Cell 22: Canonical LangGraph State, Reducers & CLASS_TO_AGENT (P1-B, P2-2)
     c22 = cells[22]
+    src22 = join_source(c22["source"])
+    verify_cp4_input_cell(
+        src22,
+        cell_idx=22,
+        patch_id="CP4-CANONICAL-STATE",
+        expected_classes={"State", "VizWorkerState"},
+        expected_functions={
+            "_reduce_plan_keep_sorted",
+            "_sr_reducer",
+            "any_true",
+            "last_wins",
+            "merge_dict",
+            "merge_dicts",
+            "merge_int_sum",
+            "merge_lists",
+            "merge_unique",
+        },
+        expected_assigns={"CLASS_TO_AGENT", "default_an_config"},
+        required_anchors=(
+            "CLASS_TO_AGENT: dict[type, AgentId] = {",
+            "class State(TypedDict, total=False):",
+            "class VizWorkerState(TypedDict):",
+        ),
+    )
     c22["source"] = (
         "# LangGraph State & Reducers — canonical imports (CP4)\n"
         "# PATCH: CP4-CANONICAL-STATE\n"
+        "from langchain_core.messages import AnyMessage\n"
+        "from langgraph.graph.message import add_messages, REMOVE_ALL_MESSAGES\n"
         "from idd_state import (\n"
         "    State,\n"
         "    VizWorkerState,\n"
+        "    CLASS_TO_AGENT,\n"
         "    keep_first,\n"
         "    merge_lists,\n"
         "    merge_unique,\n"
@@ -14825,12 +15139,111 @@ def main():
         c22["source"], "# PATCH: CP4-CANONICAL-STATE", patch_id="CP4-CANONICAL-STATE"
     )
     print(
-        "✅ Cell idx 22: wired canonical State schema and reducers (CP4-CANONICAL-STATE)"
+        "✅ Cell idx 22: wired canonical State schema, reducers, and CLASS_TO_AGENT (CP4-CANONICAL-STATE)"
     )
 
-    # 7. Cell 32: Canonical Tool Error Handling & Artifact Security (P2-7)
+    # 7. Cell 32: Canonical Tool Error Handling, Artifact Security & Scoped Registry Access (P2-1, P2-2, P2-7)
     c32 = cells[32]
     src32 = join_source(c32["source"])
+    verify_cp4_input_cell(
+        src32,
+        cell_idx=32,
+        patch_id="CP4-CANONICAL-TOOLS",
+        expected_classes={"NewPythonInputs", "NpEncoder"},
+        expected_functions={
+            "_align_vector",
+            "_as_int_or_list",
+            "_as_number_or_list",
+            "_assert_bin_var_typesafety",
+            "_build_query_view",
+            "_coerce_viz_dict",
+            "_encode_png",
+            "_encode_preview",
+            "_gather_from_state",
+            "_get_artifacts_base",
+            "_hash_id",
+            "_inside",
+            "_is_subpath",
+            "_normalize",
+            "_normalize_bins",
+            "_resolve_artifact_path",
+            "_resolve_columns",
+            "_resolve_sandbox_root",
+            "_scan_artifacts_dir",
+            "_tool_error",
+            "_tool_failure",
+            "assess_data_quality",
+            "calculate_correlation",
+            "calculate_correlation_matrix",
+            "check_missing_values",
+            "convert_data_types",
+            "create_box_plot",
+            "create_correlation_heatmap",
+            "create_histogram",
+            "create_pdf_report",
+            "create_sample",
+            "create_scatter_plot",
+            "create_violin_plot",
+            "delete_rows",
+            "detect_and_remove_duplicates",
+            "detect_outliers",
+            "drop_column",
+            "edit_file",
+            "ensure_last_fn_call",
+            "export_dataframe",
+            "fill_missing_median",
+            "format_markdown_report",
+            "generate_html_report",
+            "get_column_names",
+            "get_dataframe_schema",
+            "get_descriptive_statistics",
+            "get_df_from_registry",
+            "get_visualization",
+            "handle_categorical_encoding",
+            "handle_tool_errors",
+            "list_available_files",
+            "list_visualizations",
+            "load_multiple_files",
+            "merge_dataframes",
+            "perform_hypothesis_test",
+            "perform_normality_test",
+            "python_repl_tool",
+            "query_dataframe",
+            "read_file",
+            "report_intermediate_progress",
+            "sandbox_filesystem",
+            "sanitize_code",
+            "save_df_to_registry",
+            "search_web_for_context",
+            "standardize_column_names",
+            "strip_code_fences",
+            "train_ml_model",
+            "validate_dataframe_exists",
+            "write_file",
+        },
+        expected_assigns={
+            "ConfigParam",
+            "_CODE_FENCE_RE",
+            "_IMAGE_EXTS",
+            "_rip_counts",
+            "analyst_tools",
+            "data_cleaning_tools",
+            "file_writer_tools",
+            "files_store",
+            "init_analyst_tools",
+            "python_repl",
+            "report_generator_tools",
+            "visualization_tools",
+        },
+        required_anchors=(
+            "def _tool_error(",
+            "def get_dataframe_schema(",
+            "def _get_artifacts_base(",
+            "files_store = InMemoryStore()",
+            "def _resolve_artifact_path(",
+            "global_df_registry.get_dataframe(",
+        ),
+    )
     old_err_pattern = r"# Error Handling and Validation Framework\s*def _tool_error\(.*?(?=\n#|\ndef get_dataframe_schema)"
     new_err_block = (
         "# Error Handling and Validation Framework — canonical imports (CP4)\n"
@@ -14853,6 +15266,22 @@ def main():
     src32 = replace_required_regex(
         src32, old_art_pattern, "", patch_id="CP4-CANONICAL-ARTIFACTS-BASE"
     )
+    # P2-1: Route all Cell 32 tool registry accesses through get_global_df_registry() for ContextVar scoping
+    if "global_df_registry." not in src32:
+        raise RequiredPatchError(
+            "CP4-CELL32-SCOPED-REGISTRY: expected global_df_registry. references in Cell 32"
+        )
+    src32 = src32.replace("global_df_registry.", "get_global_df_registry().")
+    src32 = replace_required(
+        src32,
+        'python_repl.globals["global_df_registry"] = global_df_registry',
+        'python_repl.globals["global_df_registry"] = get_global_df_registry()  # PATCH: CP4-CELL32-SCOPED-REGISTRY',
+        patch_id="CP4-CELL32-SCOPED-REGISTRY",
+    )
+    if "global_df_registry." in src32:
+        raise RequiredPatchError(
+            "CP4-CELL32-SCOPED-REGISTRY: residual global_df_registry. attribute access remains in Cell 32"
+        )
     c32["source"] = src32
     c32["outputs"] = []
     c32["execution_count"] = None
@@ -14860,14 +15289,31 @@ def main():
     assert_patch_present(
         src32, "# PATCH: CP4-CANONICAL-TOOLS", patch_id="CP4-CANONICAL-TOOLS"
     )
+    assert_patch_present(
+        src32,
+        "# PATCH: CP4-CELL32-SCOPED-REGISTRY",
+        patch_id="CP4-CELL32-SCOPED-REGISTRY",
+    )
     print(
-        "✅ Cell idx 32: wired canonical tool error handling and path resolution (CP4-CANONICAL-TOOLS)"
+        "✅ Cell idx 32: wired canonical tool error handling, path resolution, and scoped registry access (CP4-CANONICAL-TOOLS)"
     )
 
-    # 8. Cell 46: Supervisor Canonical Router Schema Binding (P1-3)
+    # 8. Cell 46: Supervisor Canonical Router Schema Binding (P1-3, P2-2)
     c46 = cells[46]
     src46 = join_source(c46["source"])
     if "# PATCH: CP4-SUPERVISOR-ROUTER" not in src46:
+        verify_cp4_input_cell(
+            src46,
+            cell_idx=46,
+            patch_id="CP4-SUPERVISOR-ROUTER",
+            expected_classes={"SupervisorModels"},
+            expected_functions={"_map_supervisor_llms", "make_supervisor_node"},
+            expected_assigns=set(),
+            required_anchors=(
+                "def make_supervisor_node(",
+                "class Router(BaseNoExtrasModel):",
+            ),
+        )
         old_router_block = (
             "    class Router(BaseNoExtrasModel):\n"
             '        next: AgentId = Field(..., description="Next agent to invoke.")\n'
@@ -14893,8 +15339,115 @@ def main():
             "✅ Cell idx 46: bound supervisor to canonical Router schema (CP4-SUPERVISOR-ROUTER)"
         )
 
-    # 9. Cell 60: Canonical Graph Assembly & Routing (P1-2 single coherent checkpointer)
+    # 8b. Cell 48: Scoped Registry Access in Dataset Preparation (P2-1, P2-2)
+    c48 = cells[48]
+    src48 = join_source(c48["source"])
+    if "# PATCH: CP4-CELL48-SCOPED-REGISTRY" not in src48:
+        verify_cp4_input_cell(
+            src48,
+            cell_idx=48,
+            patch_id="CP4-CELL48-SCOPED-REGISTRY",
+            expected_classes=set(),
+            expected_functions=set(),
+            expected_assigns={
+                "analyst_agent",
+                "data_cleaner_agent",
+                "df_id",
+                "file_writer_agent",
+                "initial_analysis_agent",
+                "initial_description",
+                "registered_df_id",
+                "report_generator_agent",
+                "report_packager_agent",
+                "report_section_agent",
+                "sample_choice",
+                "sample_prompt_tuple",
+                "visualization_agent",
+                "viz_evaluator_agent",
+            },
+            required_anchors=(
+                "registered_df_id = global_df_registry.register_dataframe(",
+            ),
+        )
+        src48 = replace_required(
+            src48,
+            "registered_df_id = global_df_registry.register_dataframe(",
+            "# PATCH: CP4-CELL48-SCOPED-REGISTRY\nregistered_df_id = get_global_df_registry().register_dataframe(",
+            patch_id="CP4-CELL48-SCOPED-REGISTRY",
+        )
+        c48["source"] = src48
+        c48["outputs"] = []
+        c48["execution_count"] = None
+        ast.parse(src48)
+        assert_patch_present(
+            src48,
+            "# PATCH: CP4-CELL48-SCOPED-REGISTRY",
+            patch_id="CP4-CELL48-SCOPED-REGISTRY",
+        )
+        print(
+            "✅ Cell idx 48: bound dataset preparation to get_global_df_registry() (CP4-CELL48-SCOPED-REGISTRY)"
+        )
+
+    # 8c. Cell 57: Fix double-negation filter in emergency_correspondence_node so CLASS_TO_AGENT loop executes (P1-B, P1-D)
+    c57 = cells[57]
+    src57 = join_source(c57["source"])
+    if "# PATCH: CP4-CELL57-EMERGENCY-FILTER" not in src57:
+        verify_cp4_input_cell(
+            src57,
+            cell_idx=57,
+            patch_id="CP4-CELL57-EMERGENCY-FILTER",
+            required_anchors=(
+                "def emergency_correspondence_node(state: State):",
+                "for k, v in CLASS_TO_AGENT.items():",
+                "if isinstance(_msg_obj, SendAgentMessage) and not _msg_obj is not None]",
+            ),
+        )
+        src57 = replace_required(
+            src57,
+            "if isinstance(_msg_obj, SendAgentMessage) and not _msg_obj is not None]",
+            "if isinstance(_msg_obj, SendAgentMessage) and _msg_obj is not None]  # PATCH: CP4-CELL57-EMERGENCY-FILTER",
+            patch_id="CP4-CELL57-EMERGENCY-FILTER",
+        )
+        c57["source"] = src57
+        c57["outputs"] = []
+        c57["execution_count"] = None
+        ast.parse(src57)
+        assert_patch_present(
+            src57,
+            "# PATCH: CP4-CELL57-EMERGENCY-FILTER",
+            patch_id="CP4-CELL57-EMERGENCY-FILTER",
+        )
+        print(
+            "✅ Cell idx 57: fixed emergency_correspondence_node candidate filter to reach CLASS_TO_AGENT (CP4-CELL57-EMERGENCY-FILTER)"
+        )
+
+    # 9. Cell 60: Canonical Graph Assembly & Routing (P1-2, P2-2)
     c60 = cells[60]
+    src60 = join_source(c60["source"])
+    verify_cp4_input_cell(
+        src60,
+        cell_idx=60,
+        patch_id="CP4-CANONICAL-GRAPH",
+        expected_classes=set(),
+        expected_functions={
+            "_viz_items_from_state",
+            "route_from_supervisor",
+            "route_to_writer",
+            "write_output_to_file",
+        },
+        expected_assigns={
+            "_cp_conn",
+            "checkpointer",
+            "coordinator_node",
+            "data_analysis_team_builder",
+            "data_detective_graph",
+        },
+        required_anchors=(
+            "coordinator_node = make_supervisor_node(",
+            "data_analysis_team_builder = StateGraph(State)",
+            "data_detective_graph = data_analysis_team_builder.compile(",
+        ),
+    )
     c60["source"] = (
         "# Graph compile (canonical build_graph — CP4)\n"
         "# PATCH: CP4-CANONICAL-GRAPH\n"
@@ -14966,10 +15519,29 @@ def main():
         "✅ Cell idx 60: wired canonical build_graph in executable mode (CP4-CANONICAL-GRAPH)"
     )
 
-    # 10. Cell 94 & 96: Guarded Checkpoint Demonstration Reconciled (P1-2)
+    # 10. Cell 94 & 96: Isolated & Guarded Checkpoint Demonstration Reconciled (P1-2, P2-2, P2-5)
     c94 = cells[94]
     src94 = join_source(c94["source"])
     if "# PATCH: CP4-CELL94-GUARD" not in src94:
+        verify_cp4_input_cell(
+            src94,
+            cell_idx=94,
+            patch_id="CP4-CELL94-GUARD",
+            expected_classes=set(),
+            expected_functions=set(),
+            expected_assigns={"src_graph"},
+            required_anchors=(
+                'with SqliteSaver.from_conn_string("checkpoints.sqlite") as dst_cp:',
+                "_FIX_U_SKIP_NONE_WRITER",
+            ),
+        )
+        # P2-5: Isolate demo migration target into checkpoints_demo.sqlite so it never self-copies into active checkpoints.sqlite
+        src94_isolated = replace_required(
+            src94,
+            'with SqliteSaver.from_conn_string("checkpoints.sqlite") as dst_cp:',
+            '_demo_db_path = str((WORKING_DIRECTORY / "checkpoints_demo.sqlite").resolve()) if "WORKING_DIRECTORY" in globals() else "checkpoints_demo.sqlite"\nwith SqliteSaver.from_conn_string(_demo_db_path) as dst_cp:',
+            patch_id="CP4-CELL94-ISOLATE-DB",
+        )
         c94["source"] = (
             "# PATCH: CP4-CELL94-GUARD\n"
             "try:\n"
@@ -14977,7 +15549,7 @@ def main():
             "    from langgraph.checkpoint.sqlite import SqliteSaver\n"
             + "\n".join(
                 "    " + line
-                for line in src94.splitlines()
+                for line in src94_isolated.splitlines()
                 if not line.strip().startswith("import sqlite3")
                 and not line.strip().startswith("from langgraph.checkpoint.sqlite")
             )
@@ -14990,23 +15562,45 @@ def main():
         assert_patch_present(
             c94["source"], "# PATCH: CP4-CELL94-GUARD", patch_id="CP4-CELL94-GUARD"
         )
+        assert_patch_present(
+            c94["source"],
+            "_FIX_U_SKIP_NONE_WRITER",
+            patch_id="CP4-CELL94-PRESERVE-FIX-U",
+        )
         print(
-            "✅ Cell idx 94: guarded checkpoint migration against missing SQLite driver (CP4-CELL94-GUARD)"
+            "✅ Cell idx 94: guarded and isolated checkpoint migration demo (CP4-CELL94-GUARD)"
         )
 
     c96 = cells[96]
+    src96 = join_source(c96["source"])
+    verify_cp4_input_cell(
+        src96,
+        cell_idx=96,
+        patch_id="CP4-CELL96-RECONCILE",
+        expected_classes=set(),
+        expected_functions=set(),
+        expected_assigns={"conn", "cp", "data_detective_graph"},
+        required_anchors=(
+            'conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)',
+            "data_detective_graph = data_analysis_team_builder.compile(",
+        ),
+    )
     c96["source"] = (
         "# PATCH: CP4-CELL96-RECONCILE\n"
-        "# To restore a previous checkpointer state from an SQL database file on disk (demo)\n"
+        "# To restore a previous checkpointer state from an isolated SQL database file on disk (demo)\n"
         "try:\n"
         "    import sqlite3 as _restore_sqlite3\n"
         "    from langgraph.checkpoint.sqlite import SqliteSaver as _RestoreSqliteSaver\n\n"
-        "    _restore_conn = _restore_sqlite3.connect('checkpoints.sqlite', check_same_thread=False)\n"
-        "    _restore_cp = _RestoreSqliteSaver(_restore_conn)\n"
-        "    _restored_graph = data_analysis_team_builder.compile(\n"
-        "        checkpointer=_restore_cp, store=in_memory_store, cache=InMemoryCache()\n"
-        "    )\n"
-        "    print('✅ Previous checkpointer state restore demonstration compiled.')\n"
+        '    _demo_restore_db_path = str((WORKING_DIRECTORY / "checkpoints_demo.sqlite").resolve()) if "WORKING_DIRECTORY" in globals() else "checkpoints_demo.sqlite"\n'
+        "    _restore_conn = _restore_sqlite3.connect(_demo_restore_db_path, check_same_thread=False)\n"
+        "    try:\n"
+        "        _restore_cp = _RestoreSqliteSaver(_restore_conn)\n"
+        "        _restored_graph = data_analysis_team_builder.compile(\n"
+        "            checkpointer=_restore_cp, store=in_memory_store, cache=InMemoryCache()\n"
+        "        )\n"
+        "        print('✅ Previous checkpointer state restore demonstration compiled.')\n"
+        "    finally:\n"
+        "        _restore_conn.close()\n"
         "except (ImportError, ModuleNotFoundError):\n"
         "    print('ℹ️ SqliteSaver unavailable; checkpoint restore demonstration skipped.')\n"
     )
@@ -15017,7 +15611,7 @@ def main():
         c96["source"], "# PATCH: CP4-CELL96-RECONCILE", patch_id="CP4-CELL96-RECONCILE"
     )
     print(
-        "✅ Cell idx 96: reconciled checkpoint restore demo without graph replacement (CP4-CELL96-RECONCILE)"
+        "✅ Cell idx 96: reconciled and isolated checkpoint restore demo without graph replacement (CP4-CELL96-RECONCILE)"
     )
 
     # Assert invariant cell count before saving

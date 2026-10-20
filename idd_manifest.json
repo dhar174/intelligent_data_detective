@@ -4,20 +4,20 @@
   "description": "Cryptographic provenance and integrity manifest for Intelligent Data Detective canonical Python modules.",
   "files": {
     "idd_models.py": "b0145a1707e563673e1c795114d8adc8acb7a289e4a7ef56a53302d297eada57",
-    "idd_registry.py": "4d66c687b90677280c434c512414a8d6eda9e27b50a369931634f5ea7bb7b24b",
-    "idd_state.py": "d489c21d9e075f9a8aafc5b2eabc3489efdf3e38c392be148b1c28b0a6450360",
-    "idd_tools.py": "1adb9e9599cf0de0fc423934c0200c8c2b8c814247f87e6abdec2b4561f0297f",
+    "idd_registry.py": "0c97646e192606e59d810390763cafa9f3d2473b3f65edd5173db25099aa8aac",
+    "idd_state.py": "62b079bb40e6aa44671325f6d40fac13479e342e9c6db6ec8d7bcaac2c99b7ef",
+    "idd_tools.py": "4fb1a052f3a546a9fbd816bbc7b2dedf4b3b328fc25a03ecafd78618ec96fe03",
     "idd_graph.py": "9f613bd604c2c8bbbb559e1f7ec18b01ac62533738d65c54ce36cd06c57753b7",
-    "idd_core.py": "452d2445ee23849be9116de75fe75fafc605d56f09bc1a733e8d62286b9fcbc8",
-    "idd_bootstrap.py": "24798ff3e2f7d3675a82494c78969d34fa0d3fd0fc5972a49f85d8e19f3b871c"
+    "idd_core.py": "5b81c52c799dcbbef16053c5bac36aa16c6885125961e7522f8d1e8bc1d24c58",
+    "idd_bootstrap.py": "7e7054b1d7c2d31aaac0352627620ba7c086887f9576a45544429be6f83e1602"
   },
   "modules": {
     "idd_models.py": "b0145a1707e563673e1c795114d8adc8acb7a289e4a7ef56a53302d297eada57",
-    "idd_registry.py": "4d66c687b90677280c434c512414a8d6eda9e27b50a369931634f5ea7bb7b24b",
-    "idd_state.py": "d489c21d9e075f9a8aafc5b2eabc3489efdf3e38c392be148b1c28b0a6450360",
-    "idd_tools.py": "1adb9e9599cf0de0fc423934c0200c8c2b8c814247f87e6abdec2b4561f0297f",
+    "idd_registry.py": "0c97646e192606e59d810390763cafa9f3d2473b3f65edd5173db25099aa8aac",
+    "idd_state.py": "62b079bb40e6aa44671325f6d40fac13479e342e9c6db6ec8d7bcaac2c99b7ef",
+    "idd_tools.py": "4fb1a052f3a546a9fbd816bbc7b2dedf4b3b328fc25a03ecafd78618ec96fe03",
     "idd_graph.py": "9f613bd604c2c8bbbb559e1f7ec18b01ac62533738d65c54ce36cd06c57753b7",
-    "idd_core.py": "452d2445ee23849be9116de75fe75fafc605d56f09bc1a733e8d62286b9fcbc8",
-    "idd_bootstrap.py": "24798ff3e2f7d3675a82494c78969d34fa0d3fd0fc5972a49f85d8e19f3b871c"
+    "idd_core.py": "5b81c52c799dcbbef16053c5bac36aa16c6885125961e7522f8d1e8bc1d24c58",
+    "idd_bootstrap.py": "7e7054b1d7c2d31aaac0352627620ba7c086887f9576a45544429be6f83e1602"
   }
 }

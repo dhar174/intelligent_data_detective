@@ -329,8 +329,19 @@ def _get_artifacts_base(
             base.mkdir(parents=True, exist_ok=True)
         return base
 
-    # 4. Working directory fallback
-    base = (PathlibPath(WORKING_DIRECTORY) / "artifacts").resolve()
+    # 4. Working directory fallback (aligned with notebook __main__.WORKING_DIRECTORY)
+    wd = WORKING_DIRECTORY
+    if PathlibPath(wd) == _DEFAULT_WORKING_DIR:
+        try:
+            import sys
+
+            main_mod = sys.modules.get("__main__")
+            main_wd = getattr(main_mod, "WORKING_DIRECTORY", None)
+            if main_wd:
+                wd = PathlibPath(main_wd)
+        except Exception:
+            pass
+    base = (PathlibPath(wd) / "artifacts").resolve()
     if create:
         base.mkdir(parents=True, exist_ok=True)
     return base

@@ -838,36 +838,21 @@ def override_global_registry(registry: DataFrameRegistry):
         _registry_override.reset(token)
 
 
+def get_global_df_registry() -> DataFrameRegistry:
+    """Return the active DataFrameRegistry instance (notebook compatibility alias)."""
+    return get_global_registry()
+
+
 # ---------------------------------------------------------------------------
-# Dynamic Global Registry Proxy (ContextVar-aware)
+# Module-level __getattr__ for ContextVar-aware global_df_registry identity (P2-1)
 # ---------------------------------------------------------------------------
 
 
-class _DynamicGlobalRegistryProxy(DataFrameRegistry):
-    """Dynamic proxy that transparently routes all operations to get_global_registry().
-
-    Ensures that any tool or module accessing the module-level `global_df_registry`
-    always operates on the active ContextVar registry override (e.g. during test
-    isolation or per-run overrides) rather than freezing on a stale default instance.
-    """
-
-    def __init__(self) -> None:
-        # Do not initialize a separate storage directory; delegate dynamically
-        pass
-
-    def __getattribute__(self, name: str) -> Any:
-        if name in ("__class__", "__doc__", "__repr__", "_is_proxy"):
-            return super().__getattribute__(name)
-        return getattr(get_global_registry(), name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        setattr(get_global_registry(), name, value)
-
-    def __delattr__(self, name: str) -> None:
-        delattr(get_global_registry(), name)
-
-    def __repr__(self) -> str:
-        return f"<DynamicGlobalRegistryProxy -> {get_global_registry()!r}>"
+def __getattr__(name: str) -> Any:
+    if name == "global_df_registry":
+        return get_global_registry()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-global_df_registry: DataFrameRegistry = _DynamicGlobalRegistryProxy()
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + ["global_df_registry"])

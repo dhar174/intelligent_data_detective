@@ -21,11 +21,11 @@ Perform static analysis of the LangGraph pipeline topology:
 3. Check there are no dead ends (every non-terminal node has an outgoing edge).
 4. Validate `AgentId`, `AgentOrSupervisor`, and `AgentMembers.agent_type` Literal sets are internally consistent.
 5. Audit `CLASS_TO_AGENT` for completeness and correctness.
-6. Read `intelligentdatadetective_beta_v5.py` for the authoritative `State` TypedDict schema.
+6. Read `idd_state.py` for the authoritative 70-field `State` TypedDict schema and `idd_graph.py` for `build_graph()`.
 
 ## Source of truth
-- **Graph topology + State schema**: `intelligentdatadetective_beta_v5.py` (not `idd_core.py` — State TypedDict is excluded from idd_core)
-- **Model definitions**: `idd_core.py` (for CLASS_TO_AGENT and Literal audits)
+- **Graph topology + State schema**: `idd_graph.py` (`build_graph()`, routing functions) and `idd_state.py` (`State` TypedDict, reducers, `CLASS_TO_AGENT`), re-exported by `idd_core.py` and wired into `IntelligentDataDetective_beta_v5_patched.ipynb` (Cell 22 & Cell 60).
+- **Model definitions**: `idd_models.py`, `idd_state.py`, and `idd_core.py` (for `CLASS_TO_AGENT` and Literal audits).
 
 ## You do NOT
 - Edit any files
@@ -35,9 +35,9 @@ Perform static analysis of the LangGraph pipeline topology:
 ## Routing domain audit (key invariant)
 | Symbol | Location | Count | Values |
 |--------|----------|-------|--------|
-| `AgentMembers.agent_type` | `idd_core.py` | 9 | initial_analysis, data_cleaner, analyst, file_writer, visualization, report_orchestrator, report_section_worker, report_packager, supervisor |
-| `AgentId` | `idd_core.py` | 14 | All of the above except supervisor, plus: viz_worker, viz_join, viz_evaluator, report_join, END, FINISH |
-| `AgentOrSupervisor` | `idd_core.py` | 15 | AgentId ∪ {"supervisor"} |
+| `AgentMembers.agent_type` | `idd_models.py` / `idd_core.py` | 9 | initial_analysis, data_cleaner, analyst, file_writer, visualization, report_orchestrator, report_section_worker, report_packager, supervisor |
+| `AgentId` | `idd_state.py` / `idd_core.py` | 14 | All of the above except supervisor, plus: viz_worker, viz_join, viz_evaluator, report_join, END, FINISH |
+| `AgentOrSupervisor` | `idd_state.py` / `idd_core.py` | 15 | AgentId ∪ {"supervisor"} |
 
 **Key rules:**
 - `AgentMembers.agent_type` ⊂ `AgentOrSupervisor`
@@ -59,15 +59,13 @@ Expected keys (model classes that map to agents):
 - `FileResult` → "file_writer"
 
 ## Validation scripts
-Use scripts from `.github/skills/langgraph-agent-patterns/` if available:
+Run the repository topology and parity validators:
 ```bash
-# Validate graph structure (if script exists)
-python .github/skills/langgraph-agent-patterns/scripts/validate_agent_graph.py \
-    intelligentdatadetective_beta_v5.py:graph
+# Validate patched notebook graph structure (15 nodes, 33 edges, 21 conditional)
+python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
 
-# Generate topology diagram
-python .github/skills/langgraph-agent-patterns/scripts/visualize_graph.py \
-    intelligentdatadetective_beta_v5.py:graph --output topology_audit.md
+# Validate canonical module & notebook graph parity
+python -m pytest tests/unit/test_core_parity_guard.py -v
 ```
 
 ## Outputs
@@ -77,7 +75,7 @@ Produce a topology audit report with:
 - **Dead ends**: nodes with no outgoing edges (if any)
 - **Literal consistency**: any mismatch between AgentId/AgentOrSupervisor/agent_type
 - **CLASS_TO_AGENT**: missing keys, invalid values
-- **State schema**: all fields with their reducers, from the production script
+- **State schema**: all fields with their reducers, from `idd_state.py`
 
 ## Collaboration
 - Hand CLASS_TO_AGENT issues to `notebook-specialist`

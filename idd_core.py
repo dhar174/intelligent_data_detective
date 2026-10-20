@@ -58,9 +58,9 @@ from idd_registry import (
     DataFrameRegistry,
     DataFrameRegistryError,
     get_global_registry,
+    get_global_df_registry,
     set_global_registry,
     override_global_registry,
-    _DynamicGlobalRegistryProxy,
 )
 
 # Canonical tools and error handling (Checkpoint 2)
@@ -121,6 +121,7 @@ from idd_state import (
     VizFeedback,
     ConversationalResponse,
     default_an_config,
+    CLASS_TO_AGENT,
 )
 
 # Canonical graph assembly and routing (Checkpoint 3)
@@ -510,34 +511,6 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# DataFrame Registry (Canonical implementation in idd_registry.py)
-# ---------------------------------------------------------------------------
-
-
-def get_global_df_registry() -> DataFrameRegistry:
-    """Return the active DataFrameRegistry instance."""
-    return get_global_registry()
-
-
-# ---------------------------------------------------------------------------
-# Class-to-agent mapping
-# ---------------------------------------------------------------------------
-
-CLASS_TO_AGENT: dict[type, AgentId] = {
-    InitialDescription: "initial_analysis",
-    CleaningMetadata: "data_cleaner",
-    AnalysisInsights: "analyst",
-    VisualizationResults: "viz_join",
-    DataVisualization: "viz_worker",
-    VizFeedback: "viz_evaluator",
-    SectionOutline: "report_orchestrator",
-    Section: "report_section_worker",
-    ReportOutline: "report_orchestrator",
-    ReportResults: "report_packager",
-    FileResult: "file_writer",
-}
-
-# ---------------------------------------------------------------------------
 # Public exports
 # ---------------------------------------------------------------------------
 
@@ -591,9 +564,9 @@ __all__ = [  # noqa: F822
     "DataFrameRegistry",
     "DataFrameRegistryError",
     "get_global_registry",
+    "get_global_df_registry",
     "set_global_registry",
     "override_global_registry",
-    "_DynamicGlobalRegistryProxy",
     "global_df_registry",
     # Re-exports: idd_tools (CP2)
     "_get_artifacts_base",

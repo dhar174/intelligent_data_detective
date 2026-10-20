@@ -6,6 +6,7 @@ for Intelligent Data Detective canonical Python modules.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ CANONICAL_MODULES = [
     "idd_core.py",
     "idd_bootstrap.py",
 ]
+CANONICAL_MODULE_STEMS = [m[:-3] for m in CANONICAL_MODULES]
 
 
 def compute_sha256(path: Path | str) -> str:
@@ -114,6 +116,48 @@ def verify_manifest(
     return verified
 
 
+def verify_module_origins(repo_root: Path | str) -> None:
+    """Verify that loaded modules in sys.modules and import specs originate from repo_root.
+
+    Rejects any cached foreign canonical module in sys.modules or competing path spec
+    that does not resolve to the verified repository root.
+    """
+    resolved_root = Path(repo_root).resolve()
+
+    for stem in CANONICAL_MODULE_STEMS:
+        expected_mod_file = (resolved_root / f"{stem}.py").resolve()
+
+        if stem in sys.modules:
+            loaded_mod = sys.modules[stem]
+            if loaded_mod is None:
+                raise RuntimeError(
+                    f"Canonical module '{stem}' is registered as None in sys.modules."
+                )
+            mod_file = getattr(loaded_mod, "__file__", None)
+            if not mod_file:
+                raise RuntimeError(
+                    f"Loaded canonical module '{stem}' in sys.modules has no __file__ attribute."
+                )
+            resolved_mod_file = Path(mod_file).resolve()
+            if resolved_mod_file != expected_mod_file:
+                raise RuntimeError(
+                    f"Loaded module '{stem}' origin '{resolved_mod_file}' does not match "
+                    f"verified repository root '{expected_mod_file}'!"
+                )
+
+        spec = importlib.util.find_spec(stem)
+        if spec is None or not spec.origin:
+            raise RuntimeError(
+                f"Cannot resolve import spec or origin for canonical module '{stem}'."
+            )
+        resolved_spec_origin = Path(spec.origin).resolve()
+        if resolved_spec_origin != expected_mod_file:
+            raise RuntimeError(
+                f"Import spec origin for canonical module '{stem}' resolved to '{resolved_spec_origin}', "
+                f"which does not match verified repository root '{expected_mod_file}'."
+            )
+
+
 def bootstrap_environment(
     start_dir: Optional[Path | str] = None,
     allow_unverified: bool = False,
@@ -121,14 +165,15 @@ def bootstrap_environment(
     repo_root: Optional[Path | str] = None,
     manifest_path: Optional[Path | str] = None,
 ) -> Path:
-    """Bootstrap the runtime environment by discovering repo root, adding to sys.path, and verifying manifest.
+    """Bootstrap the runtime environment by discovering repo root, verifying manifest,
+    prioritizing sys.path[0], and validating module import origins.
 
     Returns:
         Path to verified repository root.
 
     Raises:
         RuntimeError: If running in standalone ephemeral Colab without cloned repo,
-                      or if manifest verification fails.
+                      if manifest verification fails, or if module origin does not match.
     """
     is_colab = False
     try:
@@ -161,8 +206,12 @@ def bootstrap_environment(
         verify_manifest(repo_root=resolved_root, manifest_path=manifest_path)
 
     root_str = str(resolved_root)
-    if root_str not in sys.path:
-        sys.path.insert(0, root_str)
+    while root_str in sys.path:
+        sys.path.remove(root_str)
+    sys.path.insert(0, root_str)
+
+    if not allow_unverified:
+        verify_module_origins(resolved_root)
 
     return resolved_root
 

@@ -924,4 +924,51 @@ Eliminate the architectural split-brain between the canonical Python modules (`i
    - Status: **CP4 CI HARDENING & REMOTE VERIFICATION COMPLETE — PR #163 IN DRAFT AWAITING ARCHITECTURAL REVIEW**.
 <!-- session-curated:2026-10-15-cp4-notebook-integration:end -->
 
+<!-- session-curated:2026-10-15-cp4-review-resolutions:start -->
+## 2026-10-15 — Checkpoint 4 (CP4): Review Resolutions & Re-Review Hardening Pass (PR #163, Issue #162)
+
+### Objective
+Resolve all peer and architectural review and re-review findings for PR #163 (`P1-A` through `P1-D` and `P2-1` through `P2-5`) across headless CI sandbox imports, `CLASS_TO_AGENT` canonical export, bootstrap module-origin & `sys.path[0]` precedence, effective generated-cell execution and mutation tests, PEP 562 registry identity (`get_global_registry() is global_df_registry`) with `get_global_df_registry()`, fail-closed patcher input precondition checks (`verify_cp4_input_cell`), default `WORKING_DIRECTORY` artifact-root parity, and isolated SQLite demo paths (`checkpoints_demo.sqlite`).
+
+### Findings Resolved & Hardening Implemented
+1. **P1-A: Headless CI Resilience (`sandbox_optional_imports`)**:
+   - `execute_notebook_namespace()` in `tests/unit/test_core_parity_guard.py` uses `sandbox_optional_imports()` to provide lightweight stub modules for optional notebook-only packages (`IPython`, `IPython.display`, `kagglehub`, `langmem`, `langchain_community.agent_toolkits`) when absent in headless CI.
+   - Regression test `test_notebook_namespace_resilient_to_missing_ipython` explicitly blocks `IPython` in `sys.modules` and proves full namespace execution succeeds.
+2. **P1-B: Canonical `CLASS_TO_AGENT` & Cell 22 Symbol Parity**:
+   - Defined `CLASS_TO_AGENT` in `idd_state.py`, re-exported with 100% identity in `idd_core.py`, and imported in Cell 22 alongside `AnyMessage`, `add_messages`, and `REMOVE_ALL_MESSAGES`.
+   - Fixed Cell 57 `emergency_correspondence_node` filter (`CP4-CELL57-EMERGENCY-FILTER`) so `for k, v in CLASS_TO_AGENT.items():` is reachable and verified at runtime.
+3. **P1-C: Fail-Closed Cell 4 Pre-Bootstrap & Module-Origin Verification**:
+   - Cell 4 verifies `idd_bootstrap.py` against `idd_manifest.json` using pure stdlib (`hashlib`, `json`, `pathlib`, `importlib.util`) and rejects foreign `sys.modules["idd_bootstrap"]` before importing `bootstrap_environment`.
+   - `idd_bootstrap.verify_module_origins()` rejects any preloaded foreign module in `sys.modules`, verifies `importlib.util.find_spec` origins for all 7 canonical modules, and promotes `str(resolved_root)` to `sys.path[0]` only after `verify_manifest()` succeeds.
+4. **P1-D: Effective Generated-Cell Execution & Guard Mutation Controls**:
+   - `tests/unit/test_core_parity_guard.py` (38/38 tests) executes actual generated Cell 4 (negative controls), Cell 32 decorated tools under `override_global_registry`, Cell 46 `make_supervisor_node` with mock LLMs verifying `Router is idd_graph.Router`, Cell 57 `emergency_correspondence_node` routing via `CLASS_TO_AGENT`, and Cells 60/94/96 in both SQLite-present and SQLite-absent modes, plus guard mutation controls on cloned notebooks.
+5. **P2-1: Registry Identity & Scoped Tool Access**:
+   - Replaced `_DynamicGlobalRegistryProxy` with PEP 562 module-level `__getattr__` in `idd_registry.py` and `idd_core.py` so `from idd_registry import global_df_registry` returns the exact active `DataFrameRegistry` instance (`get_global_registry() is global_df_registry`).
+   - Added `get_global_df_registry()` in `idd_registry.py` and `idd_core.py`, and updated Cells 19, 32, and 48 to resolve `get_global_df_registry()` dynamically on every tool call.
+6. **P2-2: Fail-Closed Patcher Input Preconditions & Cell 7 Canonical Reducers**:
+   - Added `verify_cp4_input_cell()` in `_patch_notebook.py` to fail closed with `RequiredPatchError` if any pre-CP4 cell (Cells 4, 7, 10, 16, 19, 22, 32, 46, 48, 57, 60, 94, 96) drifts in top-level AST declarations or required anchors.
+   - Replaced inline reducer definitions in Cell 7 with canonical imports from `idd_state`.
+7. **P2-3: Merge-Base & Governance Reconciliation**:
+   - Merged `origin/main` (`9be44e4`) cleanly and updated `REGRESSION_REPORT.md`, `.github/copilot-instructions.md`, `AGENTS.md`, and `.github/agents/*.agent.md` to reflect the CP1–CP4 canonical module architecture and 16/16 passing error-handling tests.
+8. **P2-4: Default Artifact-Root Parity**:
+   - Synchronized `WORKING_DIRECTORY` in Cell 7 across `idd_tools`, `idd_registry`, and `idd_core`, and updated `idd_tools._get_artifacts_base()` fallback to check `sys.modules["__main__"].WORKING_DIRECTORY`.
+9. **P2-5: Isolated SQLite Demo Cells (Cells 94 & 96)**:
+   - Updated Cells 94 and 96 to use `"checkpoints_demo.sqlite"`, never copying active `checkpoints.sqlite` onto itself, and deterministically closing `_demo_sqlite_conn` and `_restore_sqlite_conn`.
+
+### Verification Baseline
+- Anti-drift parity guard (`tests/unit/test_core_parity_guard.py`): **38/38 passed**.
+- Patcher integrity suite (`tests/unit/test_patcher_integrity.py`): **118/118 passed (0 skipped)**.
+- Mandatory error handling framework (`test_error_handling_framework.py`): **16/16 passed**.
+- Primary unit and integration suites (`test_validate_run.py`, `tests/unit/`, `tests/integration/`): **689 passed**.
+- Root regression & notebook integrity suites: **110/110 passed**.
+- Prompt regression suite: **17/17 passed**.
+- Notebook & Graph Invariants:
+  - `validate_notebook_integrity.py`: **PASSED (strictly 99 cells intact, 0 warnings)**.
+  - `validate_graph.py`: **PASSED (15 nodes, 33 edges [21 conditional], 70 State fields)**.
+  - `idd_bootstrap.py`: verified across all 7 canonical modules.
+- Code Quality: `black --check` and `flake8` **100% clean**.
+- Status: **CP4 RE-REVIEW HARDENING PASS COMPLETE — PR #163 READY FOR FINAL APPROVAL & MERGE GATE**.
+<!-- session-curated:2026-10-15-cp4-review-resolutions:end -->
+
+
 

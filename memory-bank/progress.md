@@ -294,3 +294,37 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
     - PR #163 maintained in Draft under Issue #162 and parent architecture issues #140, #144, #145, awaiting Charles's architectural review and merge-gate signoff.
 - Status: **CP4 CI HARDENING & REMOTE VERIFICATION COMPLETE — PR #163 IN DRAFT AWAITING ARCHITECTURAL REVIEW** (Issues #140, #144, #145, #162).
 
+### 2026-10-15 — Checkpoint 4 (CP4): Corrective Review & Re-Review Pass (PR #163, Issue #162)
+- Corrective Review & Re-Review Scope Delivered:
+  - P1-A: Headless CI Resilience (`sandbox_optional_imports`):
+    - Stubbed optional notebook-only packages (`IPython`, `IPython.display`, `kagglehub`, `langmem`, `langchain_community.agent_toolkits`) in `execute_notebook_namespace()` when unavailable in headless CI, with explicit negative test `test_notebook_namespace_resilient_to_missing_ipython`.
+  - P1-B: Canonical `CLASS_TO_AGENT` & Cell 22 Symbol Parity:
+    - Defined `CLASS_TO_AGENT` in `idd_state.py`, re-exported in `idd_core.py`, and imported in Cell 22 alongside `AnyMessage`, `add_messages`, and `REMOVE_ALL_MESSAGES`. Fixed Cell 57 `emergency_correspondence_node` filter (`CP4-CELL57-EMERGENCY-FILTER`) so `CLASS_TO_AGENT` loop is reachable and tested at runtime.
+  - P1-C: Fail-Closed Cell 4 Pre-Bootstrap & Module-Origin Verification:
+    - Cell 4 verifies `idd_bootstrap.py` against `idd_manifest.json` using pure stdlib before importing `bootstrap_environment`.
+    - `idd_bootstrap.verify_module_origins()` rejects preloaded foreign `sys.modules` entries, validates `importlib.util.find_spec` origins for all 7 canonical modules, and promotes `str(resolved_root)` to `sys.path[0]` only after `verify_manifest()` succeeds.
+  - P1-D: Effective Generated-Cell Execution & Guard Mutation Controls:
+    - Expanded `tests/unit/test_core_parity_guard.py` to 38 tests executing actual generated Cells 4, 32, 46, 57, 60, 94, and 96 plus notebook clone mutation controls.
+  - P2-1: PEP 562 Registry Identity & Scoped Tool Access:
+    - Replaced `_DynamicGlobalRegistryProxy` with PEP 562 module-level `__getattr__` (`get_global_registry() is global_df_registry`) and `get_global_df_registry()` in Cells 19, 32, and 48.
+  - P2-2: Fail-Closed Patcher Input Preconditions & Cell 7 Canonical Reducers:
+    - Added `verify_cp4_input_cell()` in `_patch_notebook.py` across Cells 4, 7, 10, 16, 19, 22, 32, 46, 48, 57, 60, 94, and 96, and wired Cell 7 reducers to canonical `idd_state` imports.
+  - P2-3: Merge-Base & Governance Reconciliation:
+    - Merged `origin/main` (`9be44e4`) and reconciled `REGRESSION_REPORT.md`, `.github/copilot-instructions.md`, `AGENTS.md`, and `.github/agents/*.agent.md`.
+  - P2-4: Default Artifact-Root Parity:
+    - Synchronized `WORKING_DIRECTORY` in Cell 7 with `idd_tools`, `idd_registry`, and `idd_core`, and added `sys.modules["__main__"].WORKING_DIRECTORY` fallback in `idd_tools._get_artifacts_base()`.
+  - P2-5: Isolated SQLite Demo Cells (Cells 94 & 96):
+    - Updated Cells 94 and 96 to use `"checkpoints_demo.sqlite"` and close demo SQLite connections deterministically.
+- Verification Baseline:
+  - Parity guard (`tests/unit/test_core_parity_guard.py`): **38/38 passed**.
+  - Patcher integrity suite (`tests/unit/test_patcher_integrity.py`): **118/118 passed (0 skipped)**.
+  - Mandatory error handling framework (`test_error_handling_framework.py`): **16/16 passed**.
+  - Primary unit and integration suites (`test_validate_run.py`, `tests/unit/`, `tests/integration/`): **689 passed**.
+  - Root regression & notebook integrity suites: **110/110 passed**.
+  - Prompt regression suite: **17/17 passed**.
+  - Invariants: `validate_notebook_integrity.py` (strictly 99 cells intact, 0 warnings), `validate_graph.py` (15 nodes, 33 edges [21 conditional], 70 State fields).
+  - Provenance: `idd_bootstrap.py` verified across all 7 canonical modules.
+  - Code Quality: `black --check` and `flake8` 100% clean.
+- Status: **CP4 RE-REVIEW HARDENING PASS COMPLETE — PR #163 READY FOR FINAL MERGE GATE** (Issues #140, #144, #145, #162, PR #163).
+
+

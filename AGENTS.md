@@ -29,7 +29,7 @@ Key files:
 - `memory_enhancements.py` — standalone memory lifecycle/categorization module
 - `memory_config.yaml` — per-agent memory namespace TTL and limits
 - `idd_v4_state_graph.mmd` — authoritative LangGraph state graph topology
-- `tests/unit/test_core_parity_guard.py` — 22 anti-drift guard tests (AST integrity, symbol identity, behavioral parity)
+- `tests/unit/test_core_parity_guard.py` — 38 anti-drift guard tests (AST integrity, symbol identity, behavioral parity)
 - `test_intelligent_data_detective.py` — 22 core tests (no API keys needed)
 - `test_error_handling_framework.py` — all 16 tests pass (mandatory blocking gate in CI)
 - `test_memory_categorization.py`, `test_memory_integration.py`, `test_memory_lifecycle.py` — memory tests
@@ -55,7 +55,7 @@ pip install langchain langchain-core langchain-openai langchain_experimental lan
     pandas numpy scipy scikit-learn matplotlib seaborn pydantic python-dotenv \
     tiktoken openpyxl tavily-python chromadb joblib pytest black flake8
 
-python3 -m pytest tests/unit/test_core_parity_guard.py -v             # 35 anti-drift tests
+python3 -m pytest tests/unit/test_core_parity_guard.py -v             # 38 anti-drift tests
 python3 -m pytest test_intelligent_data_detective.py -v               # 22 tests
 python3 -m pytest test_error_handling_framework.py -v                 # 16/16 tests mandatory
 python3 -m pytest test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py -v
