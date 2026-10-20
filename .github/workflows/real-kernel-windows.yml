@@ -96,6 +96,7 @@ jobs:
         shell: bash
         run: |
           python -m pytest tests/unit/test_core_parity_guard.py -v
+          python -m pytest tests/unit/test_issue164_evidence_report.py -v
           python -m pytest test_error_handling_framework.py -v
 
       - name: Run real-kernel scientific preflight smoke on Windows
