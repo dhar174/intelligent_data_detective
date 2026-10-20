@@ -1,0 +1,117 @@
+name: real-kernel-windows
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  windows-real-kernel:
+    name: Windows real-kernel validation
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      PYTHON_VERSION: "3.12"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies and provision Windows Jupyter kernel
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            langchain \
+            langchain-core \
+            langchain-openai \
+            langchain_experimental \
+            langgraph \
+            langgraph-checkpoint-sqlite \
+            pandas \
+            numpy \
+            scipy \
+            scikit-learn \
+            matplotlib \
+            seaborn \
+            pydantic \
+            python-dotenv \
+            pyyaml \
+            tiktoken \
+            openpyxl \
+            tavily-python \
+            chromadb \
+            joblib \
+            typing_extensions \
+            pytest \
+            xhtml2pdf \
+            pypdf \
+            pymupdf \
+            pillow \
+            markdown \
+            bleach \
+            nbclient==0.11.0 \
+            nbformat==5.11.1 \
+            jupyter-client==8.10.0 \
+            ipykernel==7.4.0
+          python -m ipykernel install --user --name idd-preflight --display-name "IDD scientific smoke"
+          python -m jupyter kernelspec list
+
+      - name: Record Windows environment and package versions
+        shell: bash
+        run: |
+          python -c "import platform, sys; print('Platform:', platform.platform()); print('Python:', sys.version)"
+          python -m pip freeze
+
+      - name: Validate notebook integrity and canonical graph structure on Windows
+        shell: bash
+        run: |
+          python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb -v
+          python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
+
+      - name: Run CP4 anti-drift guard and mandatory error-handling suites on Windows
+        shell: bash
+        run: |
+          python -m pytest tests/unit/test_core_parity_guard.py -v
+          python -m pytest test_error_handling_framework.py -v
+
+      - name: Run real-kernel scientific preflight smoke on Windows
+        shell: bash
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+        run: python -m pytest tests/smoke/test_scientific_kernel.py -v -s
+
+      - name: Run real-kernel notebook validation on Windows (SQLite present)
+        shell: bash
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+        run: python -m pytest tests/smoke/test_real_kernel_notebook.py -v -s
+
+      - name: Run real-kernel notebook validation on Windows (SQLite absent - package uninstalled)
+        shell: bash
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+          IDD_EXPECT_SQLITE_UNINSTALLED: "1"
+        run: |
+          python -m pip uninstall -y langgraph-checkpoint-sqlite
+          python -m pytest tests/smoke/test_real_kernel_notebook.py -k "sqlite_absent" -v -s
+          python -m pip install langgraph-checkpoint-sqlite
