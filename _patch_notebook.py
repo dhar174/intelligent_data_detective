@@ -15569,6 +15569,7 @@ def main():
             "        copied = 0\n"
             "        for tup in seq:\n"
             '            ns = tup.config["configurable"].get("checkpoint_ns", "")\n'
+            '            cid = tup.config["configurable"].get("checkpoint_id")\n'
             '            put_cfg = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ns}}\n'
             "            if full_history and tup.parent_config:\n"
             '                parent_id = tup.parent_config["configurable"].get("checkpoint_id")\n'
@@ -15580,11 +15581,34 @@ def main():
             "                tup.metadata,\n"
             '                dict(tup.checkpoint.get("channel_versions", {})),\n'
             "            )\n"
+            "            src_paths = {}\n"
+            '            if hasattr(src_cp, "cursor"):\n'
+            "                try:\n"
+            "                    with src_cp.cursor(transaction=False) as cur:\n"
+            "                        cur.execute(\n"
+            '                            "SELECT task_id, task_path FROM writes "\n'
+            '                            "WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",\n'
+            '                            (str(thread_id), str(ns), str(cid)),\n'
+            "                        )\n"
+            "                        for tid, p in cur.fetchall():\n"
+            '                            src_paths[tid] = p or ""\n'
+            "                except Exception:\n"
+            "                    pass\n"
+            '            elif hasattr(src_cp, "writes"):\n'
+            '                stored = getattr(src_cp, "writes", {}).get(\n'
+            "                    (str(thread_id), str(ns), str(cid)), {}\n"
+            "                )\n"
+            "                for (tid, _idx), val in stored.items():\n"
+            '                    src_paths[tid] = val[3] if len(val) > 3 else ""\n'
+            "\n"
             "            writes_by_task = {}\n"
             "            for task_id, channel, value in tup.pending_writes or []:\n"
             "                writes_by_task.setdefault(task_id, []).append((channel, value))\n"
-            "            for task_id, task_writes in writes_by_task.items():\n"
-            "                dst_cp.put_writes(saved_cfg, task_writes, task_id)\n"
+            "            for task_seq, (task_id, task_writes) in enumerate(writes_by_task.items()):\n"
+            "                tp = src_paths.get(task_id)\n"
+            "                if tp is None:\n"
+            '                    tp = f"mig_{task_seq:08d}"\n'
+            "                dst_cp.put_writes(saved_cfg, task_writes, task_id, task_path=tp)\n"
             "            copied += 1\n"
             "        return copied\n"
             "\n"

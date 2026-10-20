@@ -647,6 +647,130 @@ print({PROBE_PREFIX!r} + json.dumps({{
         for key in ("cell_94", "cell_96"):
             assert "WARNING" not in streams_by_key[key], streams_by_key[key]
 
+    def test_cell94_lossless_pending_writes_deterministic_order_and_delta_replay(
+        self, tmp_path: Path, checkout_checkpoint_canary
+    ):
+        """
+        Codex P2 regression: prove Cell 94 migrate_thread preserves task ordering
+        and delta channel replay when tasks have reversed task_id vs task_path ordering.
+
+        Scenario:
+        1. Disposable thread with parent checkpoint:
+           - task 'z-task', path 'a-path', value ['FIRST']
+           - task 'a-task', path 'z-path', value ['SECOND']
+        2. Child checkpoint linked to parent, omitting 'progress_reports' from channel_values.
+        3. Generated Cell 94 migrate_thread into isolated destination DB.
+        4. Assert get_delta_channel_history returns ['FIRST'], ['SECOND'] for both src and dst.
+        5. Assert parent CheckpointTuple pending_writes match source exactly in order.
+        """
+        deterministic_probe = f"""
+import json
+from pathlib import Path as PathlibPath
+from langgraph.checkpoint.base import empty_checkpoint
+from langgraph.checkpoint.sqlite import SqliteSaver as _DetSqliteSaver
+
+_det_thread = "deterministic-order-test-thread"
+_det_db_path = str((WORKING_DIRECTORY / "det_dest.sqlite").resolve())
+
+# 1. Store parent checkpoint with reversed task-ID vs task-path order:
+# 'z-task' with 'a-path' must sort FIRST by (task_path, task_id, idx)
+# 'a-task' with 'z-path' must sort SECOND by (task_path, task_id, idx)
+_src_cp = data_detective_graph.checkpointer
+_cfg_parent = {{"configurable": {{"thread_id": _det_thread, "checkpoint_ns": "", "checkpoint_id": "det-parent"}}}}
+_cp_parent = empty_checkpoint()
+_saved_parent = _src_cp.put(_cfg_parent, _cp_parent, {{}}, {{}})
+_src_cp.put_writes(_saved_parent, [("progress_reports", ["FIRST"])], task_id="z-task", task_path="a-path")
+_src_cp.put_writes(_saved_parent, [("progress_reports", ["SECOND"])], task_id="a-task", task_path="z-path")
+
+# 2. Store child linked to parent, leaving progress_reports absent from stored channel_values
+_cfg_child = {{
+    "configurable": {{
+        "thread_id": _det_thread,
+        "checkpoint_ns": "",
+        "checkpoint_id": _saved_parent["configurable"]["checkpoint_id"],
+    }}
+}}
+_cp_child = empty_checkpoint()
+_saved_child = _src_cp.put(_cfg_child, _cp_child, {{}}, {{}})
+
+# 3. Migrate using generated migrate_thread into isolated destination
+with _DetSqliteSaver.from_conn_string(_det_db_path) as _dst_cp:
+    _copied = migrate_thread(_det_thread, _dst_cp, full_history=True)
+    assert _copied == 2, f"Expected 2 checkpoints copied, got {{_copied}}"
+
+    # 4. Assert delta channel history matches source exactly: ['FIRST'], ['SECOND']
+    _src_delta = _src_cp.get_delta_channel_history(config=_saved_child, channels=["progress_reports"])
+    _dst_delta = _dst_cp.get_delta_channel_history(config=_saved_child, channels=["progress_reports"])
+    assert _src_delta == _dst_delta, f"Delta mismatch: src={{_src_delta}} vs dst={{_dst_delta}}"
+    _src_writes = _src_delta["progress_reports"]["writes"]
+    assert [w[2] for w in _src_writes] == [["FIRST"], ["SECOND"]], _src_writes
+    assert [w[0] for w in _src_writes] == ["z-task", "a-task"], _src_writes
+
+    # 5. Assert parent CheckpointTuple pending_writes match source exactly in order
+    _src_tups = list(_src_cp.list({{"configurable": {{"thread_id": _det_thread}}}}))
+    _dst_tups = list(_dst_cp.list({{"configurable": {{"thread_id": _det_thread}}}}))
+    assert len(_dst_tups) == len(_src_tups) == 2
+    for _st, _dt in zip(_src_tups, _dst_tups):
+        assert _dt.pending_writes == _st.pending_writes, f"PW mismatch: {{_dt.pending_writes}} vs {{_st.pending_writes}}"
+
+print({PROBE_PREFIX!r} + json.dumps({{
+    "status": "ok",
+    "copied": _copied,
+    "delta_writes_order": [w[0] for w in _src_writes],
+}}))
+"""
+
+        deterministic_nodes_setup = f"""
+{NO_KEY_CELL60_SETUP_SOURCE}
+import os
+import idd_tools
+import idd_registry
+import idd_core
+
+WORKING_DIRECTORY = PathlibPath({str(tmp_path)!r})
+idd_tools.WORKING_DIRECTORY = WORKING_DIRECTORY
+idd_registry.WORKING_DIRECTORY = WORKING_DIRECTORY
+idd_core.WORKING_DIRECTORY = WORKING_DIRECTORY
+os.chdir(str(WORKING_DIRECTORY))
+
+initial_analysis_node = lambda state: {{}}
+data_cleaner_node = lambda state: {{}}
+analyst_node = lambda state: {{}}
+visualization_orchestrator = lambda state: {{}}
+viz_worker = lambda state: {{}}
+viz_evaluator_node = lambda state: {{}}
+report_orchestrator = lambda state: {{}}
+section_worker = lambda state: {{}}
+report_packager_node = lambda state: {{}}
+file_writer_node = lambda state: {{}}
+"""
+        cell_specs: List[CellSpec] = [
+            1,
+            4,
+            7,
+            10,
+            16,
+            19,
+            22,
+            28,
+            31,
+            32,
+            46,
+            57,
+            ("setup_cell60_no_key_stubs", deterministic_nodes_setup),
+            60,
+            94,
+            ("deterministic_pending_writes_probe", deterministic_probe),
+        ]
+        executed_nb, probes, streams = execute_cells_in_real_kernel(
+            cell_specs, work_dir=tmp_path / "kernel_cwd"
+        )
+        probe_res = probes.get("deterministic_pending_writes_probe")
+        assert probe_res is not None, f"Missing probe output. Streams: {streams}"
+        assert probe_res["status"] == "ok"
+        assert probe_res["copied"] == 2
+        assert probe_res["delta_writes_order"] == ["z-task", "a-task"]
+
     @staticmethod
     def run_graph_lifecycle_scenario(
         tmp_path: Path,
@@ -939,14 +1063,18 @@ _cell60_checkpointer_type = type(checkpointer).__name__
         seed_history_code = """
 def _history_signature(graph, cfg):
     sig = []
-    for snap in graph.get_state_history(cfg):
+    tups = list(graph.checkpointer.list(cfg))
+    snaps = list(graph.get_state_history(cfg))
+    assert len(tups) == len(snaps), f"Tuples vs snapshots count mismatch: {len(tups)} vs {len(snaps)}"
+    for tup, snap in zip(tups, snaps):
         sig.append({
-            "checkpoint_id": snap.config["configurable"]["checkpoint_id"],
-            "parent_id": ((snap.parent_config or {}).get("configurable") or {}).get("checkpoint_id"),
+            "checkpoint_id": tup.config["configurable"]["checkpoint_id"],
+            "parent_id": ((tup.parent_config or {}).get("configurable") or {}).get("checkpoint_id"),
             "next": list(snap.next),
-            "step": (snap.metadata or {}).get("step"),
-            "source": (snap.metadata or {}).get("source"),
+            "step": (tup.metadata or {}).get("step"),
+            "source": (tup.metadata or {}).get("source"),
             "tasks": sorted(t.name for t in snap.tasks),
+            "pending_writes": list(tup.pending_writes or []),
         })
     return sig
 
@@ -961,6 +1089,7 @@ _src_history_before = _history_signature(data_detective_graph, run_config)
 _src_latest_values = dict(data_detective_graph.get_state(run_config).values)
 assert len(_src_history_before) >= 10, _src_history_before
 assert any(h["next"] for h in _src_history_before), "Expected pending routing mid-history"
+assert any(h["pending_writes"] for h in _src_history_before), "Expected pending writes in seeded history"
 
 # Reset scripted stubs so the post-restore production invocation replays the full route.
 _sup_step["idx"] = 0
@@ -1008,6 +1137,21 @@ if {sqlite_available!r}:
         _verify_graph = data_analysis_team_builder.compile(checkpointer=_verify_cp)
         _dst_history = _history_signature(_verify_graph, run_config)
         _dst_latest_values = dict(_verify_graph.get_state(run_config).values)
+
+        # Order-sensitive replay assertion on migrated checkpoint delta channel history
+        _channels_with_writes = set()
+        for _h in _src_history_before:
+            for _pw in _h["pending_writes"]:
+                _channels_with_writes.add(_pw[1])
+        assert _channels_with_writes, "Expected pending writes in seeded history"
+        _src_delta = data_detective_graph.checkpointer.get_delta_channel_history(
+            config=run_config, channels=list(_channels_with_writes)
+        )
+        _dst_delta = _verify_cp.get_delta_channel_history(
+            config=run_config, channels=list(_channels_with_writes)
+        )
+        assert _dst_delta == _src_delta, f"Delta channel history mismatch: {{_dst_delta}} vs {{_src_delta}}"
+
     assert _dst_history == _src_history_before, "Migrated history differs from source history"
     assert set(_dst_latest_values) == set(_src_latest_values)
     for _k, _v in _src_latest_values.items():
@@ -1851,12 +1995,13 @@ assert data_detective_graph is _orig_graph, "Negative control caught Cell 96 ove
             "migration_raises_and_is_swallowed",
             "noop_migrate_thread",
             "restore_compiled_without_checkpointer",
+            "replace_put_writes_with_pass",
         ],
     )
     def test_negative_controls_checkpoint_migration_and_restore_mutations_fail(
         self, tmp_path: Path, mutation: str, checkout_checkpoint_canary
     ):
-        """Codex P1-2 required regression: broken Cell 94/96 must fail the seeded lifecycle gate."""
+        """Codex P1-2 and P2 required regression: broken Cell 94/96 must fail the seeded lifecycle gate."""
         nb = copy.deepcopy(load_patched_notebook())
         if mutation == "migration_raises_and_is_swallowed":
             idx = 94
@@ -1876,6 +2021,10 @@ assert data_detective_graph is _orig_graph, "Negative control caught Cell 96 ove
             idx = 94
             anchor = "        src_cp = src_graph.checkpointer\n"
             replacement = "        return 0\n" + anchor
+        elif mutation == "replace_put_writes_with_pass":
+            idx = 94
+            anchor = "dst_cp.put_writes(saved_cfg, task_writes, task_id, task_path=tp)"
+            replacement = "pass  # REVIEW_MUTATION_DROP_PENDING_WRITES"
         else:
             idx = 96
             anchor = "checkpointer=_restore_cp,"
@@ -1888,7 +2037,9 @@ assert data_detective_graph is _orig_graph, "Negative control caught Cell 96 ove
                 tmp_path, sqlite_available=True, notebook_dict=nb
             )
         message = re.sub(r"\x1b\[[0-9;]*m", "", str(exc_info.value))
-        if idx == 94:
+        if mutation == "replace_put_writes_with_pass":
+            assert "Migrated history differs from source history" in message, message[-2000:]
+        elif idx == 94:
             # Seeded-history gate: zero migrated checkpoints vs N seeded.
             assert re.search(r"AssertionError: \(0, \d+\)", message), message[-2000:]
         else:
