@@ -40,10 +40,13 @@ jobs:
           pip install \
             langchain \
             langchain-core \
+            langchain-community \
             langchain-openai \
             langchain_experimental \
             langgraph \
             langgraph-checkpoint-sqlite \
+            langmem \
+            kagglehub \
             pandas \
             numpy \
             scipy \
