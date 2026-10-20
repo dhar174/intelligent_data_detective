@@ -55,7 +55,6 @@ from tests.unit.test_core_parity_guard import (
     load_patched_notebook,
 )
 
-
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 

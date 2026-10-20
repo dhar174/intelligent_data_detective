@@ -13,12 +13,12 @@
 
 | Scenario | Platform / Runner | Python Version | Real Kernel Identity | SQLite Dependency Mode | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Linux — SQLite Present** | GitHub Actions (`ubuntu-latest`) | Python 3.12 (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `langgraph-checkpoint-sqlite` installed (`SqliteSaver` active) | **PASS** (see Section 6 for CI job URL) |
-| **Linux — SQLite Absent (Package Uninstalled)** | GitHub Actions (`ubuntu-latest`) | Python 3.12 (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `pip uninstall -y langgraph-checkpoint-sqlite` + `IDD_EXPECT_SQLITE_UNINSTALLED=1` (`MemorySaver` fallback) | **PASS** (see Section 6 for CI job URL) |
+| **Linux — SQLite Present** | GitHub Actions (`ubuntu-latest`, Ubuntu 24.04 `7.0.0-1017-azure`) | `3.12.15` (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `langgraph-checkpoint-sqlite==3.1.2` installed (`SqliteSaver` active) | **PASS** (`12 passed in 45.8s`) |
+| **Linux — SQLite Absent (Package Uninstalled)** | GitHub Actions (`ubuntu-latest`, Ubuntu 24.04 `7.0.0-1017-azure`) | `3.12.15` (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `pip uninstall -y langgraph-checkpoint-sqlite` + `IDD_EXPECT_SQLITE_UNINSTALLED=1` (`MemorySaver` fallback) | **PASS** (`1 passed in 7.1s`) |
 | **Windows (Local) — SQLite Present** | `Windows-11-10.0.26340-SP0` (native AMD64) | `3.12.2` (`MSC v.1937 64 bit (AMD64)`) | `py312-codex` (`ipykernel==7.2.0`, `nbclient==0.10.4`, `jupyter_client==8.8.0`) | `langgraph-checkpoint-sqlite==3.1.2` installed (`SqliteSaver` active) | **PASS** (`15 passed in 104.73s`) |
 | **Windows (Local) — SQLite Absent (Package Uninstalled)** | `Windows-11-10.0.26340-SP0` (native AMD64) | `3.12.2` (`MSC v.1937 64 bit (AMD64)`) | `py312-codex` (`ipykernel==7.2.0`, `nbclient==0.10.4`, `jupyter_client==8.8.0`) | `pip uninstall -y langgraph-checkpoint-sqlite` + `IDD_EXPECT_SQLITE_UNINSTALLED=1` (`MemorySaver` fallback) | **PASS** (`1 passed in 15.11s`) |
-| **Windows (Hosted CI) — SQLite Present** | GitHub Actions (`windows-latest`) | Python 3.12 (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `langgraph-checkpoint-sqlite` installed (`SqliteSaver` active) | **PASS** (see Section 6 for CI job URL) |
-| **Windows (Hosted CI) — SQLite Absent (Package Uninstalled)** | GitHub Actions (`windows-latest`) | Python 3.12 (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `pip uninstall -y langgraph-checkpoint-sqlite` + `IDD_EXPECT_SQLITE_UNINSTALLED=1` (`MemorySaver` fallback) | **PASS** (see Section 6 for CI job URL) |
+| **Windows (Hosted CI) — SQLite Present** | GitHub Actions (`windows-latest`, Windows Server 2022 `10.0.20348`) | `3.12.10` (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `langgraph-checkpoint-sqlite==3.1.2` installed (`SqliteSaver` active) | **PASS** (`12 passed`) |
+| **Windows (Hosted CI) — SQLite Absent (Package Uninstalled)** | GitHub Actions (`windows-latest`, Windows Server 2022 `10.0.20348`) | `3.12.10` (`actions/setup-python@v5`) | `idd-preflight` (`ipykernel==7.4.0`, `nbclient==0.11.0`, `jupyter_client==8.10.0`) | `pip uninstall -y langgraph-checkpoint-sqlite` + `IDD_EXPECT_SQLITE_UNINSTALLED=1` (`MemorySaver` fallback) | **PASS** (`1 passed`) |
 | **Google Colab Clone** | Cloned repository in Google Colab runtime | Python 3.12 (Colab runtime) | Colab Jupyter kernel | Both SQLite-present & SQLite-absent supported | **NOT EXECUTED** (no live Colab runtime available in this session; reproducible runbook provided in Section 7) |
 
 ---
@@ -51,9 +51,11 @@
   - `pytest==8.4.2`
 
 ### 2.2 GitHub Actions Hosted CI (`ubuntu-latest` & `windows-latest`)
-- **Python:** `3.12.x` via `actions/setup-python@v5`
+- **Linux Runner (`ubuntu-latest`):** `Linux runnervmxehtw 7.0.0-1017-azure #17~24.04.1-Ubuntu SMP PREEMPT x86_64 GNU/Linux`, **Python `3.12.15`**
+- **Windows Runner (`windows-latest`):** `Windows-2022-10.0.20348-SP0 (AMD64)`, **Python `3.12.10`**
 - **Kernelspec:** `idd-preflight` (`python -m ipykernel install --user --name idd-preflight --display-name "IDD scientific smoke"`)
 - **Jupyter Execution Stack:** `nbclient==0.11.0`, `nbformat==5.11.1`, `jupyter-client==8.10.0`, `ipykernel==7.4.0`
+- **Key Hosted CI Packages:** `langchain==1.4.6`, `langchain-core==1.6.12`, `langchain-community==0.4.2`, `langchain-openai==1.7.2`, `langchain-experimental==0.4.2`, `langgraph==1.2.16`, `langgraph-checkpoint==4.3.0`, `langgraph-checkpoint-sqlite==3.1.2`, `pydantic==2.14.1`, `pandas==3.0.6`, `numpy==2.5.4`, `scipy==1.18.1`, `matplotlib==3.11.2`, `seaborn==0.13.2`, `pytest==9.1.1`
 
 ---
 
@@ -129,12 +131,15 @@ All 7 Stage 4 security scenarios and 3 negative controls were executed inside re
 
 ---
 
-## 5. Clean-Clone / Worktree Defect Found & Resolved
+## 5. Clean-Clone & CI Environment Defects Found & Resolved
 
-During Stage 1 baseline verification in a fresh git worktree (`git worktree add`), running `python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb` with default settings failed in Cell 2 because `.gitignore` contained `tests/trajectory/fixtures/*.csv` and `tests/trajectory/fixtures/*.json`, preventing `tests/trajectory/fixtures/sample_dirty.csv` (220 bytes) and `tests/trajectory/fixtures/idd_test_dataset.json` (1,053 bytes) from being tracked in git.
-
-- **Fix:** Added `!tests/trajectory/fixtures/sample_dirty.csv` and `!tests/trajectory/fixtures/idd_test_dataset.json` exceptions to `.gitignore` and committed both small deterministic fixture files so fresh clones, git worktrees, and CI runners pass `validate_graph.py` out of the box.
-- **Production Pipeline Impact:** Zero changes to `_patch_notebook.py`, `IntelligentDataDetective_beta_v5_patched.ipynb`, or any canonical `idd_*.py` module.
+1. **Missing Tracked Trajectory Fixtures in Clean Clones / Worktrees:**
+   - During Stage 1 baseline verification in a fresh git worktree (`git worktree add`), running `python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb` failed in Cell 2 because `.gitignore` contained `tests/trajectory/fixtures/*.csv` and `tests/trajectory/fixtures/*.json`, preventing `tests/trajectory/fixtures/sample_dirty.csv` (220 bytes) and `tests/trajectory/fixtures/idd_test_dataset.json` (1,053 bytes) from being tracked in git.
+   - **Fix:** Added `!tests/trajectory/fixtures/sample_dirty.csv` and `!tests/trajectory/fixtures/idd_test_dataset.json` exceptions to `.gitignore` and committed both small deterministic fixture files.
+2. **Missing Cell 7 Top-Level Imports (`kagglehub`, `langmem`, `langchain-community`) in CI When `IDD_SKIP_NOTEBOOK_INSTALLS=1`:**
+   - Executing the full unmodified Cell 7 in a real kernel on a clean GitHub Actions runner uncovered that `.github/workflows/copilot-setup-steps.yml` previously omitted `kagglehub`, `langmem`, and `langchain-community` from its dependency installation step (previous unit tests had mocked those modules or executed only selective AST slices of Cell 7).
+   - **Fix:** Added `kagglehub`, `langmem`, `langchain-community`, and `langgraph-checkpoint-sqlite` to `.github/workflows/copilot-setup-steps.yml` and `.github/workflows/real-kernel-windows.yml`, and ordered `nbformat` installation prior to `validate_graph.py`.
+3. **Production Pipeline Impact:** Zero changes to `_patch_notebook.py`, `IntelligentDataDetective_beta_v5_patched.ipynb`, or any canonical `idd_*.py` module.
 
 ---
 
@@ -154,15 +159,16 @@ During Stage 1 baseline verification in a fresh git worktree (`git worktree add`
 | `python -m pytest test_intelligent_data_detective.py test_memory_categorization.py test_memory_integration.py test_memory_lifecycle.py test_prompt_formatting.py test_prompt_template_fixes.py test_validate_notebook_integrity.py -v` | **127 passed** in 6.93s | 0 skipped, 0 failed |
 
 ### 6.2 Explanation of Every Skip in Existing Unit Suites
-Zero tests are skipped in `tests/smoke/test_real_kernel_notebook.py` or `tests/smoke/test_scientific_kernel.py` when `IDD_RUN_KERNEL_SMOKE=1`. In the broader unit suite (`test_validate_run.py tests/unit tests/integration`), the 9 skips on Windows are:
+Zero tests are skipped in `tests/smoke/test_real_kernel_notebook.py` or `tests/smoke/test_scientific_kernel.py` when `IDD_RUN_KERNEL_SMOKE=1`. In the broader unit suite (`test_validate_run.py tests/unit tests/integration`), the 9 skips on Windows (and 3 skips on Linux) are:
 1. `test_validate_run.py:29` (1 skip): `Run 88 fixture missing` — optional local archival directory check; synthetic run validator tests in the same file execute and pass.
-2. `tests/unit/test_registry.py` lines `1165, 1173, 1185, 1195, 1270, 1285` (6 skips on Windows only): `POSIX permission bits test` / `POSIX ownership test` — guarded by `os.name == "nt"` because Windows NTFS does not use POSIX `0o700` mode bits or `os.getuid()`. All 6 tests execute and pass on the Linux (`ubuntu-latest`) CI runner.
+2. `tests/unit/test_registry.py` lines `1165, 1173, 1185, 1195, 1270, 1285` (6 skips on Windows only; **0 skips on Linux**): `POSIX permission bits test` / `POSIX ownership test` — guarded by `os.name == "nt"` because Windows NTFS does not use POSIX `0o700` mode bits or `os.getuid()`. All 6 tests execute and pass on the Linux (`ubuntu-latest`) CI runner (`695 passed, 3 skipped`).
 3. `tests/unit/test_registry.py` lines `109, 1461` (2 skips): `pyarrow not installed` — optional Arrow extension dtype checks when `pyarrow` is not installed; canonical pickle backing storage tests execute and pass.
 
-### 6.3 Hosted GitHub Actions CI Runs
-- **Workflow:** `.github/workflows/copilot-setup-steps.yml`
-  - **Linux Job (`No-key validation` on `ubuntu-latest`):** Pending PR push (will be updated with exact run URL upon completion).
-  - **Windows Job (`Windows real-kernel validation` on `windows-latest`):** Pending PR push (will be updated with exact run URL upon completion).
+### 6.3 Hosted GitHub Actions CI Runs (PR [#169](https://github.com/dhar174/intelligent_data_detective/pull/169))
+- **Windows Hosted CI (`.github/workflows/real-kernel-windows.yml`, `windows-latest`, Python 3.12.10):**
+  - [Run 39486968503 / Job 118849774945](https://github.com/dhar174/intelligent_data_detective/actions/runs/39486968503/job/118849774945) — **PASS** (`38 passed` anti-drift guard, `16 passed` error handling, `3 passed` scientific preflight kernel smoke, `12 passed` real-kernel notebook validation with SQLite present, `1 passed` real-kernel notebook validation with SQLite uninstalled).
+- **Linux Hosted CI (`.github/workflows/copilot-setup-steps.yml`, `ubuntu-latest`, Python 3.12.15):**
+  - [Run 39487032430 / Job 118850001634](https://github.com/dhar174/intelligent_data_detective/actions/runs/39487032430/job/118850001634) (and final post-format verification run on PR #169) — **PASS** (`695 passed, 3 skipped` unit/integration, `3 passed` scientific preflight kernel smoke, `12 passed` real-kernel notebook validation with SQLite present, `1 passed` real-kernel notebook validation with SQLite uninstalled, `105 passed` root regression, `17 passed` prompt templates, `16 passed` error handling, `black --check` and `flake8` clean).
 
 ---
 
@@ -180,8 +186,8 @@ To execute this validation in a genuine Google Colab runtime (Python 3.12):
 
 # Cell 2 in Google Colab: Install dependencies and register kernelspec
 !python -m pip install -q \
-  langchain langchain-core langchain-openai langchain_experimental \
-  langgraph langgraph-checkpoint-sqlite \
+  langchain langchain-core langchain-community langchain-openai langchain_experimental \
+  langgraph langgraph-checkpoint-sqlite langmem kagglehub \
   pandas numpy scipy scikit-learn matplotlib seaborn pydantic \
   python-dotenv pyyaml tiktoken openpyxl tavily-python chromadb joblib typing_extensions \
   xhtml2pdf pypdf pymupdf pillow markdown bleach \
@@ -203,3 +209,4 @@ To execute this validation in a genuine Google Colab runtime (Python 3.12):
 
 1. **Google Colab Live Runtime:** Cloned-repository execution on a hosted Google Colab VM remains `NOT EXECUTED` in automated CI because GitHub Actions cannot provision proprietary Google Colab runtimes without external credentials; the reproducible 4-cell procedure in Section 7 is ready for manual execution in Colab. Standalone single-file `.ipynb` Colab acquisition without a cloned repository is out of scope for Issue #164 and tracked separately under Issue #166.
 2. **No Paid LLM / Network Calls:** By design for Issue #164, LLM client instantiation Cells 11 and 49–55 and live end-to-end OpenAI inference (Cells 62+) are not executed in the no-key harness; live trajectory proof remains governed by `run_notebook_live.py`, `validate_run.py` (12/12), and `validate_artifact_quality.py` (9/9).
+
