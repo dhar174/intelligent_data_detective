@@ -9,7 +9,7 @@
 
 ## 🎯 Overview
 
-The Intelligent Data Detective is a sophisticated multi-agent system built with LangChain and LangGraph that revolutionizes the data analysis workflow. It combines the power of Large Language Models (LLMs) with specialized agents to perform comprehensive data analysis tasks autonomously.
+Intelligent Data Detective (IDD) is a multi-agent analytical workflow built with LangChain and LangGraph. It combines specialized LLM agents, executable data-science tools, shared state, memory, and independently checked report artifacts to automate much of the data investigation process.
 
 ### 🚀 What It Does
 
@@ -17,12 +17,22 @@ The Intelligent Data Detective is a sophisticated multi-agent system built with 
 - **📊 Exploratory Data Analysis (EDA)**: Performs comprehensive statistical analysis and pattern discovery
 - **🎨 Dynamic Visualization**: Creates relevant charts and graphs based on data insights
 - **📝 Intelligent Reporting**: Generates structured, narrative reports with explanations
-- **🤔 Chain-of-Thought Reasoning**: Provides transparent, step-by-step analytical reasoning
+- **🧭 Structured Planning and Progress**: Maintains observable plans, routing decisions, tool activity, and progress records
 - **🌐 Contextual Web Search**: Enriches analysis with relevant external information
 
 ### 💡 Key Innovation
 
-Unlike traditional data analysis tools, the Intelligent Data Detective uses **collaborative AI agents** that work together, each specializing in different aspects of the data analysis pipeline. This approach ensures thorough, consistent, and explainable results.
+IDD combines **specialized AI agents** with constrained LangGraph routing, parallel worker/join stages, structured contracts, memory and quality validators. These mechanisms make analytical work more inspectable; they are not by themselves a guarantee of factual correctness.
+
+### 📚 Full Feature Catalog and Current Status
+
+For the inventory of **40 analytical tools, 15 graph nodes, memory systems, development tooling, validation gates, innovations, limitations, and roadmap**, see **[FEATURES.md](FEATURES.md)**.
+
+**Current iteration (October 20, 2026):** CP4 is merged ([PR #163](https://github.com/dhar174/intelligent_data_detective/pull/163)). The v5 architecture uses a **99-cell runnable notebook, 70-field shared state and 15-node / 33-edge LangGraph**. The generated notebook imports canonical Python modules, protected by anti-drift guards.
+
+**Verification boundary:** no-key CI and structural checks have passed on the reviewed CP4 revision, but **fresh full post-CP4 production runs have not been certified**. The [cross-platform real-kernel matrix (#164)](https://github.com/dhar174/intelligent_data_detective/issues/164), [two-run CP5 proof (#165)](https://github.com/dhar174/intelligent_data_detective/issues/165), and [analytical fidelity benchmark (#167)](https://github.com/dhar174/intelligent_data_detective/issues/167) remain open.
+
+**Memory integration boundary:** the supported notebook has LangMem manage/search tools and some legacy in-notebook policy helpers, but it does not import the standalone memory-lifecycle or adaptive-retrieval modules. Direct LangMem writes do not imply uniform TTL/pruning enforcement, and setting `ADAPTIVE_RETRIEVAL_ENABLED=true` alone does not enable adaptive retrieval in the notebook. See [FEATURES.md](FEATURES.md#8-memory-retrieval-and-long-context-capabilities).
 
 ## 🏗️ Architecture
 
@@ -30,28 +40,26 @@ Unlike traditional data analysis tools, the Intelligent Data Detective uses **co
 
 ```mermaid
 flowchart LR
-    UI[🖥️ User Interface] --> Controller{🎯 Supervisor Agent}
-    Controller --> Cleaner[🧹 Data Cleaner Agent]
-    Controller --> Analyst[📊 Analyst Agent]
-    Controller --> Viz[🎨 Visualization Agent]
-    Controller --> Report[📝 Report Generator Agent]
-    
-    Cleaner -- Cleaned Data --> Analyst
-    Analyst -- Insights --> Viz
-    Viz -- Charts --> Report
-    Report -- Final Report --> UI
-    
-    subgraph "🔄 Workflow Orchestration"
-        Controller
-    end
-    
-    subgraph "🛠️ Processing Agents"
-        Cleaner
-        Analyst
-        Viz
-        Report
-    end
+    Input["Dataset + prompt"] --> Initial["Initial analysis"]
+    Initial --> Supervisor{"Supervisor"}
+    Supervisor --> Cleaner["Data cleaner"]
+    Cleaner --> Supervisor
+    Supervisor --> Analyst["Analyst"]
+    Analyst --> Supervisor
+    Supervisor --> Viz["Visualization planner"]
+    Viz --> Workers["Parallel viz workers"]
+    Workers --> VizJoin["Viz join"]
+    VizJoin --> VizEval["Viz evaluator"]
+    VizEval --> Supervisor
+    Supervisor --> Report["Report orchestrator"]
+    Report --> Sections["Parallel section workers"]
+    Sections --> ReportJoin["Report join"]
+    ReportJoin --> Packager["Report packager"]
+    Packager --> Writer["File writer"]
+    Writer --> Output["HTML · Markdown · PDF"]
 ```
+
+*Simplified main execution path. The actual graph has 15 nodes, 33 edges, conditional routes, emergency messaging and additional completion paths. See [FEATURES.md](FEATURES.md#2-multi-agent-runtime-and-graph-orchestration).*
 
 ### 🤖 Agent Roles & Responsibilities
 
@@ -110,19 +118,21 @@ flowchart LR
 
 ## ✨ Features
 
-### 🎯 **Core Features (Implemented)**
+### 🎯 **Core Features (Implemented in Code)**
+
+*Implemented capabilities may still require environment configuration or current-head live validation. See [FEATURES.md](FEATURES.md#1-capability-at-a-glance) for evidence-qualified status.*
 
 #### 🔄 **Automated Workflow Orchestration**
 - Intelligent task routing between specialized agents
 - State management with checkpointing and recovery
-- Memory persistence across analysis sessions
+- Checkpoint/store integration and memory retrieval (durability depends on the configured backend)
 - Real-time streaming updates during processing
 
-#### 🧠 **Advanced Chain-of-Thought Reasoning**
-- Transparent step-by-step analytical reasoning
-- Decision logging for reproducibility
-- Explainable AI approaches to data insights
-- Audit trail for all analytical decisions
+#### 🧠 **Structured Planning and Traceability**
+- Supervisor planning, replanning, and completion accounting
+- Structured routing, state updates, and agent/tool activity logs
+- Prompt and output contracts for inspectable results
+- Run and validator evidence for reproducibility, subject to proper capture
 
 #### 📈 **Comprehensive Data Analysis**
 - **Statistical Analysis**: Descriptive statistics, correlation matrices, hypothesis testing
@@ -132,17 +142,17 @@ flowchart LR
 
 #### 🎨 **Dynamic Visualization Generation**
 - **Adaptive Chart Selection**: Automatically chooses appropriate visualization types
-- **Interactive Elements**: Base64-encoded images for web integration
+- **Preview Support**: Base64-encoded images for embedding and preview in reports
 - **Custom Styling**: Configurable themes and color schemes
-- **Multi-format Output**: PNG, SVG, and interactive plot support
+- **Figure Outputs**: PNG artifacts and embedded visualizations for generated reports
 
 #### 🌐 **Contextual Intelligence**
 - **Web Search Integration**: Tavily API for external context and domain knowledge
 - **Domain-Specific Insights**: Retrieval of relevant best practices and guidelines
-- **Historical Learning**: Memory of past analysis patterns and decisions
+- **Contextual Memory**: Agent-scoped LangMem tools and notebook retrieval helpers; advanced lifecycle and adaptive modules are not uniformly wired into production
 
 #### 📊 **Flexible Data Handling**
-- **Multiple Format Support**: CSV, JSON, Excel file processing
+- **Multiple Format Support**: CSV/JSON multi-file import, CSV/JSON/Parquet/trusted Pickle registry reload, and CSV/Excel/JSON/Parquet export
 - **Large Dataset Optimization**: Efficient memory management and processing
 - **Data Registry System**: Centralized DataFrame management with LRU caching
 - **Merge and Join Operations**: Multi-dataset analysis capabilities
@@ -170,10 +180,10 @@ flowchart LR
 ## 🛠️ Technology Stack
 
 ### **Core Framework**
-- **Python 3.10+**: Primary programming language
+- **Python 3.10+**: Documented project stack baseline; Python 3.12+ is recommended for the maintained validation toolchain
 - **LangChain**: LLM application framework and tool integration
 - **LangGraph**: Multi-agent workflow orchestration
-- **OpenAI GPT-4**: Primary language model for reasoning and analysis
+- **OpenAI Responses API**: v5 notebook model-role configuration uses GPT-5 mini/nano; an optional local OpenAI-compatible pathway exists but is not fully cross-provider validated
 
 ### **Data Processing & Analysis**
 - **pandas**: Data manipulation and analysis
@@ -190,7 +200,7 @@ flowchart LR
 ### **Integration & Storage**
 - **Tavily API**: Web search and external context retrieval
 - **FAISS/Chroma**: Vector database for RAG implementations (future)
-- **Memory Persistence**: LangGraph's built-in state management
+- **Memory and Checkpointing**: LangGraph store/checkpoint interfaces; persistence depends on the configured backend
 - **File I/O**: Multiple format support (CSV, JSON, Excel)
 
 ### **Development & Deployment**
@@ -203,7 +213,7 @@ flowchart LR
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.10 or higher is the documented project baseline. **Use Python 3.12+ for the maintained full validation workflow** (`validate_run.py` explicitly targets Python 3.12+); Python 3.10/3.11 are not certified for the latest full post-CP4 proof.
 - OpenAI API key
 - Tavily API key (optional, for web search features)
 
@@ -231,18 +241,20 @@ flowchart LR
 
 ### 📊 Basic Usage
 
-#### Running the W14 patched notebook (Recommended)
+#### Running the canonical v5 patched notebook
 
-The current completion baseline is the committed patched notebook:
+The current supported execution target is the committed, patcher-generated notebook:
 `IntelligentDataDetective_beta_v5_patched.ipynb`.
 
-The proof run `IDD_run_run_default_id-20260504-1338-b3079aea` completed on the deterministic `retail_orders` dataset with:
+**Historical proof, not current-head certification:** the May 4, 2026 W14 run `IDD_run_run_default_id-20260504-1338-b3079aea` completed on the deterministic `retail_orders` dataset with:
 - `validate_run.py` score **12/12**
 - `validate_artifact_quality.py` score **9/9**
 - native structured-output markers for all major nodes
 - 3/3 visualization fan-in
 - canonical `final_report.html`, `final_report.md`, and `final_report.pdf`
 - no recovery/final-hop/path-normalization warnings and no marker `.txt` artifacts
+
+That run predates the October 20 CP4 merge. A different September 29 run scored **5/12**, and the current merged revision still requires [CP5 proof (#165)](https://github.com/dhar174/intelligent_data_detective/issues/165). Do not treat historical scores as current acceptance.
 
 1. **Run the patched notebook through the live runner**:
    ```bash
@@ -261,9 +273,11 @@ The proof run `IDD_run_run_default_id-20260504-1338-b3079aea` completed on the d
 3. **Run no-key regression checks before expensive notebook proofs**:
    ```bash
    python -m pytest test_validate_run.py tests/unit tests/integration -q
+   python -m pytest tests/unit/test_core_parity_guard.py -q
+   python -m pytest test_error_handling_framework.py -q
    python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
    ```
-   These checks verify validator behavior, the committed W14 patched notebook markers, and the importable no-key core without requiring API credentials.
+   These checks verify validator behavior, canonical notebook/runtime parity, tool error handling, and the no-key core without requiring API credentials. They do not replace full live notebook proof. The optional scientific-kernel smoke test and `run_notebook_live.py --preflight` check scientific imports and installation-flag propagation only: **they do not install packages or run notebook cells**. See [#164](https://github.com/dhar174/intelligent_data_detective/issues/164) for the outstanding effective-notebook kernel matrix.
 
 4. **Regenerate the patched notebook after notebook behavior changes**:
    ```bash
@@ -410,6 +424,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support & Contact
 
+- **Feature inventory**: [FEATURES.md](FEATURES.md) covers current capabilities, tools, architecture, innovations, verification, and roadmap
 - **Documentation**: Check out our [detailed documentation](IntelligentDataDetective_Documentation.md)
 - **Technical Specification**: See our [comprehensive tech spec](Project_Tech_Spec_Intelligent_Data_Detective.md)
 - **Issues**: Report bugs and request features via [GitHub Issues](https://github.com/dhar174/intelligent_data_detective/issues)
