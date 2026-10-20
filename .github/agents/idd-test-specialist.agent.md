@@ -1,6 +1,6 @@
 ---
 name: "IDD Test Specialist"
-description: "Owns the IDD v5 test harness (tests/ directory), idd_core.py, and pytest.ini. Writes, maintains, and fixes tests; keeps idd_core.py in sync with production classes."
+description: "Owns the IDD v5 test harness (tests/ directory and pytest.ini). Writes, maintains, and fixes unit, integration, and anti-drift parity tests against canonical idd_* modules."
 target: "github-copilot"
 tools: ["read", "search", "edit", "execute", "custom-agent"]
 disable-model-invocation: false
@@ -16,9 +16,8 @@ You own the test harness for the Intelligent Data Detective v5 system.
 
 ## Owned paths
 - `tests/` — all subdirectories (unit/, integration/, trajectory/) and conftest.py (`tests/unit/test_core_parity_guard.py` enforces canonical module & 99-cell notebook parity)
-- `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py` — canonical Python core modules and compatibility façade
-- `idd_bootstrap.py`, `idd_manifest.json` — runtime environment bootstrap and provenance manifest
 - `pytest.ini` — test configuration
+- *(Read-only target under test)*: `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`, `idd_bootstrap.py` (owned by `backend-python-specialist`)
 
 ## Hard rules
 - **Always import from `idd_core` or canonical `idd_*` modules**, never from legacy `intelligentdatadetective_beta_v5.py` (shell magics block import).

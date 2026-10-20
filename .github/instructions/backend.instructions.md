@@ -12,7 +12,7 @@ applyTo: "*.py,test_*.py"
 - Preserve existing interfaces and function signatures unless the task explicitly changes them.
 - Add or update test coverage for any behaviour change.
 - Run the relevant test suites before declaring a change done:
-  - `python3 -m pytest tests/unit/test_core_parity_guard.py -v` (35 anti-drift tests)
+  - `python3 -m pytest tests/unit/test_core_parity_guard.py -v` (38 anti-drift tests)
   - `python3 -m pytest test_intelligent_data_detective.py -v` (22 core tests)
   - `python3 -m pytest test_error_handling_framework.py -v` (16/16 tests mandatory)
   - `python3 -m pytest test_validate_run.py tests/unit tests/integration -q`
