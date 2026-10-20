@@ -1,7 +1,7 @@
 # 🕵️ Intelligent Data Detective
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![LangChain](https://img.shields.io/badge/LangChain-🦜🔗-green.svg)](https://python.langchain.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-🕸️-orange.svg)](https://langchain-ai.github.io/langgraph/)
 
@@ -31,6 +31,8 @@ For the inventory of **40 analytical tools, 15 graph nodes, memory systems, deve
 **Current iteration (October 20, 2026):** CP4 is merged ([PR #163](https://github.com/dhar174/intelligent_data_detective/pull/163)). The v5 architecture uses a **99-cell runnable notebook, 70-field shared state and 15-node / 33-edge LangGraph**. The generated notebook imports canonical Python modules, protected by anti-drift guards.
 
 **Verification boundary:** no-key CI and structural checks have passed on the reviewed CP4 revision, but **fresh full post-CP4 production runs have not been certified**. The [cross-platform real-kernel matrix (#164)](https://github.com/dhar174/intelligent_data_detective/issues/164), [two-run CP5 proof (#165)](https://github.com/dhar174/intelligent_data_detective/issues/165), and [analytical fidelity benchmark (#167)](https://github.com/dhar174/intelligent_data_detective/issues/167) remain open.
+
+**Memory integration boundary:** the supported notebook has LangMem manage/search tools and some legacy in-notebook policy helpers, but it does not import the standalone memory-lifecycle or adaptive-retrieval modules. Direct LangMem writes do not imply uniform TTL/pruning enforcement, and setting `ADAPTIVE_RETRIEVAL_ENABLED=true` alone does not enable adaptive retrieval in the notebook. See [FEATURES.md](FEATURES.md#8-memory-retrieval-and-long-context-capabilities).
 
 ## 🏗️ Architecture
 
@@ -147,7 +149,7 @@ flowchart LR
 #### 🌐 **Contextual Intelligence**
 - **Web Search Integration**: Tavily API for external context and domain knowledge
 - **Domain-Specific Insights**: Retrieval of relevant best practices and guidelines
-- **Historical Learning**: Memory of past analysis patterns and decisions
+- **Contextual Memory**: Agent-scoped LangMem tools and notebook retrieval helpers; advanced lifecycle and adaptive modules are not uniformly wired into production
 
 #### 📊 **Flexible Data Handling**
 - **Multiple Format Support**: CSV/JSON multi-file import, CSV/JSON/Parquet/trusted Pickle registry reload, and CSV/Excel/JSON/Parquet export
@@ -178,7 +180,7 @@ flowchart LR
 ## 🛠️ Technology Stack
 
 ### **Core Framework**
-- **Python 3.12+**: Recommended maintained notebook/validation environment
+- **Python 3.10+**: Documented project stack baseline; Python 3.12+ is recommended for the maintained validation toolchain
 - **LangChain**: LLM application framework and tool integration
 - **LangGraph**: Multi-agent workflow orchestration
 - **OpenAI Responses API**: v5 notebook model-role configuration uses GPT-5 mini/nano; an optional local OpenAI-compatible pathway exists but is not fully cross-provider validated
@@ -211,7 +213,7 @@ flowchart LR
 
 ### Prerequisites
 
-- Python 3.12 or higher for the maintained validation scripts and notebook workflow
+- Python 3.10 or higher is the documented project baseline. **Use Python 3.12+ for the maintained full validation workflow** (`validate_run.py` explicitly targets Python 3.12+); Python 3.10/3.11 are not certified for the latest full post-CP4 proof.
 - OpenAI API key
 - Tavily API key (optional, for web search features)
 
@@ -275,7 +277,7 @@ That run predates the October 20 CP4 merge. A different September 29 run scored 
    python -m pytest test_error_handling_framework.py -q
    python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
    ```
-   These checks verify validator behavior, canonical notebook/runtime parity, tool error handling, and the no-key core without requiring API credentials. They do not replace full live notebook proof.
+   These checks verify validator behavior, canonical notebook/runtime parity, tool error handling, and the no-key core without requiring API credentials. They do not replace full live notebook proof. The optional scientific-kernel smoke test and `run_notebook_live.py --preflight` check scientific imports and installation-flag propagation only: **they do not install packages or run notebook cells**. See [#164](https://github.com/dhar174/intelligent_data_detective/issues/164) for the outstanding effective-notebook kernel matrix.
 
 4. **Regenerate the patched notebook after notebook behavior changes**:
    ```bash
