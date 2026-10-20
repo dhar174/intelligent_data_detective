@@ -2038,7 +2038,9 @@ assert data_detective_graph is _orig_graph, "Negative control caught Cell 96 ove
             )
         message = re.sub(r"\x1b\[[0-9;]*m", "", str(exc_info.value))
         if mutation == "replace_put_writes_with_pass":
-            assert "Migrated history differs from source history" in message, message[-2000:]
+            assert "Migrated history differs from source history" in message, message[
+                -2000:
+            ]
         elif idx == 94:
             # Seeded-history gate: zero migrated checkpoints vs N seeded.
             assert re.search(r"AssertionError: \(0, \d+\)", message), message[-2000:]
