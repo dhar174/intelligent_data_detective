@@ -54,7 +54,6 @@ import idd_registry
 import idd_state
 import idd_tools
 
-
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -451,7 +450,12 @@ class TestStaticNotebookParity:
         assert "# PATCH: CP4-CELL94-GUARD" in src
         assert "except (ImportError, ModuleNotFoundError)" in src
         assert "checkpoints_demo.sqlite" in src
-        assert "_FIX_U_SKIP_NONE_WRITER" in src
+        # Issue #164: lossless checkpoint-level migration replaces the legacy update_state()
+        # replay that skipped every snapshot lacking metadata["writes"].
+        assert "# PATCH: ISSUE164-CELL94-LOSSLESS-MIGRATE" in src
+        assert "dst_cp.put(" in src and "dst_cp.put_writes(" in src
+        assert "update_state(" not in src
+        assert "_migrated_checkpoint_count = migrate_thread(" in src
 
     def test_cell_96_restored_graph_no_overwrite_and_closes_conn(
         self, notebook: Dict[str, Any]
@@ -461,6 +465,11 @@ class TestStaticNotebookParity:
         assert "# PATCH: CP4-CELL96-RECONCILE" in src
         assert "checkpoints_demo.sqlite" in src
         assert "_restore_conn.close()" in src
+        # Issue #164: restored state is read while the backing connection is still open.
+        assert "# PATCH: ISSUE164-CELL96-VERIFIED-RESTORE" in src
+        assert src.index("_restored_graph.get_state(") < src.index(
+            "_restore_conn.close()"
+        )
         assert_notebook_static_parity(notebook)
 
     def test_zero_shadowing_across_all_99_cells(self, notebook: Dict[str, Any]):

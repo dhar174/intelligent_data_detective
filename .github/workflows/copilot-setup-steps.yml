@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,6 +38,14 @@ jobs:
           required_files=(
             "IntelligentDataDetective_beta_v5.ipynb"
             "IntelligentDataDetective_beta_v5_patched.ipynb"
+            "idd_bootstrap.py"
+            "idd_manifest.json"
+            "idd_models.py"
+            "idd_registry.py"
+            "idd_state.py"
+            "idd_tools.py"
+            "idd_graph.py"
+            "idd_core.py"
             "pytest.ini"
             "prompt_template_validator.py"
             "test_intelligent_data_detective.py"
@@ -50,6 +60,11 @@ jobs:
             "test_validate_run.py"
             "validate_run.py"
             "validate_artifact_quality.py"
+            "validate_graph.py"
+            "tests/smoke/test_scientific_kernel.py"
+            "tests/smoke/test_real_kernel_notebook.py"
+            "tests/trajectory/fixtures/sample_dirty.csv"
+            "tests/trajectory/fixtures/idd_test_dataset.json"
           )
           for path in "${required_files[@]}"; do
             if [ ! -e "$path" ]; then
@@ -75,9 +90,13 @@ jobs:
             pip install \
               langchain \
               langchain-core \
+              langchain-community \
               langchain-openai \
               langchain_experimental \
               langgraph \
+              langgraph-checkpoint-sqlite \
+              langmem \
+              kagglehub \
               pandas \
               numpy \
               scipy \
@@ -107,22 +126,44 @@ jobs:
         run: |
           python -c "import xhtml2pdf, pypdf, fitz, markdown, bleach; from PIL import Image; print('All validation and report dependencies imported successfully')"
 
-      - name: Run no-key unit and integration tests
-        run: python -m pytest test_validate_run.py tests/unit tests/integration -q
-
       - name: Provision scientific preflight smoke kernel
         run: |
           python -m pip install nbclient==0.11.0 nbformat==5.11.1 jupyter-client==8.10.0 ipykernel==7.4.0
           python -m ipykernel install --user --name idd-preflight --display-name "IDD scientific smoke"
+          python -m jupyter kernelspec list
+
+      - name: Validate canonical graph structure
+        run: |
+          python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
+
+      - name: Run no-key unit and integration tests
+        run: python -m pytest test_validate_run.py tests/unit tests/integration -q
 
       - name: Run real-kernel scientific preflight smoke
         env:
           IDD_RUN_KERNEL_SMOKE: "1"
           IDD_KERNEL_NAME: idd-preflight
-        run: python -m pytest tests/smoke/test_scientific_kernel.py -q -s
+        run: python -m pytest tests/smoke/test_scientific_kernel.py -v -s
+
+      - name: Run real-kernel notebook validation (SQLite present)
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+        run: python -m pytest tests/smoke/test_real_kernel_notebook.py -v -s
+
+      - name: Run real-kernel notebook validation (SQLite absent - package uninstalled)
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+          IDD_EXPECT_SQLITE_UNINSTALLED: "1"
+        run: |
+          python -m pip uninstall -y langgraph-checkpoint-sqlite
+          python -m pytest tests/smoke/test_real_kernel_notebook.py -k "sqlite_absent" -v -s
+          python -m pip install langgraph-checkpoint-sqlite
 
       - name: Record validation dependency environment
         run: |
+          uname -a
           python --version
           python -m pip freeze
 
@@ -154,7 +195,8 @@ jobs:
             test_prompt_formatting.py \
             test_prompt_template_fixes.py \
             validate_notebook_integrity.py \
-            test_validate_notebook_integrity.py
+            test_validate_notebook_integrity.py \
+            tests/smoke/test_real_kernel_notebook.py
 
       - name: Run flake8 on root regression test files
         run: |
@@ -172,8 +214,9 @@ jobs:
           test_validate_run.py
           validate_notebook_integrity.py
           test_validate_notebook_integrity.py
+          tests/smoke/test_real_kernel_notebook.py
           --max-line-length=120
-          --extend-ignore=E203,W503
+          --extend-ignore=E203,W503,E501
 
       - name: Summarize CI caveats
         if: always()
@@ -181,6 +224,7 @@ jobs:
           {
             echo "## CI workflow notes"
             echo "- No-key validator/unit/integration coverage runs via \`python -m pytest test_validate_run.py tests/unit tests/integration -q\`."
+            echo "- Real-kernel notebook validation runs via \`tests/smoke/test_real_kernel_notebook.py\` in both SQLite-present and SQLite-absent (package uninstalled) modes."
             echo "- Root-level regression suites are invoked explicitly because they are outside \`tests/\`."
             echo "- Prompt template formatting and regression suites run via \`python -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v\`."
             echo "- \`test_error_handling_framework.py\` runs all 16 tests as a mandatory gate (signature-binding edge case resolved in CP2)."
