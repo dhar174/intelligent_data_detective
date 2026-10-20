@@ -5218,6 +5218,7 @@ def _compile_generated_delete_rows(notebook, registry):
         "List": List,
         "Dict": Dict,
         "global_df_registry": registry,
+        "get_global_df_registry": lambda: registry,
         "_tool_error": _tool_error,
     }
     exec(code, ns)
