@@ -1,0 +1,50 @@
+{
+  "examples": [
+    {
+      "inputs": {
+        "csv_path": "tests/trajectory/fixtures/sample_dirty.csv",
+        "question": "What are the key patterns and anomalies in this dataset? Clean it, analyze it, and generate a report."
+      },
+      "outputs": {
+        "expected_agents_visited": ["initial_analysis", "data_cleaner", "analyst"],
+        "report_created": true,
+        "emergency_triggered": false,
+        "state_flags": {
+          "initial_analysis_complete": true,
+          "data_cleaning_complete": true,
+          "analyst_complete": true
+        }
+      },
+      "metadata": {
+        "difficulty": "basic",
+        "expected_duration_seconds": 300,
+        "expected_tools": ["get_dataframe_schema", "get_column_names"],
+        "dataset_rows": 53,
+        "dataset_cols": 5,
+        "known_issues": ["missing_values", "duplicates"]
+      }
+    },
+    {
+      "inputs": {
+        "csv_path": "tests/trajectory/fixtures/sample_dirty.csv",
+        "question": "Show me a histogram of the value column and a bar chart of category counts."
+      },
+      "outputs": {
+        "expected_agents_visited": ["initial_analysis", "data_cleaner", "visualization"],
+        "report_created": false,
+        "emergency_triggered": false,
+        "state_flags": {
+          "initial_analysis_complete": true,
+          "visualization_complete": true
+        }
+      },
+      "metadata": {
+        "difficulty": "basic",
+        "expected_duration_seconds": 240,
+        "expected_tools": ["generate_visualization"],
+        "dataset_rows": 53,
+        "dataset_cols": 5
+      }
+    }
+  ]
+}
