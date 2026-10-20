@@ -19,8 +19,9 @@ This file is the maintained **feature and tooling catalog**. For an introduction
 | Analytics | Data profiling, data-quality operations, statistics, basic ML, user-directed Python execution | Tool inventory below |
 | Figures | Histogram, scatter, heatmap, box and violin plotting; parallel workers; feedback | Plotting functions and visualization graph nodes |
 | Reports | HTML, Markdown and PDF; report outline, section fan-out, join and packaging | Historical successful W14 proof; current-head live proof pending |
-| Memory | Categorized semantic memory, lifecycle policies, configurable rankings | `memory_enhancements.py`; store durability depends on backend |
-| Adaptive retrieval | Agent/phase-specific retrieval with token budgeting | `adaptive_retrieval.py`; **disabled by default** |
+| Runtime memory | LangMem tools, scoped memory namespaces, in-process indexed store and selected notebook-local retrieval helpers | The notebook does **not** import the standalone lifecycle or adaptive retrieval modules; retention enforcement is not uniform |
+| Standalone memory policies | Six-category TTL, ranking and pruning implementation | `memory_enhancements.py` / `memory_config.yaml` plus related legacy notebook helpers; not a globally enforced rule for every runtime memory write |
+| Adaptive retrieval | Agent/phase-specific token-aware retrieval implemented in separate modules | `adaptive_retrieval.py` / `adaptive_integration.py` are **not wired into the supported notebook**; the feature flag alone has no notebook effect |
 | Model support | OpenAI Responses API model configurations; optional local OpenAI-compatible model path | Model-specific adapters exist; universal provider compatibility not certified |
 | Engineering correctness | Canonical imports, SHA-256 manifest, no-key regression suites, anti-drift tests | CP4 merged; hosted head CI reviewed |
 | Full production quality | **Not yet established for the current post-CP4 revision** | [#164](https://github.com/dhar174/intelligent_data_detective/issues/164), [#165](https://github.com/dhar174/intelligent_data_detective/issues/165), [#167](https://github.com/dhar174/intelligent_data_detective/issues/167) |
@@ -31,6 +32,7 @@ This file is the maintained **feature and tooling catalog**. For an introduction
 - **Validated (no-key):** checked by automated offline, mocked, structural, or actual-kernel preflight tests without paid model inference.
 - **Historically proven:** demonstrated on an earlier notebook/revision but **not** a pass claim for current `main`.
 - **Opt-in / experimental:** implemented behind a switch or an alternate configuration; broader compatibility is not guaranteed.
+- **Standalone / not runtime-integrated:** a module or demonstration exists, but the supported patched notebook does not invoke it automatically.
 - **Planned / unproven:** an issue, design or future direction, not a current shipped product capability.
 
 ## 2. Multi-agent runtime and graph orchestration
@@ -193,11 +195,17 @@ Separate tool/middleware helpers include `create_manage_memory_tool`, `create_se
 
 ## 8. Memory, retrieval, and long-context capabilities
 
-### Memory categorization and lifecycle
+### Memory actually wired into the supported notebook
 
-`memory_enhancements.py` introduces six namespaces:
+The patched v5 notebook configures a LangGraph `InMemoryStore` (with an embedding index where available) and adds LangMem `create_manage_memory_tool` / `create_search_memory_tool` to specialist tool lists. Agent-specific namespaces include `("memories", "cleaning")`, `("memories", "initial_description")`, `("memories", "analysis")`, `("memories", "reports")`, `("memories", "files")`, and `("memories", "visualization")`.
 
-| Kind | Typical content | Configured TTL |
+The notebook also retains **legacy/inlined** `MemoryPolicyEngine`, `retrieve_memories`, `put_memory`, `enhanced_retrieve_mem`, `enhanced_mem_text` and `update_memory_with_kind` helper code. Some agent-node prompts and supervisor operations call these helpers, and their policy path can consult `memory_config.yaml` for supported kinds. However, **the notebook does not import `memory_enhancements.py`**, and the direct LangMem manage/search tools are **not universally routed through these helpers**. Therefore, notebook-wide TTL expiration, ranking weights, pruning and six-kind policy compliance **must not be claimed as uniformly enforced runtime features**. The legacy/inlined behavior has not been freshly certified end-to-end on the post-CP4 revision.
+
+### Standalone memory categorization and lifecycle engine
+
+The separately maintained `memory_enhancements.py` module defines an explicit six-kind policy layer:
+
+| Kind | Intended content | Configured policy TTL (not a notebook-wide guarantee) |
 | --- | --- | --- |
 | `conversation` | User prompts and exchanges | 3 days |
 | `analysis` | Statistics and analysis results | 14 days |
@@ -206,10 +214,10 @@ Separate tool/middleware helpers include `create_manage_memory_tool`, `create_se
 | `insights` | Consolidated findings | 21 days |
 | `errors` | Failure modes and troubleshooting records | 7 days |
 
-Policies are configured in `memory_config.yaml` and provide:
+`memory_config.yaml` configures policy-engine behavior, including:
 
 - Namespace-aware writes and filtered retrieval.
-- Importance and relevance scoring, recency decay and usage weighting.
+- Importance/relevance scoring, recency decay and usage weighting.
 - TTL-based, size-based and importance-based pruning.
 - Near-duplicate/superseded memory handling.
 - Per-kind and global retention limits.
@@ -217,11 +225,11 @@ Policies are configured in `memory_config.yaml` and provide:
 - Compatibility fallback to older generic/user namespaces.
 - Embedding-based lookup when an indexed store is configured.
 
-The default ranking weights are **similarity 0.55, importance 0.25, recency 0.15, usage 0.05**. These values are configurable, not empirically optimized guarantees.
+The policy's default ranking weights are **similarity 0.55, importance 0.25, recency 0.15, usage 0.05**. These are values of the policy implementation, **not universal defaults for every direct LangMem tool call**.
 
-### Adaptive context retrieval (opt-in)
+### Adaptive context retrieval (standalone; not notebook-integrated)
 
-`adaptive_retrieval.py` and `adaptive_integration.py` add:
+`adaptive_retrieval.py` and `adaptive_integration.py` implement:
 
 - Per-agent retrieval profiles, memory categories and target item counts.
 - Exploration/analysis/reporting phase overrides.
@@ -231,7 +239,7 @@ The default ranking weights are **similarity 0.55, importance 0.25, recency 0.15
 - Heuristic token estimation, diagnostic metrics and legacy fallback.
 - Specialized wrappers for initial analysis, data cleaning, analysis, visualization, reporting, file writing and supervision.
 
-**Default:** `ADAPTIVE_RETRIEVAL_ENABLED=false` unless explicitly enabled. Do not describe its benefits as measured in every standard run.
+**Integration boundary:** neither the supported patched notebook nor `_patch_notebook.py` invokes/imports these modules. Setting `ADAPTIVE_RETRIEVAL_ENABLED=true` **does not activate adaptive retrieval in the supported notebook**; it only controls code paths that explicitly call the standalone integration module. Connecting it to the production agent nodes and proving actual token-budget behavior requires separate implementation and verification.
 
 ### Embeddings and history controls
 
@@ -297,11 +305,13 @@ The manifest establishes byte consistency against known expectations. A co-distr
 | `tests/unit/test_core_parity_guard.py` | Canonical identity, notebook anti-drift, bootstrap and negative-control tests |
 | `tools/diagnostics/reproduce_drift.py` | Reproducible checks for known notebook/core drift findings |
 | `run_notebook_live.py` | Headless Jupyter execution, optional resume, logs and artifacts |
-| `tests/smoke/test_scientific_kernel.py` | Opt-in real scientific-kernel import/install preflight |
+| `tests/smoke/test_scientific_kernel.py` | Opt-in selected-kernel scientific import probe and `IDD_SKIP_NOTEBOOK_INSTALLS` environment-variable inheritance check; **does not install packages or execute notebook cells** |
 | `validate_run.py` | Twelve-point execution + artifact completeness gate |
 | `validate_artifact_quality.py` | Nine-point document usability/artifact gate |
 | `validate_report_quality.py` | Rejects scaffold prose, inappropriate dumps and missing report-agent evidence |
 | `pytest` suites / GitHub Actions | No-key unit/integration/regression checks and linting |
+
+**Preflight boundary:** `run_notebook_live.py --preflight` and the kernel smoke test check scientific imports and the install-flag value in a child Jupyter kernel only. They do **not** install dependencies, construct or execute the notebook's graph, call an LLM, or prove report output. Actual effective-notebook, cross-platform no-key execution is the separate acceptance work in [#164](https://github.com/dhar174/intelligent_data_detective/issues/164).
 
 ### 12-point production acceptance
 
@@ -381,7 +391,7 @@ The most compelling project-level contributions are combinations of already esta
 
 1. **Constrained autonomy:** LLM-guided supervisor decisions within a deterministic, type-checked LangGraph topology.
 2. **Parallel but synchronized analytical production:** concurrent figure and report writers with explicit fan-in and reducer behavior.
-3. **Memory tailored to task role:** policy-driven namespace selection, ranking and optional token-aware adaptive retrieval.
+3. **Memory-aware agent specialization:** runtime agents receive scoped LangMem tools and selected notebook-local retrieval helpers; standalone lifecycle-policy and adaptive context-selection modules provide additional design work **not yet comprehensively integrated** into the supported notebook.
 4. **Canonical data ownership:** registry-held DataFrames, context-local overrides, multi-format backing and controlled tool access.
 5. **Typed handoffs and progress:** plans, tasks, structured insights and validation-rich agent-to-agent state transitions.
 6. **Anti-Potemkin validation:** detect a completed workflow that produced hollow text, duplicate visuals or placeholder artifacts.
@@ -398,7 +408,8 @@ These are IDD architectural differentiators, **not** claims that any individual 
 | Linux/Windows/cloned-Colab real-kernel compatibility matrix | **Pending** [#164](https://github.com/dhar174/intelligent_data_detective/issues/164) |
 | Ground-truth numerically faithful analysis/reports | **Unproven; benchmark proposed** [#167](https://github.com/dhar174/intelligent_data_detective/issues/167) |
 | Standalone Colab with immutable external trust anchor | **Decision pending** [#166](https://github.com/dhar174/intelligent_data_detective/issues/166) |
-| Adaptive memory retrieval | **Implemented, opt-in/off by default** |
+| Adaptive memory retrieval | **Standalone implementation only**; feature flag alone has no effect on the supported notebook, and runtime wiring/proof remain open |
+| Notebook-wide memory TTL/ranking/pruning | **Not established**; some legacy notebook helpers have policy logic, but direct LangMem tools do not uniformly enforce it |
 | Local OpenAI-compatible LLM endpoint | **Optional/experimental; cross-provider proof missing** |
 | Durable cross-process memory/RAG service | **Not productionized**; in-memory/embedding foundations exist |
 | Interactive dashboard and chart drill-down | **Roadmap** |
@@ -424,8 +435,9 @@ These are IDD architectural differentiators, **not** claims that any individual 
 - **Dataset management:** [`idd_registry.py`](idd_registry.py)
 - **Tool error/path contracts:** [`idd_tools.py`](idd_tools.py)
 - **Bootstrap/manifest:** [`idd_bootstrap.py`](idd_bootstrap.py) and [`idd_manifest.json`](idd_manifest.json)
-- **Memory:** [`memory_enhancements.py`](memory_enhancements.py), [`memory_config.yaml`](memory_config.yaml)
-- **Adaptive retrieval:** [`adaptive_retrieval.py`](adaptive_retrieval.py), [`adaptive_memory_config.yaml`](adaptive_memory_config.yaml)
+- **Notebook memory:** [source notebook](IntelligentDataDetective_beta_v5.ipynb) and [generated notebook](IntelligentDataDetective_beta_v5_patched.ipynb) (LangMem tool wiring and legacy/inlined helpers)
+- **Standalone memory lifecycle module:** [`memory_enhancements.py`](memory_enhancements.py), [`memory_config.yaml`](memory_config.yaml)
+- **Standalone adaptive retrieval (not runtime-wired):** [`adaptive_retrieval.py`](adaptive_retrieval.py), [`adaptive_integration.py`](adaptive_integration.py), [`adaptive_memory_config.yaml`](adaptive_memory_config.yaml)
 - **Report quality:** [`validate_run.py`](validate_run.py), [`validate_artifact_quality.py`](validate_artifact_quality.py), [`validate_report_quality.py`](validate_report_quality.py)
 - **Engineering plan:** [`docs/plans/idd-canonical-core-migration.md`](docs/plans/idd-canonical-core-migration.md)
 - **Review/evidence:** [PR #163](https://github.com/dhar174/intelligent_data_detective/pull/163), [#140](https://github.com/dhar174/intelligent_data_detective/issues/140), [#164](https://github.com/dhar174/intelligent_data_detective/issues/164), [#165](https://github.com/dhar174/intelligent_data_detective/issues/165), [#166](https://github.com/dhar174/intelligent_data_detective/issues/166), [#167](https://github.com/dhar174/intelligent_data_detective/issues/167)
