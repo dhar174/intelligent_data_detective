@@ -183,12 +183,18 @@ _cp_conn.execute('CREATE TABLE sentinel (value INTEGER)')
 _cp_conn.execute('INSERT INTO sentinel VALUES (42)')
 _cp_conn.commit()
 data_detective_graph = build_graph(structural_only=True, checkpointer=SqliteSaver(_cp_conn))
+run_config = {{'configurable': {{'thread_id': 'synthetic-observer-state'}}}}
+data_detective_graph.update_state(run_config, {{'user_prompt': 'synthetic only'}}, as_node='initial_analysis')
+before_state = data_detective_graph.get_state(run_config)
+before_config = __import__('copy').deepcopy(run_config)
 before_changes = _cp_conn.total_changes
 before_nodes = tuple(data_detective_graph.builder.nodes)
 """
     verify = """
 assert before_changes == _cp_conn.total_changes
 assert before_nodes == tuple(data_detective_graph.builder.nodes)
+assert before_config == run_config
+assert before_state == data_detective_graph.get_state(run_config)
 assert _cp_conn.execute('SELECT value FROM sentinel').fetchall() == [(42,)]
 data_detective_graph = object()
 """
