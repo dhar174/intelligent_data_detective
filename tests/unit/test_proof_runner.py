@@ -1,6 +1,7 @@
 """CP5-A regressions: proof setup must fail before any analytical execution."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -155,24 +156,12 @@ def test_first_failure_survives_secondary_evidence_failure(tmp_path, monkeypatch
     "damage",
     ["multiple_runs", "wrong_run", "multiple_reports", "foreign_log", "outside_link"],
 )
-def test_association_refuses_ambiguity(tmp_path, damage):
-    proof = proof_module()
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    run_id = "run_default_id-20261020-1234-01234567"
-    run = workspace / "IDD_results" / ("IDD_run_" + run_id)
+def test_association_refuses_ambiguity(associated_attempt, tmp_path, damage):
+    proof, workspace, directory, observations, run, execution = associated_attempt
+    run_id = observations["runtime"]["run_id"]
     reports = run / "artifacts" / run_id / "reports"
-    reports.mkdir(parents=True)
     (reports / "final_report.html").write_text("<p>test</p>")
     log = workspace / "notebook_run_log.txt"
-    log.write_text("12:34:56 [INFO] FINAL viz=True report=True\n")
-    observations = {
-        "runtime": {
-            "run_id": run_id,
-            "thread_id": "thread-test",
-            "displayed_stream_identifier": run_id,
-        }
-    }
     if damage == "multiple_runs":
         (run.parent / "IDD_run_other").mkdir()
     elif damage == "wrong_run":
@@ -186,8 +175,15 @@ def test_association_refuses_ambiguity(tmp_path, damage):
             (run / "outside").symlink_to(tmp_path / "outside")
         except OSError:
             pytest.skip("symlink creation unavailable")
-    with pytest.raises(proof.ProofError, match="ASSOCIATION"):
-        proof.associate_outputs(workspace, observations)
+    expected = {
+        "multiple_runs": "ASSOCIATION_RUN_AMBIGUOUS",
+        "wrong_run": "ASSOCIATION_RUN_AMBIGUOUS",
+        "multiple_reports": "ASSOCIATION_REPORT_AMBIGUOUS",
+        "foreign_log": "ASSOCIATION_FOREIGN_LOG",
+        "outside_link": "ASSOCIATION_SYMLINK",
+    }
+    with pytest.raises(proof.ProofError, match=expected[damage]):
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
 
 
 @pytest.mark.parametrize(
@@ -251,6 +247,16 @@ def test_frozen_source_inventory_rejects_disk_mutation(tmp_path):
         proof.verify_snapshot(tmp_path, frozen)
 
 
+def timing_observation(utc, **fields):
+    return {
+        "status": "VERIFIED",
+        "utc": utc,
+        "requested_utc": utc,
+        "received_utc": utc,
+        **fields,
+    }
+
+
 @pytest.fixture
 def associated_attempt(tmp_path):
     proof = proof_module()
@@ -265,34 +271,204 @@ def associated_attempt(tmp_path):
     (workspace / "current_run_thread_id.txt").write_text("thread-test")
     (directory / "console.log").write_text(f"Starting stream (thread_id={run_id})\n")
     observations = {
-        "identity": {"utc_offset_seconds": 0},
-        "runtime": {
-            "run_id": run_id,
-            "thread_id": "thread-test",
-            "displayed_stream_identifier": run_id,
-            "utc": "2026-10-20T12:34:55+00:00",
-        },
-        "stream": {"utc": "2026-10-20T12:34:57+00:00"},
+        "identity": timing_observation(
+            "2026-10-20T12:34:51+00:00", utc_offset_seconds=0
+        ),
+        "runtime": timing_observation(
+            "2026-10-20T12:34:55+00:00",
+            run_id=run_id,
+            thread_id="thread-test",
+            displayed_stream_identifier=run_id,
+        ),
+        "stream": timing_observation("2026-10-20T12:34:57+00:00"),
+        "late": timing_observation("2026-10-20T12:35:25+00:00"),
     }
-    return proof, workspace, directory, observations, run
+    execution = {
+        "status": "COMPLETED",
+        "started_utc": "2026-10-20T12:34:50+00:00",
+        "ended_utc": "2026-10-20T12:35:30+00:00",
+        "last_cell_index": 98,
+    }
+    return proof, workspace, directory, observations, run, execution
 
 
 def test_log_without_ids_requires_positive_console_and_thread_binding(
     associated_attempt,
 ):
-    proof, workspace, directory, observations, run = associated_attempt
-    assert proof.associate_outputs(workspace, observations, directory) == run
+    proof, workspace, directory, observations, run, execution = associated_attempt
+    assert (
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+        == run
+    )
     (directory / "console.log").write_text("unrelated old log")
     with pytest.raises(proof.ProofError, match="ASSOCIATION"):
-        proof.associate_outputs(workspace, observations, directory)
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
 
 
 def test_mixed_timestamp_log_is_rejected(associated_attempt):
-    proof, workspace, directory, observations, _ = associated_attempt
+    proof, workspace, directory, observations, _, execution = associated_attempt
     with (workspace / "notebook_run_log.txt").open("a") as log:
         log.write("01:02:03 [INFO] FINAL viz=True report=True\n")
     with pytest.raises(proof.ProofError, match="ASSOCIATION"):
-        proof.associate_outputs(workspace, observations, directory)
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+
+
+def test_final_log_after_stream_is_associated_until_execution_ends(
+    associated_attempt,
+):
+    proof, workspace, directory, observations, run, execution = associated_attempt
+    # Cell 81 persists artifacts after the Cell 75 observation; Cell 83 logs FINAL.
+    (workspace / "notebook_run_log.txt").write_text(
+        "12:35:20 [INFO] FINAL viz=True report=True\n"
+    )
+    assert (
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+        == run
+    )
+
+
+@pytest.mark.parametrize("timestamp", ["12:34:44", "12:35:36"])
+def test_logs_outside_actual_execution_are_rejected(associated_attempt, timestamp):
+    proof, workspace, directory, observations, _, execution = associated_attempt
+    with (workspace / "notebook_run_log.txt").open("a") as log:
+        log.write(timestamp + " [INFO] other attempt\n")
+    with pytest.raises(proof.ProofError, match="ASSOCIATION_MIXED_LOG_INTERVAL"):
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+
+
+@pytest.mark.parametrize("location", ["pipeline", "console"])
+def test_foreign_run_ids_are_rejected_inside_valid_interval(
+    associated_attempt, location
+):
+    proof, workspace, directory, observations, _, execution = associated_attempt
+    path = (
+        workspace / "notebook_run_log.txt"
+        if location == "pipeline"
+        else directory / "console.log"
+    )
+    with path.open("a") as log:
+        log.write("12:35:20 [INFO] run_default_id-20261020-1234-abcdefab\n")
+    with pytest.raises(proof.ProofError, match="ASSOCIATION_FOREIGN_LOG"):
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_record",
+        "missing_start",
+        "missing_end",
+        "invalid_end",
+        "naive_end",
+        "failed",
+        "running",
+        "end_before_start",
+        "end_before_late_observation",
+        "different_attempt",
+        "ambiguous_day",
+        "missing_clock_bracket",
+        "unverified_observation",
+        "reversed_clock_bracket",
+        "child_clock_skew",
+        "unordered_observations",
+        "missing_stream",
+    ],
+)
+def test_unreliable_execution_timing_fails_closed(associated_attempt, damage):
+    proof, workspace, directory, observations, _, execution = associated_attempt
+    if damage == "missing_record":
+        execution = None
+    elif damage in ("missing_start", "missing_end"):
+        execution.pop("started_utc" if damage == "missing_start" else "ended_utc")
+    elif damage == "invalid_end":
+        execution["ended_utc"] = "not-a-timestamp"
+    elif damage == "naive_end":
+        execution["ended_utc"] = "2026-10-20T12:35:30"
+    elif damage in ("failed", "running"):
+        execution["status"] = damage.upper()
+    elif damage == "end_before_start":
+        execution["ended_utc"] = "2026-10-20T12:34:49+00:00"
+    elif damage == "end_before_late_observation":
+        execution["ended_utc"] = "2026-10-20T12:35:24+00:00"
+    elif damage == "different_attempt":
+        execution.update(
+            started_utc="2026-10-19T12:34:50+00:00",
+            ended_utc="2026-10-19T12:35:30+00:00",
+        )
+    elif damage == "ambiguous_day":
+        execution["started_utc"] = "2026-10-19T12:34:50+00:00"
+    elif damage == "missing_clock_bracket":
+        observations["identity"].pop("requested_utc")
+    elif damage == "unverified_observation":
+        observations["stream"]["status"] = "UNAVAILABLE"
+    elif damage == "reversed_clock_bracket":
+        observations["stream"]["received_utc"] = "2026-10-20T12:34:56+00:00"
+    elif damage == "child_clock_skew":
+        observations["stream"]["utc"] = "2026-10-20T12:35:02.000001+00:00"
+    elif damage == "unordered_observations":
+        observations["stream"] = timing_observation("2026-10-20T12:34:54+00:00")
+    elif damage == "missing_stream":
+        observations.pop("stream")
+    with pytest.raises(proof.ProofError, match="ASSOCIATION_EXECUTION_TIMING_INVALID"):
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+
+
+@pytest.mark.parametrize("offset", [0, -14400, 19800])
+@pytest.mark.parametrize("foreign_time", [None, "23:59:44", "00:00:36"])
+def test_association_across_local_midnight(associated_attempt, offset, foreign_time):
+    proof, workspace, directory, observations, run, execution = associated_attempt
+    zone = timezone(timedelta(seconds=offset))
+    local_start = datetime(2026, 10, 20, 23, 59, 50, tzinfo=zone)
+    shift = local_start - datetime.fromisoformat(execution["started_utc"])
+    for record in (execution, *observations.values()):
+        for key, value in record.items():
+            if key == "utc" or key.endswith("_utc"):
+                record[key] = (datetime.fromisoformat(value) + shift).isoformat()
+    observations["identity"]["utc_offset_seconds"] = offset
+    log = "23:59:55 [INFO] STAGE analyst START\n00:00:20 [INFO] FINAL report=True\n"
+    if foreign_time:
+        log += foreign_time + " [INFO] other attempt\n"
+    (workspace / "notebook_run_log.txt").write_text(log)
+    if foreign_time:
+        with pytest.raises(proof.ProofError, match="ASSOCIATION_MIXED_LOG_INTERVAL"):
+            proof.associate_outputs(
+                workspace, observations, directory, execution=execution
+            )
+    else:
+        assert (
+            proof.associate_outputs(
+                workspace, observations, directory, execution=execution
+            )
+            == run
+        )
+
+
+@pytest.mark.parametrize("timestamp", ["12:34:45", "12:35:35"])
+def test_second_precision_and_clock_tolerance_are_bounded(
+    associated_attempt, timestamp
+):
+    proof, workspace, directory, observations, run, execution = associated_attempt
+    execution["started_utc"] = "2026-10-20T12:34:50.900000+00:00"
+    execution["ended_utc"] = "2026-10-20T12:35:30.100000+00:00"
+    (workspace / "notebook_run_log.txt").write_text(timestamp + " [INFO] FINAL\n")
+    assert (
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
+        == run
+    )
+
+
+@pytest.mark.parametrize("damage", ["missing_thread", "wrong_thread", "wrong_display"])
+def test_delayed_finalization_preserves_identifier_bindings(associated_attempt, damage):
+    proof, workspace, directory, observations, _, execution = associated_attempt
+    path = workspace / "current_run_thread_id.txt"
+    if damage == "missing_thread":
+        path.unlink()
+    elif damage == "wrong_thread":
+        path.write_text("thread-other")
+    else:
+        observations["runtime"]["displayed_stream_identifier"] = "other"
+    with pytest.raises(proof.ProofError, match="ASSOCIATION"):
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
 
 
 def test_actual_model_and_embedding_settings_are_allowlisted():
@@ -334,7 +510,7 @@ def test_symlink_output_parent_cannot_bind_external_artifacts(
 ):
     import shutil
 
-    proof, workspace, directory, observations, _ = associated_attempt
+    proof, workspace, directory, observations, _, execution = associated_attempt
     external = tmp_path / "external-results"
     shutil.move(workspace / "IDD_results", external)
     try:
@@ -342,7 +518,7 @@ def test_symlink_output_parent_cannot_bind_external_artifacts(
     except OSError:
         pytest.skip("symlink creation unavailable")
     with pytest.raises(proof.ProofError, match="ASSOCIATION"):
-        proof.associate_outputs(workspace, observations, directory)
+        proof.associate_outputs(workspace, observations, directory, execution=execution)
 
 
 def test_validator_timeout_still_records_both_attempted_results(
@@ -350,7 +526,7 @@ def test_validator_timeout_still_records_both_attempted_results(
 ):
     import subprocess
 
-    proof, workspace, directory, _, run = associated_attempt
+    proof, workspace, directory, _, run, _ = associated_attempt
     evidence = proof.Evidence(directory, "synthetic-no-key")
     evidence.data["scenario"] = "sample_dirty"
     calls = []

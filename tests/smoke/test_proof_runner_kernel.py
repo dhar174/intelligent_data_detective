@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -145,6 +146,63 @@ def test_synthetic_success_is_never_cp5_pass(tmp_path):
     assert record["observations"]["identity"]["sys_executable"] == str(
         Path(sys.executable).absolute()
     )
+
+
+def test_successful_execution_timing_covers_the_last_notebook_cell(tmp_path):
+    error, record, _, directory = execute(
+        tmp_path,
+        [
+            "print('synthetic stream completed')",
+            "from datetime import datetime, timezone; "
+            "print('FINAL_AT=' + datetime.now(timezone.utc).isoformat())",
+        ],
+    )
+    assert error is None
+    identity = record["observations"]["identity"]
+    console = (directory / "console.log").read_text()
+    final = datetime.fromisoformat(console.split("FINAL_AT=")[1].splitlines()[0])
+    stamps = [
+        record["execution"]["started_utc"],
+        identity["requested_utc"],
+        identity["utc"],
+        identity["received_utc"],
+    ]
+    times = [datetime.fromisoformat(s) for s in stamps]
+    times.extend([final, datetime.fromisoformat(record["execution"]["ended_utc"])])
+    assert times == sorted(times)
+    assert record["execution"]["status"] == "COMPLETED"
+    assert record["execution"]["last_cell_index"] == 1
+
+
+@pytest.mark.parametrize("damage", ["missing", "naive", "ahead", "behind"])
+def test_uncorrelated_child_clock_stops_before_first_cell(
+    tmp_path, monkeypatch, damage
+):
+    proof = proof_module()
+    original_observe = proof.observe
+
+    async def altered_clock(*args, **kwargs):
+        value = await original_observe(*args, **kwargs)
+        if damage == "missing":
+            value.pop("utc")
+        elif damage == "naive":
+            value["utc"] = (
+                datetime.fromisoformat(value["utc"]).replace(tzinfo=None).isoformat()
+            )
+        else:
+            shift = timedelta(hours=1 if damage == "ahead" else -1)
+            value["utc"] = (datetime.fromisoformat(value["utc"]) + shift).isoformat()
+        return value
+
+    monkeypatch.setattr(proof, "observe", altered_clock)
+    error, record, workspace, _ = execute(
+        tmp_path, ["open('MODEL_SENTINEL', 'w').write('forbidden')"]
+    )
+    assert isinstance(error, proof.ProofError)
+    assert str(error) == "OBSERVATION_CLOCK_MISMATCH"
+    assert record["observations"]["identity"]["status"] == "MISMATCH"
+    assert record["first_failure"]["stage"] == "identity"
+    assert not (workspace / "MODEL_SENTINEL").exists()
 
 
 def test_secret_output_is_restricted_not_published_provenance(tmp_path):

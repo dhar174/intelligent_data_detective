@@ -181,6 +181,33 @@ observed execution interval, escaping image references and symlinks are refused.
 These controls do not authenticate arbitrary counterfeit lines written by an
 external process with access to the same workspace; retain exclusive access.
 
+`associate_outputs(..., execution=record["execution"])` requires the successful
+runner execution record, including timezone-aware `started_utc` and `ended_utc`.
+The runner records the start before kernel setup and the end after all notebook
+cells, kernel context cleanup and final notebook saving. Association uses this
+actual interval, rather than the Cell 75 stream observation: Cell 81 persists
+artifacts and Cell 83 writes the legitimate `FINAL` pipeline record afterward.
+No additional production cells or observer requests are added.
+
+Every verified observation now retains the runner's `requested_utc` and
+`received_utc` alongside the child's `utc`. The child timestamp must fall within
+that request/reply bracket with at most five seconds of clock tolerance. At
+association, required identity/runtime/stream observations and all other present
+stages must be verified, ordered, and enclosed by the successful execution record;
+missing, naive, reversed or uncorrelated timing fails closed. The explicitly
+verified local provisioner shares the host clock. Clock jumps or larger skew
+require investigation, not timestamp correction or a wider window.
+
+Pipeline prefixes contain local `HH:MM:SS` at one-second precision. The interval
+uses the child identity's UTC offset, with five seconds of boundary tolerance;
+its lower bound is rounded down to include the intersecting first second.
+Adjacent calendar dates preserve midnight rollover. Intervals spanning a full
+24 hours after tolerance/rounding are refused because time-only prefixes cannot
+disambiguate them. Historical lines with the same time of day cannot be dated
+from their prefix alone; fresh exclusive logs, workspace ownership and identifier
+bindings remain mandatory. The fixed observed UTC offset assumes no local
+timezone/DST change during execution. No log timestamps are rewritten.
+
 The existing validators run with their positional directory arguments:
 
 ```bash
