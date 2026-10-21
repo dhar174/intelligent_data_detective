@@ -337,6 +337,12 @@ def test_preparation_cli_verifies_source_and_kernel_without_loading_credentials(
         "OPENAI_API_KEY=sk-SYNTHETIC-secret-canary\nLANGSMITH_TRACING=true\n"
     )
     env = proof.child_environment(tmp_path, "sample_dirty", "none", os.environ)
+    # The CLI's parent must still discover this explicitly selected test kernel.
+    # Windows installs it in user data, which the isolated environment replaces.
+    from jupyter_client.kernelspec import KernelSpecManager
+
+    spec = KernelSpecManager().get_kernel_spec(os.environ["IDD_KERNEL_NAME"])
+    env["JUPYTER_PATH"] = str(Path(spec.resource_dir).parent.parent)
     env.pop("PYTHONDONTWRITEBYTECODE", None)  # parent CLI must protect the source too
     process = subprocess.run(
         [
