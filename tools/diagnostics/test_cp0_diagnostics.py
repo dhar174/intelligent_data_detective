@@ -465,6 +465,126 @@ def test_claim_12_production_tool_cases_pass():
     assert "All 5 cases passed: True" in res.observed_behavior
 
 
+def test_claim_12_extracted_tool_uses_active_registry(tmp_path, monkeypatch):
+    """Decorated validation and the generated body must follow the same override."""
+    import idd_core
+    import pandas as pd
+
+    caller = idd_core.DataFrameRegistry(data_dir=tmp_path / "caller")
+    active = idd_core.DataFrameRegistry(data_dir=tmp_path / "active")
+    original = pd.DataFrame({"x": [100, 200, 300]})
+    caller.register_dataframe(original, "shared")
+    caller.register_dataframe(original, "caller_only")
+    active.register_dataframe(pd.DataFrame({"x": [1, 2, 3]}), "shared")
+    reads = []
+    real_get = active.get_dataframe
+
+    def record_get(df_id, load_if_not_exists=False):
+        reads.append((df_id, load_if_not_exists))
+        return real_get(df_id, load_if_not_exists=load_if_not_exists)
+
+    monkeypatch.setattr(active, "get_dataframe", record_get)
+    with idd_core.override_global_registry(caller):
+        tool, error = reproduce_drift._extract_production_delete_rows_tool(caller)
+        assert error is None
+        assert tool is not None
+        with idd_core.override_global_registry(active):
+            assert tool("shared", "x > 1") == "2 rows deleted successfully."
+            # The canonical decorator validates before the generated body reads.
+            assert reads == [("shared", True), ("shared", False)]
+            pd.testing.assert_frame_equal(real_get("shared"), pd.DataFrame({"x": [1]}))
+            missing = tool("caller_only", "x > 1")
+            assert missing["status"] == "error"
+            assert "not found or is empty" in missing["reason"]
+        assert idd_core.get_global_registry() is caller
+        pd.testing.assert_frame_equal(caller.get_dataframe("shared"), original)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "missing_accessor", "raise_after_write", "extraction_blocked"],
+)
+def test_claim_12_probe_restores_registry(tmp_path, monkeypatch, caplog, outcome):
+    """Protect caller/default data on success, caught tool failure, and probe failure."""
+    import contextvars
+    import inspect
+    import pickle
+
+    import idd_core
+    import pandas as pd
+
+    def snapshot(registry):
+        state = pickle.dumps(
+            (registry.registry, registry.cache, registry.df_id_to_raw_path)
+        )
+        files = {
+            p.name: p.read_bytes() for p in registry.data_dir.iterdir() if p.is_file()
+        }
+        return state, files
+
+    default = contextvars.Context().run(idd_core.get_global_registry)
+    default_before = snapshot(default)
+    previous = idd_core.get_global_registry()
+    caller = idd_core.DataFrameRegistry(data_dir=tmp_path / "caller")
+    # Collide with a real probe ID so a leaked override would overwrite user data.
+    caller.register_dataframe(pd.DataFrame({0: [-1], "name": ["sentinel"]}), "df_a")
+    caller_before = snapshot(caller)
+    extract = reproduce_drift._extract_production_delete_rows_tool
+    isolated = []
+
+    def controlled_extract(registry):
+        assert registry is idd_core.get_global_registry()
+        assert registry is not caller and registry is not default
+        isolated.append(registry)
+        if outcome == "extraction_blocked":
+            return None, "controlled extraction failure"
+        tool, error = extract(registry)
+        assert error is None and tool is not None
+        if outcome == "missing_accessor":
+            # Negative control: remove only the binding from the real extraction.
+            monkeypatch.delitem(
+                inspect.unwrap(tool).__globals__, "get_global_df_registry"
+            )
+        if outcome == "raise_after_write":
+
+            def fail_after_write(*args, **kwargs):
+                assert "2 rows deleted" in tool(*args, **kwargs)
+                raise RuntimeError("controlled failure after tool write")
+
+            return fail_after_write, None
+        return tool, None
+
+    monkeypatch.setattr(
+        reproduce_drift, "_extract_production_delete_rows_tool", controlled_extract
+    )
+    with idd_core.override_global_registry(caller):
+        if outcome == "raise_after_write":
+            with pytest.raises(
+                RuntimeError, match="controlled failure after tool write"
+            ):
+                probe_claim_12()
+        else:
+            result = probe_claim_12()
+            expected = {
+                "success": "OBSERVED INVARIANT",
+                "missing_accessor": "REPRODUCED",
+                "extraction_blocked": "BLOCKED",
+            }[outcome]
+            assert result.classification == expected
+            if outcome == "missing_accessor":
+                assert "name 'get_global_df_registry' is not defined" in caplog.text
+                assert "All 5 cases passed: False" in result.observed_behavior
+            if outcome == "success":
+                assert "All 5 cases passed: True" in result.observed_behavior
+        assert idd_core.get_global_registry() is caller
+        assert snapshot(caller) == caller_before
+        assert contextvars.Context().run(idd_core.get_global_registry) is default
+        assert snapshot(default) == default_before
+    assert idd_core.get_global_registry() is previous
+    assert len(isolated) == 1
+    assert not isolated[0].data_dir.exists()
+
+
 def test_claim_1_thread_scheduling_order_independence(monkeypatch):
     """Verify that Claim 1 evaluates uniqueness and contiguous range without thread-order scheduling fragility."""
     # Execute probe_claim_1 directly
