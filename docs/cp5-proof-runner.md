@@ -208,7 +208,10 @@ from their prefix alone; fresh exclusive logs, workspace ownership and identifie
 bindings remain mandatory. The fixed observed UTC offset assumes no local
 timezone/DST change during execution. No log timestamps are rewritten.
 
-The existing validators run with their positional directory arguments:
+The existing validators run with the attested `--expected-python` interpreter
+and their positional directory arguments. The parent CLI may use a different
+Python environment; validator commands retain the selected virtual environment
+path without resolving its interpreter symlink to a shared base binary.
 
 ```bash
 python validate_run.py EXACT_RUN_DIR --log-path EXACT_PIPELINE_LOG --window 180 --json

@@ -1011,13 +1011,14 @@ def associate_outputs(workspace, observations, evidence_directory=None, *, execu
     return run
 
 
-def run_validators(workspace, run_dir, evidence):
+def run_validators(workspace, run_dir, evidence, *, expected_python):
+    """Run both validators with the attested kernel's interpreter path."""
     log = workspace / "notebook_run_log.txt"
     before = run_dir.stat().st_mtime_ns
     evidence.data["run_directory_mtime_ns"] = before
     commands = [
         [
-            sys.executable,
+            str(expected_python),
             str(workspace / "validate_run.py"),
             str(run_dir),
             "--log-path",
@@ -1026,7 +1027,11 @@ def run_validators(workspace, run_dir, evidence):
             "180",
             "--json",
         ],
-        [sys.executable, str(workspace / "validate_artifact_quality.py"), str(run_dir)],
+        [
+            str(expected_python),
+            str(workspace / "validate_artifact_quality.py"),
+            str(run_dir),
+        ],
     ]
     results = []
     for name, command in zip(("validate_run", "validate_artifact_quality"), commands):
@@ -1203,7 +1208,9 @@ def run_proof(args, source):
             ],
         )
         evidence.save()
-        passed = run_validators(workspace, run_dir, evidence)
+        passed = run_validators(
+            workspace, run_dir, evidence, expected_python=args.expected_python
+        )
         if passed:
             evidence.data["attempt_status"] = "AUTOMATIC_CHECKS_COMPLETE_PENDING_REVIEW"
             evidence.save()

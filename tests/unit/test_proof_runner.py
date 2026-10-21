@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -232,10 +233,89 @@ def test_both_validator_failures_are_recorded_without_touching_mtime(tmp_path):
     evidence.data["scenario"] = "sample_dirty"
     (evidence_dir / "console.log").write_text("synthetic")
     before = run.stat().st_mtime_ns
-    assert proof.run_validators(workspace, run, evidence) is False
+    assert (
+        proof.run_validators(workspace, run, evidence, expected_python=sys.executable)
+        is False
+    )
     assert [v["exit_code"] for v in evidence.data["validators"]] == [1, 2]
     assert run.stat().st_mtime_ns == before
     assert all("--latest" not in v["command"] for v in evidence.data["validators"])
+
+
+@pytest.mark.parametrize("exit_codes", [(0, 0), (1, 2)])
+def test_proof_validators_use_selected_venv(tmp_path, monkeypatch, exit_codes):
+    import os
+    import platform
+    import venv
+
+    import nbformat
+
+    proof = proof_module()
+    environment = tmp_path / "approved environment"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert str(python) != sys.executable
+
+    def synthetic_source(source, sha, workspace):
+        # Source verification and notebook execution are outside this regression;
+        # the validators below run as real subprocesses in a distinct venv.
+        nbformat.write(
+            nbformat.v4.new_notebook(
+                cells=[nbformat.v4.new_code_cell("pass") for _ in range(99)]
+            ),
+            workspace / proof.NOTEBOOK,
+        )
+        for name, code in zip(
+            ("validate_run.py", "validate_artifact_quality.py"), exit_codes
+        ):
+            (workspace / name).write_text(
+                "import sys\n"
+                "print(sys.executable, flush=True)\n"
+                f"assert sys.prefix == {str(environment)!r}\n"
+                f"sys.exit({code})\n",
+                encoding="utf-8",
+            )
+        return {}
+
+    async def synthetic_execution(notebook, *, workspace, evidence, **kwargs):
+        assert kwargs["expected_python"] == python
+        (workspace / "IDD_results" / "IDD_run_test").mkdir(parents=True)
+        (workspace / "notebook_run_log.txt").write_text("synthetic clean log\n")
+        (evidence.directory / "console.log").write_text("synthetic clean console\n")
+
+    monkeypatch.setattr(proof, "verify_source", synthetic_source)
+    monkeypatch.setattr(proof, "verify_kernel", lambda *args: {})
+    monkeypatch.setattr(proof, "execute_strict", synthetic_execution)
+    monkeypatch.setattr(
+        proof,
+        "associate_outputs",
+        lambda workspace, *args, **kwargs: workspace / "IDD_results" / "IDD_run_test",
+    )
+    monkeypatch.setenv("IDD_SKIP_NOTEBOOK_INSTALLS", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-test-key")
+    attempt = tmp_path / "attempt"
+    args = SimpleNamespace(
+        resume=False,
+        preflight=False,
+        check_langsmith=False,
+        attempt_dir=attempt,
+        source_sha="a" * 40,
+        kernel_name="synthetic-approved-kernel",
+        expected_python=python,
+        expected_python_version=platform.python_version(),
+        scenario="sample_dirty",
+        prepare_only=False,
+        credential_source="process",
+    )
+    result = proof.run_proof(args, tmp_path / "source")
+    record = json.loads((attempt / "evidence" / "evidence.json").read_text())
+    assert [v["exit_code"] for v in record["validators"]] == list(exit_codes)
+    for validator in record["validators"]:
+        assert validator["command"][0] == str(python)
+        assert Path(validator["output"]["path"]).read_text().strip() == str(python)
+    assert result == (0 if exit_codes == (0, 0) else 1)
+    assert record["automatic_validation"] == ("PASSED" if result == 0 else "FAILED")
+    assert record["cp5_pass"] is False
 
 
 def test_frozen_source_inventory_rejects_disk_mutation(tmp_path):
@@ -540,7 +620,10 @@ def test_validator_timeout_still_records_both_attempted_results(
         return SimpleNamespace(returncode=1, stdout=b"failed quality", stderr=b"")
 
     monkeypatch.setattr(proof.subprocess, "run", invoke)
-    assert proof.run_validators(workspace, run, evidence) is False
+    assert (
+        proof.run_validators(workspace, run, evidence, expected_python=sys.executable)
+        is False
+    )
     assert len(calls) == 2
     assert evidence.data["validators"][0]["status"] == "TIMEOUT"
     assert evidence.data["validators"][0]["exit_code"] is None
