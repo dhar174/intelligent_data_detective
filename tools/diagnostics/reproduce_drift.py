@@ -2048,6 +2048,8 @@ def _extract_production_delete_rows_tool(
             "tool": lambda *a, **k: (lambda fn: fn),
             "cap_output": lambda *a, **k: (lambda fn: fn),
             "global_df_registry": registry,
+            # Follow the same ContextVar override as the canonical validators/decorator.
+            "get_global_df_registry": idd_core.get_global_df_registry,
             "handle_tool_errors": getattr(idd_core, "handle_tool_errors", None),
             "validate_dataframe_exists": getattr(
                 idd_core, "validate_dataframe_exists", None
@@ -2102,7 +2104,8 @@ def probe_claim_12() -> ClaimResult:
             ctx = contextlib.nullcontext()
 
         with ctx:
-            reg = _InMemoryRegistry()
+            # Read assertions from the registry the generated body actually updates.
+            reg = diag_reg if HAS_IDD_CORE else _InMemoryRegistry()
             delete_rows, extract_err = _extract_production_delete_rows_tool(reg)
 
             if delete_rows is None:
