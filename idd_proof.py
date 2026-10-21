@@ -80,6 +80,7 @@ OBSERVATION_CELLS = {
     94: "migration",
     96: "late",
 }
+CLOCK_TOLERANCE = timedelta(seconds=5)
 MODEL_ROLES = (
     "big_picture_llm",
     "router_llm",
@@ -115,6 +116,58 @@ class ProofError(RuntimeError):
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_timestamp(value):
+    stamp = datetime.fromisoformat(value)
+    if stamp.utcoffset() is None:
+        raise ValueError("Timing evidence must include a UTC offset")
+    return stamp.astimezone(timezone.utc)
+
+
+def _observation_times(value):
+    requested = _utc_timestamp(value["requested_utc"])
+    observed = _utc_timestamp(value["utc"])
+    received = _utc_timestamp(value["received_utc"])
+    if requested > received or not (
+        requested - CLOCK_TOLERANCE <= observed <= received + CLOCK_TOLERANCE
+    ):
+        raise ValueError("Child clock is not correlated with the runner")
+    return requested, observed, received
+
+
+def _execution_log_interval(observations, execution):
+    """Require successful runner timing and bounded, ordered child observations."""
+    try:
+        if not isinstance(execution, dict) or execution["status"] != "COMPLETED":
+            raise ValueError("Execution did not complete successfully")
+        started = _utc_timestamp(execution["started_utc"])
+        ended = _utc_timestamp(execution["ended_utc"])
+        lower = (started - CLOCK_TOLERANCE).replace(microsecond=0)
+        upper = ended + CLOCK_TOLERANCE
+        # HH:MM:SS log prefixes cannot disambiguate a full day's clock values.
+        if ended < started or upper - lower >= timedelta(days=1):
+            raise ValueError("Execution interval is reversed or date-ambiguous")
+        for stage in ("identity", "runtime", "stream"):
+            if stage not in observations:
+                raise ValueError("Required timing observation is missing")
+        previous_received, previous_observed = started, None
+        for stage in ("identity", *OBSERVATION_CELLS.values()):
+            if stage not in observations:
+                continue
+            value = observations[stage]
+            if value["status"] != "VERIFIED":
+                raise ValueError("Timing observation was not verified")
+            requested, observed, received = _observation_times(value)
+            if not previous_received <= requested <= received <= ended or (
+                previous_observed is not None and observed < previous_observed
+            ):
+                raise ValueError("Execution and observation timing disagree")
+            previous_received, previous_observed = received, observed
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ProofError("ASSOCIATION_EXECUTION_TIMING_INVALID") from exc
+    # The prefix truncates fractional seconds: include the intersecting first second.
+    return lower, upper
 
 
 def hashes(data):
@@ -721,13 +774,19 @@ async def execute_strict(
             return super().process_message(msg, cell, cell_index)
 
     async def attest(client, stage):
+        requested_utc = utc_now()
         evidence.data["observations"][stage] = {
             "status": "UNAVAILABLE",
-            "requested_utc": utc_now(),
+            "requested_utc": requested_utc,
         }
         evidence.save()
         value = await observe(client, stage)
+        value.update(requested_utc=requested_utc, received_utc=utc_now())
         try:
+            try:
+                _observation_times(value)
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ProofError("OBSERVATION_CLOCK_MISMATCH") from exc
             verify_observation(
                 stage, value, workspace, evidence, expected_python, expected_version
             )
@@ -883,7 +942,7 @@ async def execute_strict(
             raise final_error
 
 
-def associate_outputs(workspace, observations, evidence_directory=None):
+def associate_outputs(workspace, observations, evidence_directory=None, *, execution):
     runtime = observations["runtime"]
     run_id = runtime["run_id"]
     candidates = list((workspace / "IDD_results").glob("IDD_run_*"))
@@ -919,12 +978,8 @@ def associate_outputs(workspace, observations, evidence_directory=None):
         zone = timezone(
             timedelta(seconds=observations["identity"]["utc_offset_seconds"])
         )
-        start = datetime.fromisoformat(runtime["utc"]).astimezone(zone) - timedelta(
-            seconds=5
-        )
-        end = datetime.fromisoformat(observations["stream"]["utc"]).astimezone(
-            zone
-        ) + timedelta(seconds=5)
+        start, end = _execution_log_interval(observations, execution)
+        start, end = start.astimezone(zone), end.astimezone(zone)
         times = re.findall(r"^(\d{2}):(\d{2}):(\d{2})\b", log, re.M)
         if not times:
             raise ProofError("ASSOCIATION_LOG_TIMESTAMPS_MISSING")
@@ -934,7 +989,7 @@ def associate_outputs(workspace, observations, evidence_directory=None):
             )
             if not any(start <= clock + timedelta(days=d) <= end for d in (-1, 0, 1)):
                 raise ProofError("ASSOCIATION_MIXED_LOG_INTERVAL")
-    except (KeyError, OSError, ValueError) as exc:
+    except (KeyError, OSError, TypeError, ValueError, OverflowError) as exc:
         raise ProofError("ASSOCIATION_BINDING_UNAVAILABLE") from exc
     seen = set(re.findall(r"run_default_id-\d{8}-\d{4}-[0-9a-f]{8}", log))
     seen.update(re.findall(r"run_default_id-\d{8}-\d{4}-[0-9a-f]{8}", console))
@@ -1128,7 +1183,12 @@ def run_proof(args, source):
                 env=env,
             )
         )
-        run_dir = associate_outputs(workspace, evidence.data["observations"], directory)
+        run_dir = associate_outputs(
+            workspace,
+            evidence.data["observations"],
+            directory,
+            execution=evidence.data["execution"],
+        )
         evidence.data.update(
             association="VERIFIED",
             output_directory=str(run_dir),
