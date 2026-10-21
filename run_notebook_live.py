@@ -34,7 +34,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REPO_ROOT = Path(__file__).resolve().parent
-NOTEBOOK_NAME = os.environ.get("IDD_NOTEBOOK", "IntelligentDataDetective_beta_v5_patched.ipynb")
+NOTEBOOK_NAME = os.environ.get(
+    "IDD_NOTEBOOK", "IntelligentDataDetective_beta_v5_patched.ipynb"
+)
 NOTEBOOK_PATH = REPO_ROOT / NOTEBOOK_NAME
 OUTPUT_DIR = REPO_ROOT / "IDD_results"
 TIMEOUT = 3600  # 60 minutes — analyst/data_cleaner each cap at ~15-20 min with recovery
@@ -288,7 +290,9 @@ def configure_skip_notebook_installs() -> str:
         print("OK  Notebook dependency bootstrap: disabled by live-run harness")
     else:
         val = os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"]
-        print(f"INFO Notebook dependency bootstrap: preserved from environment (IDD_SKIP_NOTEBOOK_INSTALLS={val})")
+        print(
+            f"INFO Notebook dependency bootstrap: preserved from environment (IDD_SKIP_NOTEBOOK_INSTALLS={val})"
+        )
     return os.environ["IDD_SKIP_NOTEBOOK_INSTALLS"]
 
 
@@ -298,7 +302,9 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
         import nbformat
         from nbclient import NotebookClient
     except ImportError as exc:
-        print(f"WARN Cannot probe kernel scientific stack; missing notebook dependency: {exc}")
+        print(
+            f"WARN Cannot probe kernel scientific stack; missing notebook dependency: {exc}"
+        )
         return False
 
     if not kernel_name:
@@ -347,6 +353,7 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
         return False
 
     import json as _json
+
     try:
         payload = _json.loads(probe_line.split("=", 1)[1])
         if not isinstance(payload, dict):
@@ -354,27 +361,45 @@ def probe_kernel_scientific_stack(kernel_name: str | None = None) -> bool:
         data = payload.get("modules")
         if not isinstance(data, dict) or set(data) != set(SCIENTIFIC_MODULES):
             raise ValueError("missing or unexpected scientific import results")
-        if any(not isinstance(info, dict) or type(info.get("ok")) is not bool for info in data.values()):
+        if any(
+            not isinstance(info, dict) or type(info.get("ok")) is not bool
+            for info in data.values()
+        ):
             raise ValueError("invalid scientific import status")
         expected_flag = os.environ.get("IDD_SKIP_NOTEBOOK_INSTALLS")
-        expected_skip = (expected_flag or "").strip().lower() in {"1", "true", "yes", "on"}
+        expected_skip = (expected_flag or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         if (
             "install_flag" not in payload
             or payload["install_flag"] != expected_flag
             or type(payload.get("installs_skipped")) is not bool
             or payload["installs_skipped"] != expected_skip
         ):
-            raise ValueError("IDD_SKIP_NOTEBOOK_INSTALLS inheritance or normalization mismatch")
+            raise ValueError(
+                "IDD_SKIP_NOTEBOOK_INSTALLS inheritance or normalization mismatch"
+            )
     except (ValueError, TypeError) as exc:
         print(f"ERR Invalid scientific stack probe result: {exc}")
         return False
-    failed = [f"{name} ({info.get('error', 'unknown error')})" for name, info in sorted(data.items()) if not info.get("ok")]
+    failed = [
+        f"{name} ({info.get('error', 'unknown error')})"
+        for name, info in sorted(data.items())
+        if not info.get("ok")
+    ]
     if failed:
         print(f"ERR Kernel scientific stack preflight failed: {', '.join(failed)}")
         return False
 
-    versions_str = ", ".join(f"{name} {info.get('version', '?')}" for name, info in sorted(data.items()))
-    print(f"OK  Kernel scientific stack preflight passed ({kernel_name}): {versions_str}")
+    versions_str = ", ".join(
+        f"{name} {info.get('version', '?')}" for name, info in sorted(data.items())
+    )
+    print(
+        f"OK  Kernel scientific stack preflight passed ({kernel_name}): {versions_str}"
+    )
     print(f"OK  Kernel install flag inherited; installs_skipped={expected_skip}")
     return True
 
@@ -669,6 +694,18 @@ def print_artifact_summary(artifacts_by_ext, notebook_paths):
     return all_ok
 
 
+def run_proof(args):
+    """Keep proof execution separate from all legacy credential/config loaders."""
+    old_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        from idd_proof import run_proof as strict_run
+
+        return strict_run(args, REPO_ROOT)
+    finally:
+        sys.dont_write_bytecode = old_bytecode
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run IDD v5 patched notebook headlessly (override with IDD_NOTEBOOK)"
@@ -695,12 +732,63 @@ def main():
         action="store_true",
         help="Check six scientific imports and install-flag inheritance in Jupyter; not a full runtime/environment proof.",
     )
+    parser.add_argument(
+        "--proof",
+        action="store_true",
+        help="Opt-in strict isolated proof execution; never certifies CP5 PASS.",
+    )
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="With --proof, verify a fresh snapshot/kernel without executing production cells or loading keys.",
+    )
+    parser.add_argument(
+        "--attempt-dir",
+        type=Path,
+        help="New attempt directory outside the source checkout; parent must exist.",
+    )
+    parser.add_argument(
+        "--source-sha", help="Exact approved 40-character source HEAD SHA."
+    )
+    parser.add_argument(
+        "--kernel-name", help="Explicit kernelspec (proof mode never falls back)."
+    )
+    parser.add_argument(
+        "--expected-python", type=Path, help="Expected absolute child interpreter path."
+    )
+    parser.add_argument(
+        "--expected-python-version",
+        help="Expected full child Python version, e.g. 3.12.14.",
+    )
+    parser.add_argument("--scenario", choices=("retail_orders", "sample_dirty"))
+    parser.add_argument(
+        "--credential-source",
+        choices=("none", "process"),
+        default="none",
+        help="Proof only: none for preparation; explicit process OPENAI_API_KEY for future authorized execution. No dotenv/Windows lookup.",
+    )
     args = parser.parse_args()
+
+    if args.proof:
+        sys.exit(run_proof(args))
+    if (
+        args.prepare_only
+        or args.attempt_dir
+        or args.source_sha
+        or args.kernel_name
+        or args.expected_python
+        or args.expected_python_version
+        or args.scenario
+        or args.credential_source != "none"
+    ):
+        parser.error("proof options require --proof")
 
     print(f"OK  Selected notebook: {NOTEBOOK_PATH}")
     if not NOTEBOOK_PATH.is_file():
         print(f"ERR Notebook not found: {NOTEBOOK_PATH}")
-        print("    Set IDD_NOTEBOOK to an existing notebook filename if overriding the default.")
+        print(
+            "    Set IDD_NOTEBOOK to an existing notebook filename if overriding the default."
+        )
         sys.exit(1)
 
     if args.preflight:
@@ -739,7 +827,7 @@ def main():
         # Write resume flag; notebook kernel reads this file to activate resume mode
         resume_flag_path.write_text(saved_tid, encoding="utf-8")
         print(f"OK  --resume: will resume thread_id={saved_tid}")
-        print(f"OK  --resume: _idd_resume.flag written, checkpoints.sqlite preserved")
+        print("OK  --resume: _idd_resume.flag written, checkpoints.sqlite preserved")
     else:
         # Fresh run: remove resume flag so notebook doesn't accidentally resume
         if resume_flag_path.exists():
@@ -756,11 +844,15 @@ def main():
         sys.exit(1)
 
     kernel_name = select_kernel_name()
-    if (
-        skip_notebook_installs.strip().lower() in {"1", "true", "yes", "on"}
-        and not probe_kernel_scientific_stack(kernel_name)
-    ):
-        print("ERR Scientific stack preflight failed; aborting live notebook execution.")
+    if skip_notebook_installs.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    } and not probe_kernel_scientific_stack(kernel_name):
+        print(
+            "ERR Scientific stack preflight failed; aborting live notebook execution."
+        )
         if resume_flag_path.exists():
             resume_flag_path.unlink()
         sys.exit(1)

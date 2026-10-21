@@ -151,6 +151,12 @@ jobs:
           IDD_KERNEL_NAME: idd-preflight
         run: python -m pytest tests/smoke/test_real_kernel_notebook.py -v -s
 
+      - name: Run CP5-A synthetic proof runner regressions (no keys)
+        env:
+          IDD_RUN_KERNEL_SMOKE: "1"
+          IDD_KERNEL_NAME: idd-preflight
+        run: python -m pytest tests/smoke/test_proof_runner_kernel.py -v -s
+
       - name: Run real-kernel notebook validation (SQLite absent - package uninstalled)
         env:
           IDD_RUN_KERNEL_SMOKE: "1"
