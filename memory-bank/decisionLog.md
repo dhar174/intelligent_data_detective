@@ -417,4 +417,41 @@ Following Checkpoint 4's canonical notebook integration, executing production ve
 - All 11 verification suites are 100% green on Windows 11 local.
 - Repository is formally locked in a certified ready state awaiting owner authorization for live proof runs.
 
+---
+
+## 2026-10-22 — ADR: Draft PR #175 Architectural Review & Approval (Cell 57 Figure Metadata Order)
+
+### Status
+✅ APPROVED FOR MERGE (Formal independent review signed by Antigravity). Awaiting owner merge to `main` and subsequent re-authorization for CP5 live campaign retry.
+
+### Context
+During Attempt 1 (`retail_orders`) of the CP5 Two-Run Live Proof Campaign on revision `01823808203560993f3ab27a8cdf647805653e6f`, execution halted at Cell 75 with `STREAM_FAILURE`. Forensic analysis isolated an `UnboundLocalError` in Cell 57 (`section_worker`):
+- `default_instruction` string formatting referenced `expected_viz_str` at line 2716 before `expected_viz_str` was assigned at lines 2723–2726.
+- The failure halted Attempt 1 prior to model invocation, and Attempt 2 was refused under stopping rules.
+- Draft PR #175 was opened on branch `codex/cp5-cell57-expected-viz` (commit `f9bda27d252c54ce49d7814625b1325502ab76df`) to resolve the ordering defect.
+
+### Decision
+1. **Verbatim Relocation via Active Sentinel (Patch CP5-SW-FIGURE-ORDER)**:
+   - Relocate the figure metadata initialization block verbatim ahead of `default_instruction` construction in `_patch_notebook.py` (lines 11053–11064), within the active section-scoped W13J-SW transformation.
+   - Retain the retired W11-SW loop untouched.
+   - Preserve all figure titles, descriptions, types, paths, IDs, instruction composition, and compact-prompt behavior.
+2. **Notebook Regeneration & Parity Invariants**:
+   - Regenerate `IntelligentDataDetective_beta_v5_patched.ipynb` via `python _patch_notebook.py`.
+   - Maintain strictly 99 cells intact; only Cell 57 source differs across the entire notebook.
+   - Preserve graph topology (15 nodes, 33 edges [21 conditional], 70 State fields).
+   - Maintain 100% byte-for-byte regeneration idempotency (SHA-256 `7844ac35e5edd5567fa68d47315b55e87e838692c6064dc43cecfc491e8986ec`).
+3. **Rigorous Test Suite Addition (`tests/unit/test_section_worker.py`)**:
+   - Add 8 focused regression tests executing the actual generated function body with canonical models/messages and stubbed agent boundary.
+   - Verify reproduction: 6 tests fail on unmodified baseline with `UnboundLocalError`, 2 reroute controls pass.
+   - Verify resolution: all 8 tests pass post-fix locally and in a fresh real Jupyter kernel (`GENERATED_CELL57_NO_KEY_KERNEL_PASS`).
+
+### Consequences
+- Cell 57 `section_worker` executes cleanly without `UnboundLocalError`.
+- 225/225 tests pass locally across 6 suites (8/8 section worker, 38/38 parity guard, 16/16 error handling, 76/76 runner, 54/54 diagnostics, 33/33 notebook integrity).
+- Broad unit/integration suites pass 1,003 tests with 0 failures.
+- Zero drift against canonical modules and manifest digests.
+- Ready for owner merge to `main`.
+- Live inference spend remains strictly gated at $0.00 until owner re-authorizes the CP5 proof campaign.
+
+
 

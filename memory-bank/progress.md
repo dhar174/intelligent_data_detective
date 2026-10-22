@@ -22,7 +22,8 @@
 - [x] Checkpoint 5 (CP5-A) Fail-Closed Proof Runner & Child-Kernel Execution (PR #170)
 - [x] Checkpoint 5 (CP5) Final No-Key Readiness Gate Verified 100% Green (Issue #165, PR #171)
 - [!] Checkpoint 5 (CP5) Two-Run Live Proof Campaign Attempt 1 (retail_orders) on rev 01823808203560993f3ab27a8cdf647805653e6f: FAILED (STREAM_FAILURE at Cell 75, UnboundLocalError expected_viz_str in Cell 57). Campaign HALTED; Attempt 2 (sample_dirty) REFUSED under stopping rules.
-- [ ] Remediate Cell 57 expected_viz_str ordering in _patch_notebook.py, regenerate notebook, and obtain authorization for retry.
+- [x] Remediate Cell 57 expected_viz_str ordering in _patch_notebook.py (Draft PR #175, commit f9bda27d252c54ce49d7814625b1325502ab76df) — Reviewed and APPROVED (225/225 tests green, 99 cells preserved). Ready for merge to main.
+- [ ] Owner merge of PR #175 to main and re-authorization for CP5 live proof campaign retry.
 
 ## What works
 - Anti-drift parity guard: **38/38 pass** (`tests/unit/test_core_parity_guard.py`)
@@ -35,14 +36,14 @@
 - Real-kernel scientific smoke: **3/3 passed** (`tests/smoke/test_scientific_kernel.py`)
 - Real-kernel proof runner smoke: **18/18 passed** (`tests/smoke/test_real_kernel_proof_runner.py`)
 - Real-kernel notebook smoke: **21/21 passed** (`tests/smoke/test_real_kernel_notebook.py`)
+- Section worker figure metadata ordering: **8/8 pass** (`tests/unit/test_section_worker.py`, verified locally and in real Jupyter kernel)
 - Proof runner preparation CLI (`idd_proof.py`): exit 0, status `PREPARED_NO_PRODUCTION_EXECUTION`, zero production cells executed, `cp5_pass=False`, zero credentials loaded.
 - Fail-closed negative control: `KERNEL_IDENTITY_MISMATCH` triggers controlled exit 1 and preserves partial evidence.
 - Notebook & graph invariants: strictly 99 cells intact, 15 nodes, 33 edges (21 conditional), 70 State fields.
 
 ## What is incomplete
-- Remediation of Cell 57 `UnboundLocalError`: `expected_viz_str` is referenced in `default_instruction` before being assigned. Needs surgical patch in `_patch_notebook.py`.
-- Production live proof execution: halted under stopping rules; Attempt 2 refused. Awaiting patch, verification, and re-authorization.
-- Evidence preserved: `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1`.
+- Production live proof execution: Attempt 1 failed at Cell 75 (`UnboundLocalError` in Cell 57). Defect resolved in PR #175 and reviewed/approved. Awaiting owner merge to main and campaign re-authorization.
+- Preserved failure evidence: `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1` (untouched).
 
 ## Validation status
 Windows 11 local verification (Python 3.12.2) 100% green across all no-key test suites, preparation CLI runs, real-kernel smokes, and negative controls.
@@ -54,13 +55,14 @@ python -m pytest tests/unit/test_core_parity_guard.py -v
 python -m pytest tests/unit/test_proof_runner.py -v
 python -m pytest tools/diagnostics/test_cp0_diagnostics.py -v
 python -m pytest test_error_handling_framework.py -v
+python -m pytest tests/unit/test_section_worker.py -v
 python -m pytest tests/smoke/test_scientific_kernel.py tests/smoke/test_real_kernel_proof_runner.py tests/smoke/test_real_kernel_notebook.py -v
 python idd_proof.py prepare --scenario retail_orders --target-dir ../proof_attempts/retail_orders
 python idd_proof.py prepare --scenario sample_dirty --target-dir ../proof_attempts/sample_dirty
 ```
 
 ## Last meaningful update
-Issue #165: CP5 Final No-Key Readiness Gate verified 100% green across all test suites, out-of-tree preparation runs, and negative controls at head `281803b6681af98d0a20a7e0bbfc34c45a3407fb`. Ready for owner authorization.
+Draft PR #175: Antigravity architectural review completed and APPROVED for commit `f9bda27d252c54ce49d7814625b1325502ab76df`. Patch CP5-SW-FIGURE-ORDER resolves Cell 57 UnboundLocalError. 225/225 tests pass across 6 suites; 99 cells, 15 nodes/33 edges/70 State fields preserved; byte-identical regeneration determinism confirmed. Ready for merge to main and subsequent owner re-authorization for CP5 live proof campaign.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
@@ -360,5 +362,32 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
     - Real-kernel proof runner smoke (`tests/smoke/test_real_kernel_proof_runner.py`): **18/18 passed**.
     - Real-kernel notebook smoke (`tests/smoke/test_real_kernel_notebook.py`): **21/21 passed**.
 - Status: **CP5 FINAL NO-KEY READINESS GATE COMPLETE — READY FOR OWNER AUTHORIZATION** ($0.00 live spend incurred).
+
+### 2026-10-22 — Draft PR #175: Cell 57 Figure Metadata Order Remediation (APPROVED FOR MERGE)
+- Scope Delivered:
+  - PR: Draft PR #175 ("fix(report): initialize Cell 57 figure metadata before instruction").
+  - Head SHA: `f9bda27d252c54ce49d7814625b1325502ab76df` on branch `codex/cp5-cell57-expected-viz`.
+  - Base SHA: `5d75b94ac2eba61737e05b588232c72f4f4a389a` on `main`.
+  - Review Verdict: **APPROVED FOR MERGE** (Formal independent architectural review completed by Antigravity).
+- Problem Resolved:
+  - `UnboundLocalError` in Cell 57 (`section_worker`), where `default_instruction` referenced `expected_viz_str` prior to assignment.
+  - Caused `STREAM_FAILURE` at Cell 75 during CP5 Attempt 1 (`retail_orders`), halting execution.
+- Resolution Mechanism (Patch CP5-SW-FIGURE-ORDER):
+  - In `_patch_notebook.py` (lines 11053–11064), updated the active section-scoped W13J-SW transformation to construct `expected_viz_str` ahead of `default_instruction` formatting.
+  - Regenerated `IntelligentDataDetective_beta_v5_patched.ipynb` cleanly (SHA-256 `7844ac35e5edd5567fa68d47315b55e87e838692c6064dc43cecfc491e8986ec`).
+- Test & Verification Baseline:
+  - Focused section worker regression: **8/8 passed** (`tests/unit/test_section_worker.py`), reproducing the 6 pre-fix failures and proving clean post-fix execution locally and in a fresh real Jupyter kernel.
+  - Parity guard: **38/38 passed** (`tests/unit/test_core_parity_guard.py`).
+  - Mandatory error handling framework: **16/16 passed** (`test_error_handling_framework.py`).
+  - Proof runner unit tests: **76/76 passed** (`tests/unit/test_proof_runner.py`).
+  - CP0 diagnostic suite: **54/54 passed** (`tools/diagnostics/test_cp0_diagnostics.py`).
+  - Notebook integrity: **33/33 passed** (`test_validate_notebook_integrity.py`).
+  - Total local suite: **225/225 passed** across 6 suites; broad unit/integration passed 1,003 with 0 failures; real-kernel smokes passed 47/47.
+- Architectural Invariants Preserved:
+  - Strictly 99 cells intact; only Cell 57 source differs across the entire notebook.
+  - Graph topology: 15 nodes, 33 edges (21 conditional), 70 State fields.
+  - Canonical modules and `idd_manifest.json` SHA-256 digests 100% verified.
+- Status: **APPROVED — READY FOR MERGE TO MAIN AND SUBSEQUENT OWNER RE-AUTHORIZATION FOR CP5 LIVE PROOF CAMPAIGN**.
+
 
 

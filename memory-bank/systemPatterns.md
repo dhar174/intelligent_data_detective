@@ -574,6 +574,31 @@ Eliminating these edges or rerouting directly between workers causes race condit
    - Running in dedicated attempt directories outside the git worktree guarantees that run artifacts (CSVs, charts, PDFs, SQLite checkpoint databases, and logs) never dirty the git tree or trigger false-positive anti-drift detections.
 <!-- session-curated:2026-10-21-cp5-proof-runner:end -->
 
+<!-- session-curated:2026-10-22-cp5-sw-figure-order:start -->
+### Pattern: Section Worker Figure Metadata Initialization Order (CP5-SW-FIGURE-ORDER)
+**Pattern:** In Cell 57 (`section_worker`), figure metadata and `expected_viz_str` preparation must strictly precede `default_instruction` string interpolation:
+```python
+# Prepare expected visualization metadata FIRST
+expected_viz_str = ""
+if section.required_figures:
+    figure_descs = []
+    for fig_id in section.required_figures:
+        # lookup and format figure title, desc, path...
+        figure_descs.append(...)
+    expected_viz_str = f"The following figures were generated: ...\n" + "\n".join(figure_descs)
+
+# Construct instruction SECOND using populated expected_viz_str
+default_instruction = f"""...
+{expected_viz_str}
+..."""
+```
+**Why:**
+1. **UnboundLocalError Prevention**: In Python functions, referencing a variable in an f-string before its assignment causes Python to treat it as local throughout the scope, raising `UnboundLocalError: local variable 'expected_viz_str' referenced before assignment` when executed.
+2. **Fail-Closed Patcher Invariant**: In `_patch_notebook.py`, the active section-scoped W13J-SW transformation uses required-anchor validation to ensure that figure-metadata preparation is relocated ahead of `default_instruction` without introducing syntax drift or altering downstream prompt contracts.
+3. **Regression Prevention**: `tests/unit/test_section_worker.py` (8 tests) enforces this ordering contract by executing the actual compiled Cell 57 body with canonical models/messages and mock boundaries locally and inside a real Jupyter kernel (`GENERATED_CELL57_NO_KEY_KERNEL_PASS`).
+<!-- session-curated:2026-10-22-cp5-sw-figure-order:end -->
+
+
 
 
 

@@ -4,27 +4,28 @@
 # Active Context
 
 ## Current objective
-Triage and remediate Cell 57 `UnboundLocalError` discovered during IDD CP5 Two-Run Live Proof Campaign Attempt 1 (`retail_orders`). Attempt 1 failed at Cell 75 with `STREAM_FAILURE`. Under stopping rules, the campaign is HALTED immediately and Attempt 2 (`sample_dirty`) is REFUSED until Cell 57 is repaired, regenerated, and re-verified.
+Merge and certify Draft PR #175 ("fix(report): initialize Cell 57 figure metadata before instruction"), which successfully resolves the Cell 57 `UnboundLocalError` discovered during IDD CP5 Two-Run Live Proof Campaign Attempt 1. Complete Antigravity architectural review has passed with APPROVED verdict. Awaiting owner merge to main and subsequent owner re-authorization for restarting the CP5 live proof campaign.
 
 ## Why it matters now
-The committed runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb` contains a pre-existing instruction-formatting ordering defect in Cell 57 (`section_worker`): `default_instruction` references `expected_viz_str` in an f-string before line 2723 assigns it. When section execution was dispatched at Cell 75, this triggered an `UnboundLocalError`. The failure was caught in Attempt 1 on revision `01823808203560993f3ab27a8cdf647805653e6f`. The proof runner correctly preserved all evidence and halted execution without proceeding to Attempt 2.
+The pre-existing instruction-formatting ordering defect in Cell 57 (`section_worker`), where `default_instruction` referenced `expected_viz_str` in an f-string before line 2723 assigned it, caused an `UnboundLocalError` at Cell 75 during CP5 Attempt 1 (`retail_orders`). Patch CP5-SW-FIGURE-ORDER in `_patch_notebook.py` cleanly relocates the figure-metadata initialization ahead of instruction formatting within the active W13J-SW transformation. 225/225 tests across 6 suites pass locally, 8/8 in `test_section_worker.py` pass both locally and in a real Jupyter kernel, strictly 99 cells are preserved, and regeneration idempotency is 100% verified.
 
 ## Current status
-- CP5 Two-Run Live Proof Campaign Attempt 1:
-  - Scenario: `retail_orders`
-  - Authorized revision: `01823808203560993f3ab27a8cdf647805653e6f`
-  - Execution outcome: FAILED (`STREAM_FAILURE` at Cell 75, duration 703s, spend ~$0.15)
-  - Campaign Status: HALTED immediately under stopping rules; Attempt 2 (`sample_dirty`) REFUSED
-  - Defect Root Cause: `UnboundLocalError: local variable 'expected_viz_str' referenced before assignment` in `section_worker` (Notebook Cell 57). Line 2715 references `expected_viz_str` in `default_instruction = f"..."` before line 2723 assigns it.
-  - Evidence Location: `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1` (preserved untouched).
-- Canonical core architecture & anti-drift guards: 38/38 pass.
-- Proof runner unit tests: 38/38 pass.
-- Mandatory error handling: 16/16 pass.
-- Real-kernel smokes: 3/3 scientific, 18/18 proof runner, 21/21 notebook pass.
+- Draft PR #175 Architectural Review:
+  - Branch: `codex/cp5-cell57-expected-viz`
+  - Head SHA: `f9bda27d252c54ce49d7814625b1325502ab76df`
+  - Base SHA: `5d75b94ac2eba61737e05b588232c72f4f4a389a` on `main`
+  - Review Verdict: **APPROVED FOR MERGE**
+  - Defect Fixed: `UnboundLocalError: local variable 'expected_viz_str' referenced before assignment` in `section_worker` (Cell 57). Lines 2716-2719 now initialize/populate `expected_viz_str` ahead of `default_instruction` formatting at line 2721.
+  - Test Evidence: 225/225 tests pass locally across 6 suites (8/8 `test_section_worker.py`, 38/38 parity guard, 16/16 error handling, 76/76 runner, 54/54 diagnostics, 33/33 notebook integrity). 1,003 broad tests pass (0 failures), 47 real-kernel tests pass.
+  - Invariants: strictly 99 cells intact; only Cell 57 source differs across entire notebook; graph topology (15 nodes/33 edges/70 State fields) preserved; regeneration byte-identical (SHA-256 `7844ac35e5edd5567fa68d47315b55e87e838692c6064dc43cecfc491e8986ec`).
+- CP5 Live Proof Campaign Status:
+  - Attempt 1 failure evidence safely preserved at `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1` (untouched).
+  - Campaign remains halted with $0.00 spend until owner merges PR #175 and provides explicit re-authorization.
 
 ## Relevant files
-- `_patch_notebook.py` (Cell 57 sentinel block requiring fix)
-- `IntelligentDataDetective_beta_v5_patched.ipynb` (Cell 57)
+- `_patch_notebook.py` (Cell 57 active W13J-SW sentinel block updated)
+- `IntelligentDataDetective_beta_v5_patched.ipynb` (Cell 57 regenerated)
+- `tests/unit/test_section_worker.py` (8 new regression tests)
 - `idd_proof.py`
 - `tools/proof_runner.py`
 - `idd_models.py`, `idd_registry.py`, `idd_state.py`, `idd_tools.py`, `idd_graph.py`, `idd_core.py`, `idd_bootstrap.py`
@@ -34,11 +35,10 @@ The committed runnable notebook `IntelligentDataDetective_beta_v5_patched.ipynb`
 - `tests/unit/test_proof_runner.py`
 
 ## Next recommended steps
-1. Apply fix to `_patch_notebook.py` for Cell 57: construct `expected_viz_str` before interpolating it into `default_instruction`.
-2. Regenerate `IntelligentDataDetective_beta_v5_patched.ipynb` via `python _patch_notebook.py`.
-3. Verify notebook integrity (`validate_notebook_integrity.py`), graph topology (`validate_graph.py`), and parity guard (`test_core_parity_guard.py`).
-4. Re-verify proof runner preparation CLI (`idd_proof.py prepare`) and no-key test suites.
-5. Request authorization before re-running Attempt 1.
+1. Owner merges Draft PR #175 (`f9bda27d252c54ce49d7814625b1325502ab76df`) into `main`.
+2. Sync `main` in the primary local environment and verify local notebook compilation.
+3. Owner provides explicit re-authorization for the CP5 live proof campaign retry.
+4. Execute Attempt 1 retry on `retail_orders` scenario via `idd_proof.py` and validate against the 12/12 + 9/9 twin production gates.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
@@ -1007,3 +1007,48 @@ Establish the definitive, verified no-key production readiness gate for the Inte
 ### Status & Recommendation
 - **READY FOR OWNER AUTHORIZATION**. No live spend authorized ($0.00 spend).
 <!-- session-curated:2026-10-21-cp5-readiness-gate:end -->
+
+<!-- session-curated:2026-10-22-pr175-review-approval:start -->
+## 2026-10-22 — Draft PR #175: Cell 57 Figure Metadata Order Remediation (APPROVED)
+
+### Review Summary & Verdict
+- **PR**: Draft PR #175 ("fix(report): initialize Cell 57 figure metadata before instruction")
+- **Review Head SHA**: `f9bda27d252c54ce49d7814625b1325502ab76df` on branch `codex/cp5-cell57-expected-viz`
+- **Base SHA**: `5d75b94ac2eba61737e05b588232c72f4f4a389a` on `main`
+- **Verdict**: **APPROVED FOR MERGE**. Formal independent architectural review completed by Antigravity.
+
+### Root Cause & Defect Analysis
+During IDD CP5 Two-Run Live Proof Campaign Attempt 1 (`retail_orders`), execution halted at Cell 75 with `STREAM_FAILURE`.
+Forensic investigation revealed an `UnboundLocalError` in notebook Cell 57 (`section_worker`):
+- `default_instruction` f-string construction referenced `expected_viz_str` at line 2716 prior to the figure-metadata initialization block at lines 2723–2726.
+- When section execution commenced, the local variable `expected_viz_str` was unbound, terminating worker execution before invoking `report_section_agent`.
+- Campaign stopping rules took effect immediately: Attempt 1 evidence was safely preserved at `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1` and Attempt 2 (`sample_dirty`) was refused.
+
+### Resolution Mechanism: Patch CP5-SW-FIGURE-ORDER
+- In `_patch_notebook.py` (lines 11053–11064), the active section-scoped W13J-SW transformation cleanly swaps figure metadata preparation ahead of `default_instruction` formatting.
+- In regenerated Cell 57, lines 2716–2719 now initialize/populate `expected_viz_str` before line 2721 constructs `default_instruction`.
+- Preserves all figure titles, descriptions, types, paths, IDs, instruction composition, and compact-prompt behavior.
+- Zero change to the other 98 cells; only Cell 57 source differs across the entire notebook.
+- Regeneration is 100% byte-for-byte deterministic: SHA-256 `7844ac35e5edd5567fa68d47315b55e87e838692c6064dc43cecfc491e8986ec`.
+
+### Test & Validation Evidence
+- **Focused Regressions (`tests/unit/test_section_worker.py`)**: 8/8 passed.
+  - Reproduces pre-fix state: 6 tests failed with `UnboundLocalError` on baseline code, 2 pass-through controls passed.
+  - Post-fix state: all 8 tests pass cleanly.
+  - Executed inside a real fresh Jupyter kernel: 8/8 passed (`GENERATED_CELL57_NO_KEY_KERNEL_PASS`).
+- **Local Test Suites (225/225 passed across 6 suites)**:
+  - `tests/unit/test_section_worker.py`: 8/8
+  - `tests/unit/test_core_parity_guard.py`: 38/38
+  - `test_error_handling_framework.py`: 16/16
+  - `tests/unit/test_proof_runner.py`: 76/76
+  - `tools/diagnostics/test_cp0_diagnostics.py`: 54/54
+  - `test_validate_notebook_integrity.py`: 33/33
+- **Broad Suites**: 1,003 unit/integration tests passed (0 failures, 3 expected skips).
+- **Real-Kernel Smokes**: 47/47 passed (3 scientific + 23 proof runner + 21 notebook).
+- **Invariants**: 99 cells intact, 15 nodes / 33 edges / 70 State fields preserved, canonical manifest SHA-256 digests 100% verified.
+
+### Next Steps & Gating
+1. Ready for owner merge into `main`.
+2. Live spend remains strictly gated at $0.00 until owner re-authorizes the CP5 proof campaign on the merged revision.
+<!-- session-curated:2026-10-22-pr175-review-approval:end -->
+
