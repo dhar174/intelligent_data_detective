@@ -384,3 +384,37 @@ To eliminate this split-brain (Roadmap Issue #140, Companion Issues #144 and #14
 - All 16 error handling tests and all anti-drift tests must pass in CI without exclusions.
 - Ready for Stage 4 full test gate execution and Stage 5 knowledge closeout.
 
+---
+
+## 2026-10-21 — ADR: CP5 Fail-Closed Proof Runner, Clean Preparation Invariants, and Negative Controls (Issue #165, PR #170 & PR #171)
+
+### Status
+✅ Accepted and verified on main at HEAD `281803b6681af98d0a20a7e0bbfc34c45a3407fb`. All mandatory no-key test suites, real-kernel smokes, out-of-tree preparation CLI scenarios, and negative controls verified 100% green on Windows 11 (Python 3.12.2). Zero live spend incurred ($0.00).
+
+### Context
+Following Checkpoint 4's canonical notebook integration, executing production verification runs presented several critical architectural risks:
+1. Running proof executions directly inside the repository working tree risks dirtying source files, polluting git tracking with run artifacts, or clobbering baseline files.
+2. Inadvertently running unverified notebooks against live LLM APIs could incur unauthorized financial spend before all verification gates pass.
+3. Silent runner failures or mismatched Jupyter kernels could mask underlying environment defects or produce corrupt evidence logs.
+4. CP0 diagnostic suite carried an inherited test harness defect in `tools/diagnostics/test_cp0_diagnostics.py` (`test_claim_12_production_tool_cases_pass`) where missing `get_global_df_registry` in `reproduce_drift` namespace caused false-negative failures.
+
+### Decision
+1. **Fail-Closed Proof Runner Architecture (`tools/proof_runner.py` & `idd_proof.py`)**:
+   - Implemented an isolated child-kernel execution runner that strictly mandates out-of-tree target directories.
+   - Enforced two distinct phases: `prepare` (no-key preparation and pre-production validation up to Cell 60) and `run` (production execution requiring explicit invocation).
+   - In `prepare` mode: establishes clean attempt directory, verifies manifest digests, validates notebook integrity (99 cells) and graph topology (15 nodes/33 edges/70 fields), and sets exit code `0` with status `PREPARED_NO_PRODUCTION_EXECUTION` and `cp5_pass=False` without executing production cells or loading API credentials.
+2. **Fail-Closed Negative Preparation Controls**:
+   - `KERNEL_IDENTITY_MISMATCH` explicitly verified: if an unexpected or incompatible kernel is encountered, the runner fails closed with exit code `1` and preserves partial evidence (`attempt.json`, logs) for forensic inspection rather than failing silently.
+3. **Diagnostic Test Harness Polish (PR #171)**:
+   - Repaired Claim 12 production tool cases in `test_cp0_diagnostics.py` by providing `get_global_df_registry` in `reproduce_drift` namespace, bringing CP0 diagnostic suite to 54/54 passing tests.
+4. **Mandatory Owner Authorization Gate**:
+   - No live spend is permitted without explicit owner authorization.
+
+### Consequences
+- Proof runner guarantees complete isolation: no artifacts or temp databases leak into the git working tree.
+- Zero financial spend ($0.00) incurred across entire preflight and preparation verification.
+- CP0 diagnostics pass 54/54.
+- All 11 verification suites are 100% green on Windows 11 local.
+- Repository is formally locked in a certified ready state awaiting owner authorization for live proof runs.
+
+

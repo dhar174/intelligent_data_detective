@@ -14,43 +14,53 @@
 - [x] Validator run and W14 warnings resolved
 - [x] Stale Phase 6 GitHub issues closed/rescoped after W14 proof (#112-#119 closed, #121 post-W14 hardening)
 - [x] No-key CI workflow added for validator/unit/integration checks
-- [ ] Maintenance drift reviewed against future repo changes
+- [x] Checkpoint 1 (CP1) Canonical Models & Registry ContextVar (PR #157, Issue #156)
+- [x] Checkpoint 2 (CP2) Canonical Tools & Error Handling Framework (Issue #158)
+- [x] Checkpoint 3 (CP3) Canonical State Schema & 15-Node StateGraph (PR #161, Issue #160)
+- [x] Checkpoint 4 (CP4) Canonical Notebook Integration & Anti-Drift Parity Guard (PR #163, Issue #162)
+- [x] Issue #164 Real-Kernel Runtime Verification & Checkpoint Migration Integrity (PR #169)
+- [x] Checkpoint 5 (CP5-A) Fail-Closed Proof Runner & Child-Kernel Execution (PR #170)
+- [x] Checkpoint 5 (CP5) Final No-Key Readiness Gate Verified 100% Green (Issue #165, PR #171)
+- [!] Checkpoint 5 (CP5) Two-Run Live Proof Campaign Attempt 1 (retail_orders) on rev 01823808203560993f3ab27a8cdf647805653e6f: FAILED (STREAM_FAILURE at Cell 75, UnboundLocalError expected_viz_str in Cell 57). Campaign HALTED; Attempt 2 (sample_dirty) REFUSED under stopping rules.
+- [ ] Remediate Cell 57 expected_viz_str ordering in _patch_notebook.py, regenerate notebook, and obtain authorization for retry.
 
 ## What works
-- Core test suite: **22/22 pass** (`test_intelligent_data_detective.py`)
-- Error handling tests: **16/16 pass** (`test_error_handling_framework.py` passes completely without `--deselect`)
-- Memory test suites: all pass
-- Notebook execution: functional end-to-end (requires `OPENAI_API_KEY`; 6–25 min)
-- Historical W14 completion proof: `validate_run.py` 12/12 and `validate_artifact_quality.py` 9/9 on `retail_orders`; not a fresh PR #153 proof.
-- Historical W14 artifacts: canonical root `final_report.html`, `final_report.md`, `final_report.pdf`, resolving HTML images, parseable PDF, no marker `.txt` artifacts.
-- Agent stack: all guidance files present, managed sections safe for future maintenance runs
+- Anti-drift parity guard: **38/38 pass** (`tests/unit/test_core_parity_guard.py`)
+- Proof runner unit tests: **38/38 pass** (`tests/unit/test_proof_runner.py`)
+- Issue #164 evidence report: **5/5 pass** (`tools/verify_issue_164_evidence.py`)
+- Mandatory error handling tests: **16/16 pass** (`test_error_handling_framework.py`)
+- Full CP0 diagnostic suite: **54/54 pass** (`tools/diagnostics/test_cp0_diagnostics.py`)
+- Unit, integration, & validate_run suites: **732 passed, 9 skipped** (1 legacy Run 88 fixture, 8 NTFS permission/pyarrow isolation)
+- Core regression, memory lifecycle, prompt template suites: **127/127 passed**
+- Real-kernel scientific smoke: **3/3 passed** (`tests/smoke/test_scientific_kernel.py`)
+- Real-kernel proof runner smoke: **18/18 passed** (`tests/smoke/test_real_kernel_proof_runner.py`)
+- Real-kernel notebook smoke: **21/21 passed** (`tests/smoke/test_real_kernel_notebook.py`)
+- Proof runner preparation CLI (`idd_proof.py`): exit 0, status `PREPARED_NO_PRODUCTION_EXECUTION`, zero production cells executed, `cp5_pass=False`, zero credentials loaded.
+- Fail-closed negative control: `KERNEL_IDENTITY_MISMATCH` triggers controlled exit 1 and preserves partial evidence.
+- Notebook & graph invariants: strictly 99 cells intact, 15 nodes, 33 edges (21 conditional), 70 State fields.
 
 ## What is incomplete
-- #115/#119 remain open production-completion blockers: the reported September 29 run failed 5/12 with zero sections and `report=None`. PR #153 is bootstrap/registry prerequisite work, not report routing or production certification.
-- Whole-runtime consolidation of the textual Python export belongs to #140; registry ownership/deduplication and broader persistence policy remain in #141. Only selected snippet parity is tested here.
-- Antigravity memory-rule proposals are inactive evidence for #152, not empirically loaded rules; [preserved memory proposal](../docs/evidence/proposals/issue-152-memory.txt), [workflow proposal](../docs/evidence/proposals/issue-152-memory-workflow.txt).
-- CI intentionally excludes the full API-key notebook trajectory proof; `.github/workflows/copilot-setup-steps.yml` currently gates only no-key validator/unit/integration checks, root regression checks, notebook smoke validation, and targeted lint/format steps on `pull_request`, `push` to `main`, and `workflow_dispatch`.
-- `automation.instructions.md` is a scaffolded stub; no additional automated hooks exist yet.
-- Deferred prompt/report polish remains blocked unless explicitly scoped against W14 gates.
-- The historical test failure in `test_error_handling_framework.py` is fully resolved by signature-aware binding in `idd_tools.py` (16/16 pass without `--deselect`).
+- Remediation of Cell 57 `UnboundLocalError`: `expected_viz_str` is referenced in `default_instruction` before being assigned. Needs surgical patch in `_patch_notebook.py`.
+- Production live proof execution: halted under stopping rules; Attempt 2 refused. Awaiting patch, verification, and re-authorization.
+- Evidence preserved: `C:\Users\darf3\Documents\cp5_attempts\attempt_live_retail_orders_20261021_run1`.
 
 ## Validation status
-PR #153 revised-worktree evidence: [commands, dependency environment, skips, known isolated failure, and actual-kernel smoke](../docs/evidence/pr-153-validation.json). Required local suites passed (451 no-key + 94 root/prompt + 15 required error-handling); actual-kernel smoke passed 3/3. The exact pre-existing signature exception still fails separately. These are local results, not hosted CI or production certification.
+Windows 11 local verification (Python 3.12.2) 100% green across all no-key test suites, preparation CLI runs, real-kernel smokes, and negative controls.
 
 ```bash
-python -m pytest test_validate_run.py -q
-python -m pytest test_validate_run.py tests/unit tests/integration -q
-python -m flake8 validate_run.py validate_artifact_quality.py test_validate_run.py --max-line-length=120 --extend-ignore=E203,W503
-python validate_run.py --latest --log-path notebook_run_log.txt --window 180
-python validate_artifact_quality.py --latest
-python3 -m pytest test_intelligent_data_detective.py -v          # 22/22
-python3 -m pytest test_error_handling_framework.py -v            # 15/16
-python3 -m pytest -v                                             # all suites
-flake8 test_intelligent_data_detective.py --max-line-length=88 --extend-ignore=E203,E501
+python validate_notebook_integrity.py IntelligentDataDetective_beta_v5_patched.ipynb
+python validate_graph.py --notebook IntelligentDataDetective_beta_v5_patched.ipynb
+python -m pytest tests/unit/test_core_parity_guard.py -v
+python -m pytest tests/unit/test_proof_runner.py -v
+python -m pytest tools/diagnostics/test_cp0_diagnostics.py -v
+python -m pytest test_error_handling_framework.py -v
+python -m pytest tests/smoke/test_scientific_kernel.py tests/smoke/test_real_kernel_proof_runner.py tests/smoke/test_real_kernel_notebook.py -v
+python idd_proof.py prepare --scenario retail_orders --target-dir ../proof_attempts/retail_orders
+python idd_proof.py prepare --scenario sample_dirty --target-dir ../proof_attempts/sample_dirty
 ```
 
 ## Last meaningful update
-Post-W14 repo hygiene: closed stale Phase 6 issues, rescoped #121 as defensive hardening, replaced the CI stub with no-key validation, and added a lightweight W14 patched-notebook marker regression test.
+Issue #165: CP5 Final No-Key Readiness Gate verified 100% green across all test suites, out-of-tree preparation runs, and negative controls at head `281803b6681af98d0a20a7e0bbfc34c45a3407fb`. Ready for owner authorization.
 <!-- repo-agent-bootstrap:managed:end -->
 
 <!-- session-curated:start -->
@@ -326,5 +336,29 @@ A run that hits 8/8 structural gates but fails any of the 12 content gates is **
   - Provenance: `idd_bootstrap.py` verified across all 7 canonical modules.
   - Code Quality: `black --check` and `flake8` 100% clean.
 - Status: **CP4 RE-REVIEW HARDENING PASS COMPLETE — PR #163 READY FOR FINAL MERGE GATE** (Issues #140, #144, #145, #162, PR #163).
+
+### 2026-10-21 — Checkpoint 5 (CP5): Final No-Key Readiness Gate (Issue #165, PR #171 on top of PR #170 & PR #169)
+- Scope Delivered:
+  - Provenance & Merge Lineage:
+    - Merged PR #171 (CP5 diagnostic and test harness polish) on top of PR #170 (CP5-A fail-closed proof runner) and PR #169 (Issue #164 real-kernel verification).
+    - Head commit: `281803b6681af98d0a20a7e0bbfc34c45a3407fb` on `main`.
+  - Fail-Closed Proof Runner & Out-of-Tree Preparation (`idd_proof.py` / `tools/proof_runner.py`):
+    - Executed `prepare` in fresh attempt directories outside source repo for `retail_orders` and `sample_dirty`.
+    - Both scenarios cleanly reached exit code `0` and status `PREPARED_NO_PRODUCTION_EXECUTION`.
+    - Zero production graph cells executed, `cp5_pass=False`, zero credentials loaded ($0.00 live spend).
+    - Verified negative preparation control: `KERNEL_IDENTITY_MISMATCH` triggers controlled exit `1` and preserves partial attempt evidence for forensic inspection.
+  - Verification Baseline (Windows 11, Python 3.12.2):
+    - Notebook & graph invariants: strictly 99 cells intact (`validate_notebook_integrity.py`), 15 nodes, 33 edges (21 conditional), 70 State fields (`validate_graph.py`).
+    - Parity guard (`tests/unit/test_core_parity_guard.py`): **38/38 passed**.
+    - Proof runner unit tests (`tests/unit/test_proof_runner.py`): **38/38 passed**.
+    - Issue #164 evidence report (`tools/verify_issue_164_evidence.py`): **5/5 passed**.
+    - Mandatory error handling framework (`test_error_handling_framework.py`): **16/16 passed**.
+    - Full CP0 diagnostic suite (`tools/diagnostics/test_cp0_diagnostics.py`): **54/54 passed** (including repaired Claim 12 production tool cases).
+    - Unit, integration, & validate_run suites: **732 passed, 9 skipped** (1 legacy Run 88 fixture, 8 NTFS permission/pyarrow isolation).
+    - Core regression, memory lifecycle, prompt template suites: **127/127 passed**.
+    - Real-kernel scientific smoke (`tests/smoke/test_scientific_kernel.py`): **3/3 passed**.
+    - Real-kernel proof runner smoke (`tests/smoke/test_real_kernel_proof_runner.py`): **18/18 passed**.
+    - Real-kernel notebook smoke (`tests/smoke/test_real_kernel_notebook.py`): **21/21 passed**.
+- Status: **CP5 FINAL NO-KEY READINESS GATE COMPLETE — READY FOR OWNER AUTHORIZATION** ($0.00 live spend incurred).
 
 

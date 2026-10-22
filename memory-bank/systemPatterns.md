@@ -562,5 +562,18 @@ Eliminating these edges or rerouting directly between workers causes race condit
 4. **Negative Controls**: Tests synthetic redefinitions, manifest digest tampering, missing modules, and missing files to guarantee the guard fails closed.
 <!-- session-curated:2026-10-15-cp4-notebook-integration:end -->
 
+<!-- session-curated:2026-10-21-cp5-proof-runner:start -->
+### Pattern: Fail-Closed Proof Runner & Out-of-Tree Child-Kernel Execution (CP5)
+**Pattern:** Production and preparation verification runs must execute via `idd_proof.py` / `tools/proof_runner.py` targeting strictly isolated directories outside the source repository:
+1. **Two-Stage Execution Protocol**:
+   - `prepare`: Sets up the out-of-tree workspace, copies required datasets and the patched notebook, and executes preflight cells up to Cell 60 in an isolated child Jupyter kernel. Returns status `PREPARED_NO_PRODUCTION_EXECUTION` and `cp5_pass=False` with zero API credentials loaded and zero live spend ($0.00).
+   - `run`: Executes production graph cells only when explicitly authorized and commanded.
+2. **Fail-Closed Negative Controls**:
+   - If an unexpected or mismatched kernel identity is detected (`KERNEL_IDENTITY_MISMATCH`), the runner immediately terminates with exit code `1`, preserving forensic partial evidence (`attempt.json`, execution logs) in the target directory without corrupting git or working tree state.
+3. **Workspace Hygiene & Non-Contamination**:
+   - Running in dedicated attempt directories outside the git worktree guarantees that run artifacts (CSVs, charts, PDFs, SQLite checkpoint databases, and logs) never dirty the git tree or trigger false-positive anti-drift detections.
+<!-- session-curated:2026-10-21-cp5-proof-runner:end -->
+
+
 
 
