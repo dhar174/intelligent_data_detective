@@ -11050,6 +11050,18 @@ def main():
         if sec_end < 0:
             sec_end = len(src)
         sec = src[sec_start:sec_end]
+        # CP5: prepare figure metadata before default_instruction interpolates it.
+        # Move the existing block verbatim to preserve descriptions and precedence.
+        sec = replace_required_regex(
+            sec,
+            r'(?P<instruction>    default_instruction = f"\{user_t\}[^\n]*\n[\s\S]*?)'
+            r'(?P<figures>    expected_viz = section.expected_figures if section else \[\]\n'
+            r'    expected_viz_str = [^\n]+\n'
+            r'    for viz in expected_viz:\n'
+            r'        expected_viz_str \+= [^\n]+\n\n)',
+            r"\g<figures>\g<instruction>",
+            patch_id="CP5-SW-FIGURE-ORDER",
+        )
         section_render = '    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **rg_vars)\n'
         compact_render = (
             f"    # {_W13J_SW_GUARD}\n"
