@@ -797,6 +797,229 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
     return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
 
 
+def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
+    """Repair native completion at notebook boundaries without changing core contracts."""
+
+    def edit_function(name, transform):
+        nonlocal source
+        matches = [
+            n
+            for n in ast.parse(source).body
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        ]
+        if len(matches) != 1:
+            raise RequiredPatchError(f"CP5 native completion: expected one {name}")
+        node = matches[0]
+        lines = source.splitlines(keepends=True)
+        original = "".join(lines[node.lineno - 1 : node.end_lineno])
+        replacement = transform(original)
+        source = (
+            "".join(lines[: node.lineno - 1])
+            + replacement
+            + "".join(lines[node.end_lineno :])
+        )
+
+    def required(text, old, new):
+        return replace_required(text, old, new, patch_id="CP5-NATIVE-COMPLETION")
+
+    if cell_idx == 25:
+        nodes = [
+            n
+            for n in ast.parse(source).body
+            if isinstance(n, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "data_cleaner_prompt_template"
+                for t in n.targets
+            )
+        ]
+        if len(nodes) != 1:
+            raise RequiredPatchError(
+                "CP5 native completion: expected cleaner prompt template"
+            )
+        node = nodes[0]
+        lines = source.splitlines(keepends=True)
+        prompt = "".join(lines[node.lineno - 1 : node.end_lineno])
+        prompt = replace_required(
+            prompt,
+            "`respond`",
+            "`CleaningMetadata`",
+            patch_id="CP5 cleaner template response tool",
+            count=4,
+        )
+        source = (
+            "".join(lines[: node.lineno - 1])
+            + prompt
+            + "".join(lines[node.end_lineno :])
+        )
+    elif cell_idx == 44:
+
+        def cleaner_prompt(text):
+            return required(
+                text,
+                "Use the runtime SystemMessage for the dataset description",
+                "Use the runtime context message for the dataset description",
+            )
+
+        def visualization_prompt(text):
+            start = text.index(
+                "    prompt = visualization_prompt_template.partial(**init_vis_vars)"
+            )
+            end = text.index("    return create_agent(", start)
+            return (
+                text[:start]
+                + """    # CP5-NATIVE-COMPLETION: rendered task context arrives at invocation time.
+    system_prompt = "\\n".join([
+        "You are the Visualization Agent for the Intelligent Data Detective workflow.",
+        "Use the runtime context message for the assigned task, registered DataFrame IDs, dataset description, insights, tools, and output schema.",
+        "Generate only the requested real visualizations through the provided tools and retain their actual paths and figure metadata.",
+        "Preserve the assigned figure identifiers; never invent files or claim an unfinished figure is complete.",
+        "Completion: call the VisualizationResults structured-response tool exactly once with the actual DataVisualization children, then stop.",
+    ])
+"""
+                + text[end:]
+            )
+
+        edit_function("create_data_cleaner_agent", cleaner_prompt)
+        edit_function("create_visualization_agent", visualization_prompt)
+    elif cell_idx == 57:
+        wrappers = {
+            "initial_analysis": "_iaexc",
+            "data_cleaner": "_exc",
+            "analyst": "_aexc",
+            "visualization": "_vexc",
+            "viz_evaluator": "_veexc",
+            "report_orchestrator": "_roexc",
+            "report_packager": "_rexc",
+        }
+        for role, error in wrappers.items():
+
+            def strict_wrapper(text, role=role, error=error):
+                pattern = rf"(?m)^([ ]+)except Exception as {error}:[^\n]*\n"
+                match = re.search(pattern, text)
+                if match is None:
+                    raise RequiredPatchError(
+                        f"CP5 native completion: missing {role} handler"
+                    )
+                indent = match.group(1) + "    "
+                guard = (
+                    f"{indent}# CP5-STRICT-NATIVE: fail before retries and recovery.\n"
+                    f"{indent}import os as _cp5_os\n"
+                    f"{indent}if _cp5_os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+                    f"{indent}    raise\n"
+                )
+                text = text[: match.end()] + guard + text[match.end() :]
+                if role in {"data_cleaner", "visualization"}:
+                    text = required(
+                        text,
+                        "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n",
+                        "    # CP5-NATIVE-CONTEXT: keep rendered context without another system role.\n"
+                        "    from langchain_core.messages import HumanMessage as _CP5_HM\n"
+                        "    _w2_msgs = [_CP5_HM(content=m.content, name='runtime_context', id=m.id)\n"
+                        "                if isinstance(m, _W2_SM) else m for m in _w2_msgs]\n",
+                    )
+                return text
+
+            edit_function(f"_safe_{role}_invoke", strict_wrapper)
+
+        edit_function(
+            "viz_evaluator_node",
+            lambda text: strict_wrapper(text, role="viz_evaluator_node", error="_w4_ve_exc"),
+        )
+
+        def cleaner_instruction(text):
+            text = required(
+                text,
+                "call the `respond` tool with CleaningMetadata",
+                "call the `CleaningMetadata` response tool",
+            )
+            return required(
+                text, "Call respond IMMEDIATELY", "Call CleaningMetadata IMMEDIATELY"
+            )
+
+        edit_function("data_cleaner_node", cleaner_instruction)
+
+        def worker_completion(text):
+            text = replace_required(
+                text,
+                "DataVisualization.model_json_schema()",
+                "VisualizationResults.model_json_schema()",
+                patch_id="CP5 native worker response schema",
+                count=2,
+            )
+            text = required(
+                text,
+                '    cm = state.get("cleaning_metadata")',
+                '''    # Pass the assigned ID to the model instead of rewriting its output ID.
+    _cp5_spec = state.get("viz_spec") or state.get("individual_viz_task")
+    if isinstance(_cp5_spec, dict):
+        _cp5_spec = VizSpec.model_validate(_cp5_spec)
+    if isinstance(_cp5_spec, VizSpec) and _cp5_spec.viz_id:
+        vis_vars["visualization_task"] = f"{task}\\nAssigned visualization_id: {_cp5_spec.viz_id}"
+
+    cm = state.get("cleaning_metadata")''',
+            )
+            start = text.index(
+                "    if not isinstance(result, dict) and isinstance(result, DataVisualization):"
+            )
+            return (
+                text[:start]
+                + """    # CP5-NATIVE-COMPLETION: publish only this worker's actual figure deltas.
+    if isinstance(result, (DataVisualization, VisualizationResults)):
+        sr = result
+        result_messages = [AIMessage(content="Visualization response received.", name="viz_worker")]
+    elif isinstance(result, dict):
+        sr = result.get("structured_response")
+        result_messages = result.get("messages") or []
+    else:
+        raise ValueError("Visualization worker returned no canonical structured response")
+    if isinstance(sr, dict):
+        sr = (VisualizationResults.model_validate(sr) if "visualizations" in sr
+              else DataVisualization.model_validate(sr))
+    if isinstance(sr, DataVisualization):
+        sr = VisualizationResults(
+            visualizations=[sr], reply_msg_to_supervisor=sr.reply_msg_to_supervisor,
+            finished_this_task=sr.finished_this_task, expect_reply=sr.expect_reply,
+        )
+    if not isinstance(sr, VisualizationResults):
+        raise ValueError("Visualization worker returned no canonical structured response")
+    if not sr.finished_this_task or not sr.visualizations or any(
+        not item.finished_this_task for item in sr.visualizations
+    ):
+        raise ValueError("Visualization worker did not complete its required figures")
+
+    for item in sr.visualizations:
+        memory_text = (
+            f"Viz Worker assigned task: {task}\\n"
+            f"Produced {item.visualization_title} (ID {item.visualization_id}), "
+            f"type {item.visualization_type}, style {item.visualization_style}, path {item.path}.\\n"
+            f"Description: {item.visualization_description}\\n"
+            f"Message to supervisor: {item.reply_msg_to_supervisor}"
+        )
+        update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=memory_text)
+    # The canonical reducers append these deltas across parallel workers.
+    # viz_join validates ownership, deduplicates, and publishes the full inventory.
+    update = {
+        "viz_results": [item.model_dump(mode="json") for item in sr.visualizations],
+        "viz_paths": [item.path for item in sr.visualizations],
+        "messages": result_messages,
+        "last_agent_expects_reply": sr.expect_reply,
+        "last_agent_reply_msg": sr.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": sr.finished_this_task,
+        "last_created_obj": "visualization_results",
+    }
+    if result_messages:
+        update["last_agent_message"] = result_messages[-1]
+    return update
+"""
+            )
+
+        edit_function("viz_worker", worker_completion)
+    else:
+        raise RequiredPatchError(f"CP5 native completion: unexpected cell {cell_idx}")
+    ast.parse(source)
+    return source
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -13396,108 +13619,168 @@ def main():
             break
         new_head = """def viz_join(state: State):
     # W14H-VIZ-JOIN-UNION: union viz_results, visualization_results, viz_paths, and PNG artifacts
-    # Parallel viz workers can race with a last-writer visualization_results reducer.
-    # Rebuild the fan-in from every available channel before downstream evaluation.
+    # Normalize serialized canonical results before collecting their children.
+    # Only explicit current-run paths may supplement structured metadata; never scan.
     _w14h_viz_items = []
+    def _w14h_path_key(_path):
+        _candidate = PathlibPath(str(_path))
+        if not _candidate.is_absolute():
+            # save_viz_for_state(make_relative=True) stores paths under artifacts_path.
+            _root = state.get("artifacts_path") or (WORKING_DIRECTORY / "artifacts")
+            _candidate = PathlibPath(_root) / _candidate
+        return _candidate.resolve()
+    _w14h_ids = set()
+    _w14h_paths = set()
     def _w14h_add_viz(_item):
-        if _item is None:
+        # save_viz_for_state also emits per-worker VisualizationResults snapshots.
+        if isinstance(_item, dict) and "visualizations" in _item:
+            _item = VisualizationResults.model_validate(_item)
+        if isinstance(_item, VisualizationResults):
+            for _child in _item.visualizations:
+                _w14h_add_viz(_child)
             return
-        try:
-            if isinstance(_item, DataVisualization):
-                _w14h_viz_items.append(_item)
-                return
-            if isinstance(_item, dict):
-                _data = dict(_item)
-                try:
-                    for _k, _v in list(_data.items()):
-                        if _k in ALIASES:
-                            _data[ALIASES[_k]] = _v
-                except Exception:
-                    pass
-                _w14h_viz_items.append(DataVisualization.model_validate(_data))
-                return
-        except Exception:
+        if isinstance(_item, dict):
+            _data = dict(_item)
+            for _k, _v in list(_data.items()):
+                if _k in ALIASES:
+                    _data[ALIASES[_k]] = _v
+            _item = DataVisualization.model_validate(_data)
+        if not isinstance(_item, DataVisualization):
+            raise ValueError("viz_join received malformed visualization metadata")
+        if not all(str(getattr(_item, _field) or "").strip() for _field in (
+            "visualization_id", "visualization_title", "visualization_type",
+            "visualization_description", "visualization_style", "path",
+        )):
+            raise ValueError("viz_join received missing visualization metadata")
+        _path_key = _w14h_path_key(_item.path)
+        if _item.visualization_id in _w14h_ids or _path_key in _w14h_paths:
             return
+        _w14h_viz_items.append(_item)
+        _w14h_ids.add(_item.visualization_id)
+        _w14h_paths.add(_path_key)
 
     for _w14h_item in (state.get("viz_results", []) or []):
         _w14h_add_viz(_w14h_item)
-    _w14h_vr = state.get("visualization_results") or None
+    _w14h_vr = state.get("visualization_results")
+    if isinstance(_w14h_vr, dict):
+        _w14h_vr = VisualizationResults.model_validate(_w14h_vr)
     if isinstance(_w14h_vr, VisualizationResults):
-        for _w14h_item in (_w14h_vr.visualizations or []):
+        for _w14h_item in _w14h_vr.visualizations:
             _w14h_add_viz(_w14h_item)
     elif isinstance(_w14h_vr, list):
         for _w14h_item in _w14h_vr:
             _w14h_add_viz(_w14h_item)
-
-    _w14h_seen = {
-        (getattr(_v, "visualization_id", None) or "", str(getattr(_v, "path", "") or ""))
-        for _v in _w14h_viz_items
-    }
-    def _w14h_add_path(_path):
-        _path_str = str(_path or "")
-        if not _path_str:
-            return
-        _path_obj = PathlibPath(_path_str)
-        _vid = _path_obj.stem
-        _key = (_vid, _path_str)
-        if _key in _w14h_seen:
-            return
-        try:
-            _w14h_viz_items.append(DataVisualization(
-                reply_msg_to_supervisor="",
-                finished_this_task=True,
-                expect_reply=False,
-                path=_path_str,
-                visualization_id=_vid,
-                visualization_type="image",
-                visualization_description=f"Visualization artifact saved at {_path_str}.",
-                visualization_style="generated",
-                visualization_title=_path_obj.stem.replace("_", " ").title(),
-                visualization_complete=True,
-            ))
-            _w14h_seen.add(_key)
-        except Exception:
-            pass
+    elif _w14h_vr is not None:
+        raise ValueError("viz_join received malformed visualization_results")
 
     for _w14h_path in (state.get("viz_paths", []) or []):
-        _w14h_add_path(_w14h_path)
+        _path_obj = _w14h_path_key(_w14h_path or "")
+        if _path_obj in _w14h_paths:
+            continue
+        # A path-only result must be an explicitly supplied, owned current-run PNG.
+        _run_dir = getattr(RUNTIME, "run_dir", None)
+        if not _run_dir or not _path_obj.is_relative_to(PathlibPath(_run_dir).resolve()):
+            raise ValueError("viz_join figure path is outside the current run")
+        if _path_obj.suffix.lower() != ".png" or not _path_obj.is_file() or _path_obj.stat().st_size <= 0:
+            raise ValueError("viz_join figure path is missing or invalid")
+        _w14h_add_viz(DataVisualization(
+            reply_msg_to_supervisor="",
+            finished_this_task=True,
+            expect_reply=False,
+            path=str(_path_obj),
+            visualization_id=_path_obj.stem,
+            visualization_type="image",
+            visualization_description=f"Visualization artifact saved at {_path_obj}.",
+            visualization_style="generated",
+            visualization_title=_path_obj.stem.replace("_", " ").title(),
+        ))
+
     _w14h_expected = len(state.get("viz_tasks", []) or [])
     if len(_w14h_viz_items) < _w14h_expected:
-        for _w14h_base in (
-            PathlibPath(getattr(RUNTIME, "run_dir", WORKING_DIRECTORY)),
-            PathlibPath(getattr(RUNTIME, "artifacts_dir", WORKING_DIRECTORY)),
-            WORKING_DIRECTORY,
-        ):
-            try:
-                for _w14h_png in PathlibPath(_w14h_base).rglob("*.png"):
-                    if _w14h_png.is_file():
-                        _w14h_add_path(str(_w14h_png))
-            except Exception:
-                pass
-            if len(_w14h_viz_items) >= _w14h_expected:
-                break
-
-    _w14h_by_key = {}
-    for _w14h_viz in _w14h_viz_items:
-        _w14h_key = getattr(_w14h_viz, "visualization_id", None) or str(getattr(_w14h_viz, "path", "") or "")
-        if _w14h_key and _w14h_key not in _w14h_by_key:
-            _w14h_by_key[_w14h_key] = _w14h_viz
+        raise ValueError(f"viz_join expected {_w14h_expected} figures, found {len(_w14h_viz_items)}")
+    if any(not _v.finished_this_task for _v in _w14h_viz_items):
+        raise ValueError("viz_join received unfinished visualization metadata")
+    if not _w14h_viz_items and state.get("visualization_complete"):
+        raise ValueError("viz_join lost a previously completed figure inventory")
+    _w14h_complete = bool(_w14h_viz_items)
     all_viz = VisualizationResults(
-        visualizations=list(_w14h_by_key.values()),
+        visualizations=_w14h_viz_items,
         expect_reply=False,
         reply_msg_to_supervisor="",
-        finished_this_task=True,
+        finished_this_task=_w14h_complete,
     )
-    n = len(all_viz.visualizations) if all_viz else 0
+    # Reporting consumes flat records, including when workers supplied envelopes.
+    # Reset then append this complete union through the canonical reducer below.
+    _w14h_report_items = [_v.model_dump() for _v in _w14h_viz_items]
+    n = len(all_viz.visualizations)
     pr = {}
     pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
 """
         src = src[:start] + new_head + src[end:]
+        # CP5: retain reducer-aware reporting inventory on the no-task evaluator path.
+        _join_end = src.index("# ---------- 7) Evaluator", start)
+        _join_body = src[start:_join_end]
+        _join_body = replace_required(
+            _join_body,
+            '"visualization_complete": True',
+            '"visualization_complete": _w14h_complete',
+            patch_id="CP5 viz_join completion",
+        )
+        _join_body = replace_required(
+            _join_body,
+            '"last_agent_finished_this_task": True',
+            '"last_agent_finished_this_task": _w14h_complete',
+            patch_id="CP5 viz_join task completion",
+        )
+        _join_body = replace_required(
+            _join_body,
+            '    return {\n        "visualization_complete": _w14h_complete,',
+            '    _w14h_update = {\n        "visualization_complete": _w14h_complete,',
+            patch_id="CP5 viz_join reporting update",
+        )
+        _join_body += """    if not state.get("viz_tasks"):
+        # Ordered writes clear worker envelopes before appending flat records.
+        # Command has no goto: the existing viz_join -> evaluator edge is retained.
+        return Command(update=[*_w14h_update.items(), ("viz_results", _w14h_report_items)])
+    return _w14h_update
+
+"""
+        src = src[:start] + _join_body + src[_join_end:]
+        # No-task evaluation is skipped, so it must not claim an evaluated grade.
+        _no_tasks_start = src.index("        if not tasks:  # _FIX_T_NO_TASKS_DICT")
+        _no_tasks_end = src.index(
+            '        specs = state.get("viz_specs", [])', _no_tasks_start
+        )
+        _no_tasks = src[_no_tasks_start:_no_tasks_end]
+        _no_tasks = replace_required(
+            _no_tasks,
+            "'viz_grade': 'acceptable'",
+            "'viz_grade': 'not_evaluated'",
+            patch_id="CP5 skipped viz evaluation grade",
+        )
+        _no_tasks = replace_required(
+            _no_tasks,
+            "'last_agent_finished_this_task': True",
+            "'last_agent_finished_this_task': False",
+            patch_id="CP5 skipped viz evaluation completion",
+        )
+        src = src[:_no_tasks_start] + _no_tasks + src[_no_tasks_end:]
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
+
+    # --- CP5-NATIVE-COMPLETION (#177): strict errors and canonical native handoff ---
+    # Apply after legacy recovery and prompt transformations, never to retired blocks.
+    for _cp5_idx in (25, 44, 57):
+        _cp5_cell = cells[_cp5_idx]
+        _cp5_cell["source"] = apply_cp5_native_completion_patch(
+            join_source(_cp5_cell["source"]), cell_idx=_cp5_idx
+        )
+        _cp5_cell["outputs"] = []
+        _cp5_cell["execution_count"] = None
+        print(f"✅ Cell idx {_cp5_idx}: CP5-NATIVE-COMPLETION strict native contracts")
 
     # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
     _W14I_VIZ_MEMBERSHIP_GUARD = (

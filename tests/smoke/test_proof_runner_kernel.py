@@ -534,3 +534,88 @@ print('__IDD_KERNEL_PROBE_JSON__:' + __import__('json').dumps({{'status': 'verif
         work_dir=tmp_path / "work",
     )
     assert probes["observer_import_order"]["status"] == "verified"
+
+
+def test_cp5_visualization_fanin_and_reporting_in_real_kernel(tmp_path):
+    """Generated Cell 57, canonical graph/SQLite and W14J; synthetic proof only."""
+    import hashlib
+
+    repo = Path(__file__).resolve().parents[2]
+    notebook = repo / "IntelligentDataDetective_beta_v5_patched.ipynb"
+    digest = hashlib.sha256(notebook.read_bytes()).hexdigest()
+    source = f"""
+import sys, hashlib
+from pathlib import Path
+sys.path.insert(0, {str(repo)!r})
+assert hashlib.sha256(Path({str(notebook)!r}).read_bytes()).hexdigest() == {digest!r}
+import pytest
+# Run the complete focused cases in this attested kernel, including the real
+# SQLite selected-graph path and unmodified W14J positive/negative controls.
+result = pytest.main([
+    {str(repo / 'tests/unit/test_native_completion.py')!r},
+    {str(repo / 'tests/unit/test_viz_join.py')!r},
+    {str(repo / 'tests/integration/test_viz_join_reporting.py')!r},
+    '-q', '--basetemp', str(Path.cwd() / 'offline-fixtures'),
+])
+assert result == 0, f'Offline visualization regression failure: {{result}}'
+print('CP5_VIZ_FANIN_OFFLINE_OK')
+"""
+    error, record, _, evidence_dir = execute(tmp_path, [source], timeout=120)
+    assert error is None
+    assert record["execution"]["status"] == "COMPLETED"
+    assert record["execution_kind"] == "synthetic-no-key"
+    assert record["cp5_pass"] is False
+    executed = nbformat.read(evidence_dir / "executed.ipynb", as_version=4)
+    output = "".join(o.get("text", "") for o in executed.cells[0].outputs)
+    assert "CP5_VIZ_FANIN_OFFLINE_OK" in output
+
+
+@pytest.mark.parametrize(
+    "role,llm",
+    [
+        ("data_cleaner", "data_cleaner_llm"),
+        ("visualization", "visualization_orchestrator_llm"),
+        ("viz_evaluator", "viz_evaluator_llm"),
+    ],
+)
+def test_strict_native_error_stops_kernel_before_recovery_and_sentinel(
+    tmp_path, role, llm
+):
+    repo = Path(__file__).resolve().parents[2]
+    invocation = (
+        "ns['viz_evaluator_agent'] = SimpleNamespace(invoke=exhausted)\n"
+        "ns['viz_evaluator_node'](evaluator_state(Path.cwd()))"
+        if role == "viz_evaluator"
+        else f"ns[{('_safe_' + role + '_invoke')!r}](SimpleNamespace(invoke=exhausted), {{'messages': []}})"
+    )
+    source = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(repo)!r})
+from tests.unit.test_native_completion import load_native, evaluator_state
+from langgraph.errors import GraphRecursionError
+from types import SimpleNamespace
+os.environ['IDD_ALLOW_RECOVERY'] = '0'
+ns = load_native(Path.cwd())
+def exhausted(*args, **kwargs):
+    raise GraphRecursionError('Controlled native exhaustion')
+def forbidden_recovery(*args, **kwargs):
+    Path('recovery-boundary-called').write_text('unexpected recovery')
+    raise AssertionError('Recovery must be unreachable')
+ns[{llm!r}] = SimpleNamespace(with_structured_output=forbidden_recovery)
+{invocation}
+"""
+    error, record, work, evidence_dir = execute(
+        tmp_path,
+        [
+            source,
+            "from pathlib import Path; Path('strict-sentinel').write_text('unexpected continuation')",
+        ],
+    )
+    assert error is not None
+    assert "GraphRecursionError" in str(error)
+    assert record["execution"]["status"] == "FAILED"
+    assert record["cp5_pass"] is False
+    assert not (work / "strict-sentinel").exists()
+    assert not (work / "recovery-boundary-called").exists()
+    assert (evidence_dir / "executed.ipynb").exists()
