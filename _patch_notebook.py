@@ -13396,103 +13396,153 @@ def main():
             break
         new_head = """def viz_join(state: State):
     # W14H-VIZ-JOIN-UNION: union viz_results, visualization_results, viz_paths, and PNG artifacts
-    # Parallel viz workers can race with a last-writer visualization_results reducer.
-    # Rebuild the fan-in from every available channel before downstream evaluation.
+    # Normalize serialized canonical results before collecting their children.
+    # Only explicit current-run paths may supplement structured metadata; never scan.
     _w14h_viz_items = []
+    def _w14h_path_key(_path):
+        _candidate = PathlibPath(str(_path))
+        if not _candidate.is_absolute():
+            # save_viz_for_state(make_relative=True) stores paths under artifacts_path.
+            _root = state.get("artifacts_path") or (WORKING_DIRECTORY / "artifacts")
+            _candidate = PathlibPath(_root) / _candidate
+        return _candidate.resolve()
+    _w14h_ids = set()
+    _w14h_paths = set()
     def _w14h_add_viz(_item):
-        if _item is None:
+        # save_viz_for_state also emits per-worker VisualizationResults snapshots.
+        if isinstance(_item, dict) and "visualizations" in _item:
+            _item = VisualizationResults.model_validate(_item)
+        if isinstance(_item, VisualizationResults):
+            for _child in _item.visualizations:
+                _w14h_add_viz(_child)
             return
-        try:
-            if isinstance(_item, DataVisualization):
-                _w14h_viz_items.append(_item)
-                return
-            if isinstance(_item, dict):
-                _data = dict(_item)
-                try:
-                    for _k, _v in list(_data.items()):
-                        if _k in ALIASES:
-                            _data[ALIASES[_k]] = _v
-                except Exception:
-                    pass
-                _w14h_viz_items.append(DataVisualization.model_validate(_data))
-                return
-        except Exception:
+        if isinstance(_item, dict):
+            _data = dict(_item)
+            for _k, _v in list(_data.items()):
+                if _k in ALIASES:
+                    _data[ALIASES[_k]] = _v
+            _item = DataVisualization.model_validate(_data)
+        if not isinstance(_item, DataVisualization):
+            raise ValueError("viz_join received malformed visualization metadata")
+        if not all(str(getattr(_item, _field) or "").strip() for _field in (
+            "visualization_id", "visualization_title", "visualization_type",
+            "visualization_description", "visualization_style", "path",
+        )):
+            raise ValueError("viz_join received missing visualization metadata")
+        _path_key = _w14h_path_key(_item.path)
+        if _item.visualization_id in _w14h_ids or _path_key in _w14h_paths:
             return
+        _w14h_viz_items.append(_item)
+        _w14h_ids.add(_item.visualization_id)
+        _w14h_paths.add(_path_key)
 
+    _w14h_existing_ids = set()
+    _w14h_existing_paths = set()
     for _w14h_item in (state.get("viz_results", []) or []):
         _w14h_add_viz(_w14h_item)
-    _w14h_vr = state.get("visualization_results") or None
+    _w14h_existing_ids.update(_w14h_ids)
+    _w14h_existing_paths.update(_w14h_paths)
+    _w14h_vr = state.get("visualization_results")
+    if isinstance(_w14h_vr, dict):
+        _w14h_vr = VisualizationResults.model_validate(_w14h_vr)
     if isinstance(_w14h_vr, VisualizationResults):
-        for _w14h_item in (_w14h_vr.visualizations or []):
+        for _w14h_item in _w14h_vr.visualizations:
             _w14h_add_viz(_w14h_item)
     elif isinstance(_w14h_vr, list):
         for _w14h_item in _w14h_vr:
             _w14h_add_viz(_w14h_item)
-
-    _w14h_seen = {
-        (getattr(_v, "visualization_id", None) or "", str(getattr(_v, "path", "") or ""))
-        for _v in _w14h_viz_items
-    }
-    def _w14h_add_path(_path):
-        _path_str = str(_path or "")
-        if not _path_str:
-            return
-        _path_obj = PathlibPath(_path_str)
-        _vid = _path_obj.stem
-        _key = (_vid, _path_str)
-        if _key in _w14h_seen:
-            return
-        try:
-            _w14h_viz_items.append(DataVisualization(
-                reply_msg_to_supervisor="",
-                finished_this_task=True,
-                expect_reply=False,
-                path=_path_str,
-                visualization_id=_vid,
-                visualization_type="image",
-                visualization_description=f"Visualization artifact saved at {_path_str}.",
-                visualization_style="generated",
-                visualization_title=_path_obj.stem.replace("_", " ").title(),
-                visualization_complete=True,
-            ))
-            _w14h_seen.add(_key)
-        except Exception:
-            pass
+    elif _w14h_vr is not None:
+        raise ValueError("viz_join received malformed visualization_results")
 
     for _w14h_path in (state.get("viz_paths", []) or []):
-        _w14h_add_path(_w14h_path)
+        _path_obj = _w14h_path_key(_w14h_path or "")
+        if _path_obj in _w14h_paths:
+            continue
+        # A path-only result must be an explicitly supplied, owned current-run PNG.
+        _run_dir = getattr(RUNTIME, "run_dir", None)
+        if not _run_dir or not _path_obj.is_relative_to(PathlibPath(_run_dir).resolve()):
+            raise ValueError("viz_join figure path is outside the current run")
+        if _path_obj.suffix.lower() != ".png" or not _path_obj.is_file() or _path_obj.stat().st_size <= 0:
+            raise ValueError("viz_join figure path is missing or invalid")
+        _w14h_add_viz(DataVisualization(
+            reply_msg_to_supervisor="",
+            finished_this_task=True,
+            expect_reply=False,
+            path=str(_path_obj),
+            visualization_id=_path_obj.stem,
+            visualization_type="image",
+            visualization_description=f"Visualization artifact saved at {_path_obj}.",
+            visualization_style="generated",
+            visualization_title=_path_obj.stem.replace("_", " ").title(),
+        ))
+
     _w14h_expected = len(state.get("viz_tasks", []) or [])
     if len(_w14h_viz_items) < _w14h_expected:
-        for _w14h_base in (
-            PathlibPath(getattr(RUNTIME, "run_dir", WORKING_DIRECTORY)),
-            PathlibPath(getattr(RUNTIME, "artifacts_dir", WORKING_DIRECTORY)),
-            WORKING_DIRECTORY,
-        ):
-            try:
-                for _w14h_png in PathlibPath(_w14h_base).rglob("*.png"):
-                    if _w14h_png.is_file():
-                        _w14h_add_path(str(_w14h_png))
-            except Exception:
-                pass
-            if len(_w14h_viz_items) >= _w14h_expected:
-                break
-
-    _w14h_by_key = {}
-    for _w14h_viz in _w14h_viz_items:
-        _w14h_key = getattr(_w14h_viz, "visualization_id", None) or str(getattr(_w14h_viz, "path", "") or "")
-        if _w14h_key and _w14h_key not in _w14h_by_key:
-            _w14h_by_key[_w14h_key] = _w14h_viz
+        raise ValueError(f"viz_join expected {_w14h_expected} figures, found {len(_w14h_viz_items)}")
+    if any(not _v.finished_this_task for _v in _w14h_viz_items):
+        raise ValueError("viz_join received unfinished visualization metadata")
+    if not _w14h_viz_items and state.get("visualization_complete"):
+        raise ValueError("viz_join lost a previously completed figure inventory")
+    _w14h_complete = bool(_w14h_viz_items)
     all_viz = VisualizationResults(
-        visualizations=list(_w14h_by_key.values()),
+        visualizations=_w14h_viz_items,
         expect_reply=False,
         reply_msg_to_supervisor="",
-        finished_this_task=True,
+        finished_this_task=_w14h_complete,
     )
-    n = len(all_viz.visualizations) if all_viz else 0
+    # viz_results appends by reducer. Contribute only missing items, preserving the
+    # inventory consumed by report_orchestrator and canonical section dispatch.
+    _w14h_report_items = [
+        _v.model_dump() for _v in _w14h_viz_items
+        if _v.visualization_id not in _w14h_existing_ids
+        and _w14h_path_key(_v.path) not in _w14h_existing_paths
+    ]
+    n = len(all_viz.visualizations)
     pr = {}
     pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
 """
         src = src[:start] + new_head + src[end:]
+        # CP5: retain reducer-aware reporting inventory on the no-task evaluator path.
+        _join_end = src.index("# ---------- 7) Evaluator", start)
+        _join_body = src[start:_join_end]
+        _join_body = replace_required(
+            _join_body,
+            '"visualization_complete": True',
+            '"visualization_complete": _w14h_complete',
+            patch_id="CP5 viz_join completion",
+        )
+        _join_body = replace_required(
+            _join_body,
+            '"last_agent_finished_this_task": True',
+            '"last_agent_finished_this_task": _w14h_complete',
+            patch_id="CP5 viz_join task completion",
+        )
+        _join_body = replace_required(
+            _join_body,
+            '"viz_results": None,  # W2-BR1b: viz_join flushes viz_results',
+            '"viz_results": _w14h_report_items if not state.get("viz_tasks") else None,  # CP5: retain inventory when evaluation is skipped',
+            patch_id="CP5 viz_join reporting inventory",
+        )
+        src = src[:start] + _join_body + src[_join_end:]
+        # No-task evaluation is skipped, so it must not claim an evaluated grade.
+        _no_tasks_start = src.index("        if not tasks:  # _FIX_T_NO_TASKS_DICT")
+        _no_tasks_end = src.index(
+            '        specs = state.get("viz_specs", [])', _no_tasks_start
+        )
+        _no_tasks = src[_no_tasks_start:_no_tasks_end]
+        _no_tasks = replace_required(
+            _no_tasks,
+            "'viz_grade': 'acceptable'",
+            "'viz_grade': 'not_evaluated'",
+            patch_id="CP5 skipped viz evaluation grade",
+        )
+        _no_tasks = replace_required(
+            _no_tasks,
+            "'last_agent_finished_this_task': True",
+            "'last_agent_finished_this_task': False",
+            patch_id="CP5 skipped viz evaluation completion",
+        )
+        src = src[:_no_tasks_start] + _no_tasks + src[_no_tasks_end:]
         cell["source"] = src
         cell["outputs"] = []
         cell["execution_count"] = None
