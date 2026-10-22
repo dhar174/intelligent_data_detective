@@ -22,7 +22,10 @@ from idd_state import (
     ReportOutline,
     SectionOutline,
     VisualizationResults,
+    VizFeedback,
+    VizSpec,
 )
+from tests.unit.test_native_completion import ControlledChatModel, load_native
 from tests.unit.test_viz_join import (
     FLAGS,
     figures,
@@ -132,14 +135,83 @@ def run_selected_graph(base, incoming="empty"):
         "report_section_worker": worker,
         "report_join": ns["report_join"],
     }
+    native_model = None
+    if incoming == "native_workers":
+        native = load_native(base, middleware=True)
+        native["sample_prompt_text"] = state["user_prompt"]
+        native_model = ControlledChatModel(
+            response_name="VisualizationResults",
+            payload={},
+            task_payloads={
+                item.visualization_title: VisualizationResults(
+                    **FLAGS,
+                    visualizations=[item],
+                ).model_dump()
+                for item in items
+            },
+        )
+        native["visualization_orchestrator_llm"] = native_model
+        native["visualization_agent"] = native["create_visualization_agent"](
+            ["retail_orders"]
+        )
+        evaluator_model = ControlledChatModel(
+            response_name="VizFeedback",
+            payload=VizFeedback(
+                **FLAGS,
+                grade="acceptable",
+                feedback="Controlled real-figure fixtures",
+                redo_list=[],
+            ).model_dump(),
+        )
+        native["viz_evaluator_llm"] = evaluator_model
+        native["viz_evaluator_agent"] = native["create_viz_evaluator_agent"]()
+        overrides.update(
+            viz_worker=native["viz_worker"], viz_evaluator=native["viz_evaluator_node"]
+        )
+        state.update(
+            visualization_results=None,
+            viz_results=[],
+            viz_paths=[],
+            viz_tasks=[v.visualization_title for v in items],
+            viz_specs=[
+                VizSpec(
+                    **FLAGS,
+                    title=v.visualization_title,
+                    viz_type="bar",
+                    df_id="retail_orders",
+                    viz_instructions=v.visualization_title,
+                    viz_id=v.visualization_id,
+                    columns=["region", "revenue"],
+                    x="region",
+                    y="revenue",
+                    hue=None,
+                    bins=None,
+                    agg="sum",
+                    query=None,
+                    description=v.visualization_description,
+                    limit=20,
+                    style=v.visualization_style,
+                )
+                for v in items
+            ],
+        )
     db = base / "checkpoint.sqlite"
     with SqliteSaver.from_conn_string(str(db)) as saver:
         graph = build_graph(node_overrides=overrides, checkpointer=saver)
-        graph.update_state(config, state, as_node="viz_worker")
+        graph.update_state(
+            config, state, as_node="visualization" if native_model else "viz_worker"
+        )
         seeded = graph.get_state(config).values
-        assert isinstance(seeded["visualization_results"], dict)
-        assert isinstance(seeded["visualization_results"]["visualizations"][0], dict)
-        if incoming != "empty":
+        if native_model:
+            assert seeded["visualization_results"] is None
+            assert seeded["viz_results"] == []
+            assert len(graph.get_state(config).tasks) == 4
+        else:
+            assert isinstance(seeded["visualization_results"], dict)
+            assert isinstance(
+                seeded["visualization_results"]["visualizations"][0], dict
+            )
+        if incoming not in {"empty", "native_workers"}:
             assert any(
                 isinstance(v, VisualizationResults)
                 or (isinstance(v, dict) and "visualizations" in v)
@@ -151,10 +223,20 @@ def run_selected_graph(base, incoming="empty"):
             DataVisualization.model_validate(v) for v in result["viz_results"]
         ] == items
         assert all(
-            isinstance(v, dict) and "visualizations" not in v
+            (isinstance(v, DataVisualization) if native_model else False)
+            or (isinstance(v, dict) and "visualizations" not in v)
             for v in result["viz_results"]
         )
-        assert result["viz_grade"] == "not_evaluated"
+        assert result["viz_grade"] == (
+            "acceptable" if native_model else "not_evaluated"
+        )
+        if native_model:
+            assert len(native_model._requests) == 4
+            assert len(evaluator_model._requests) == 1
+            context = "\n".join(str(m.content) for m in evaluator_model._requests[0])
+            assert all(v.visualization_id in context for v in items)
+            for snapshot in graph.get_state_history(config):
+                assert "structured_response" not in snapshot.values
         assert graph.get_state(config).next == ("supervisor",)
         # Decode the actual SQLite typed checkpoint, rather than assuming JSON.
         with sqlite3.connect(db) as conn:
@@ -198,7 +280,8 @@ def run_selected_graph(base, incoming="empty"):
 
 
 @pytest.mark.parametrize(
-    "incoming", ["empty", "serialized_envelopes", "model_envelopes", "mixed"]
+    "incoming",
+    ["empty", "serialized_envelopes", "model_envelopes", "mixed", "native_workers"],
 )
 def test_sqlite_graph_inventory_reaches_orchestrator_sections_and_w14j(
     tmp_path, monkeypatch, incoming

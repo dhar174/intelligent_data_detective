@@ -797,6 +797,229 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
     return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
 
 
+def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
+    """Repair native completion at notebook boundaries without changing core contracts."""
+
+    def edit_function(name, transform):
+        nonlocal source
+        matches = [
+            n
+            for n in ast.parse(source).body
+            if isinstance(n, ast.FunctionDef) and n.name == name
+        ]
+        if len(matches) != 1:
+            raise RequiredPatchError(f"CP5 native completion: expected one {name}")
+        node = matches[0]
+        lines = source.splitlines(keepends=True)
+        original = "".join(lines[node.lineno - 1 : node.end_lineno])
+        replacement = transform(original)
+        source = (
+            "".join(lines[: node.lineno - 1])
+            + replacement
+            + "".join(lines[node.end_lineno :])
+        )
+
+    def required(text, old, new):
+        return replace_required(text, old, new, patch_id="CP5-NATIVE-COMPLETION")
+
+    if cell_idx == 25:
+        nodes = [
+            n
+            for n in ast.parse(source).body
+            if isinstance(n, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "data_cleaner_prompt_template"
+                for t in n.targets
+            )
+        ]
+        if len(nodes) != 1:
+            raise RequiredPatchError(
+                "CP5 native completion: expected cleaner prompt template"
+            )
+        node = nodes[0]
+        lines = source.splitlines(keepends=True)
+        prompt = "".join(lines[node.lineno - 1 : node.end_lineno])
+        prompt = replace_required(
+            prompt,
+            "`respond`",
+            "`CleaningMetadata`",
+            patch_id="CP5 cleaner template response tool",
+            count=4,
+        )
+        source = (
+            "".join(lines[: node.lineno - 1])
+            + prompt
+            + "".join(lines[node.end_lineno :])
+        )
+    elif cell_idx == 44:
+
+        def cleaner_prompt(text):
+            return required(
+                text,
+                "Use the runtime SystemMessage for the dataset description",
+                "Use the runtime context message for the dataset description",
+            )
+
+        def visualization_prompt(text):
+            start = text.index(
+                "    prompt = visualization_prompt_template.partial(**init_vis_vars)"
+            )
+            end = text.index("    return create_agent(", start)
+            return (
+                text[:start]
+                + """    # CP5-NATIVE-COMPLETION: rendered task context arrives at invocation time.
+    system_prompt = "\\n".join([
+        "You are the Visualization Agent for the Intelligent Data Detective workflow.",
+        "Use the runtime context message for the assigned task, registered DataFrame IDs, dataset description, insights, tools, and output schema.",
+        "Generate only the requested real visualizations through the provided tools and retain their actual paths and figure metadata.",
+        "Preserve the assigned figure identifiers; never invent files or claim an unfinished figure is complete.",
+        "Completion: call the VisualizationResults structured-response tool exactly once with the actual DataVisualization children, then stop.",
+    ])
+"""
+                + text[end:]
+            )
+
+        edit_function("create_data_cleaner_agent", cleaner_prompt)
+        edit_function("create_visualization_agent", visualization_prompt)
+    elif cell_idx == 57:
+        wrappers = {
+            "initial_analysis": "_iaexc",
+            "data_cleaner": "_exc",
+            "analyst": "_aexc",
+            "visualization": "_vexc",
+            "viz_evaluator": "_veexc",
+            "report_orchestrator": "_roexc",
+            "report_packager": "_rexc",
+        }
+        for role, error in wrappers.items():
+
+            def strict_wrapper(text, role=role, error=error):
+                pattern = rf"(?m)^([ ]+)except Exception as {error}:[^\n]*\n"
+                match = re.search(pattern, text)
+                if match is None:
+                    raise RequiredPatchError(
+                        f"CP5 native completion: missing {role} handler"
+                    )
+                indent = match.group(1) + "    "
+                guard = (
+                    f"{indent}# CP5-STRICT-NATIVE: fail before retries and recovery.\n"
+                    f"{indent}import os as _cp5_os\n"
+                    f"{indent}if _cp5_os.environ.get('IDD_ALLOW_RECOVERY', '0') != '1':\n"
+                    f"{indent}    raise\n"
+                )
+                text = text[: match.end()] + guard + text[match.end() :]
+                if role in {"data_cleaner", "visualization"}:
+                    text = required(
+                        text,
+                        "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n",
+                        "    # CP5-NATIVE-CONTEXT: keep rendered context without another system role.\n"
+                        "    from langchain_core.messages import HumanMessage as _CP5_HM\n"
+                        "    _w2_msgs = [_CP5_HM(content=m.content, name='runtime_context', id=m.id)\n"
+                        "                if isinstance(m, _W2_SM) else m for m in _w2_msgs]\n",
+                    )
+                return text
+
+            edit_function(f"_safe_{role}_invoke", strict_wrapper)
+
+        edit_function(
+            "viz_evaluator_node",
+            lambda text: strict_wrapper(text, role="viz_evaluator_node", error="_w4_ve_exc"),
+        )
+
+        def cleaner_instruction(text):
+            text = required(
+                text,
+                "call the `respond` tool with CleaningMetadata",
+                "call the `CleaningMetadata` response tool",
+            )
+            return required(
+                text, "Call respond IMMEDIATELY", "Call CleaningMetadata IMMEDIATELY"
+            )
+
+        edit_function("data_cleaner_node", cleaner_instruction)
+
+        def worker_completion(text):
+            text = replace_required(
+                text,
+                "DataVisualization.model_json_schema()",
+                "VisualizationResults.model_json_schema()",
+                patch_id="CP5 native worker response schema",
+                count=2,
+            )
+            text = required(
+                text,
+                '    cm = state.get("cleaning_metadata")',
+                '''    # Pass the assigned ID to the model instead of rewriting its output ID.
+    _cp5_spec = state.get("viz_spec") or state.get("individual_viz_task")
+    if isinstance(_cp5_spec, dict):
+        _cp5_spec = VizSpec.model_validate(_cp5_spec)
+    if isinstance(_cp5_spec, VizSpec) and _cp5_spec.viz_id:
+        vis_vars["visualization_task"] = f"{task}\\nAssigned visualization_id: {_cp5_spec.viz_id}"
+
+    cm = state.get("cleaning_metadata")''',
+            )
+            start = text.index(
+                "    if not isinstance(result, dict) and isinstance(result, DataVisualization):"
+            )
+            return (
+                text[:start]
+                + """    # CP5-NATIVE-COMPLETION: publish only this worker's actual figure deltas.
+    if isinstance(result, (DataVisualization, VisualizationResults)):
+        sr = result
+        result_messages = [AIMessage(content="Visualization response received.", name="viz_worker")]
+    elif isinstance(result, dict):
+        sr = result.get("structured_response")
+        result_messages = result.get("messages") or []
+    else:
+        raise ValueError("Visualization worker returned no canonical structured response")
+    if isinstance(sr, dict):
+        sr = (VisualizationResults.model_validate(sr) if "visualizations" in sr
+              else DataVisualization.model_validate(sr))
+    if isinstance(sr, DataVisualization):
+        sr = VisualizationResults(
+            visualizations=[sr], reply_msg_to_supervisor=sr.reply_msg_to_supervisor,
+            finished_this_task=sr.finished_this_task, expect_reply=sr.expect_reply,
+        )
+    if not isinstance(sr, VisualizationResults):
+        raise ValueError("Visualization worker returned no canonical structured response")
+    if not sr.finished_this_task or not sr.visualizations or any(
+        not item.finished_this_task for item in sr.visualizations
+    ):
+        raise ValueError("Visualization worker did not complete its required figures")
+
+    for item in sr.visualizations:
+        memory_text = (
+            f"Viz Worker assigned task: {task}\\n"
+            f"Produced {item.visualization_title} (ID {item.visualization_id}), "
+            f"type {item.visualization_type}, style {item.visualization_style}, path {item.path}.\\n"
+            f"Description: {item.visualization_description}\\n"
+            f"Message to supervisor: {item.reply_msg_to_supervisor}"
+        )
+        update_memory_with_kind(state, state["_config"], "visualization", in_memory_store or get_store(), text=memory_text)
+    # The canonical reducers append these deltas across parallel workers.
+    # viz_join validates ownership, deduplicates, and publishes the full inventory.
+    update = {
+        "viz_results": [item.model_dump(mode="json") for item in sr.visualizations],
+        "viz_paths": [item.path for item in sr.visualizations],
+        "messages": result_messages,
+        "last_agent_expects_reply": sr.expect_reply,
+        "last_agent_reply_msg": sr.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": sr.finished_this_task,
+        "last_created_obj": "visualization_results",
+    }
+    if result_messages:
+        update["last_agent_message"] = result_messages[-1]
+    return update
+"""
+            )
+
+        edit_function("viz_worker", worker_completion)
+    else:
+        raise RequiredPatchError(f"CP5 native completion: unexpected cell {cell_idx}")
+    ast.parse(source)
+    return source
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -13547,6 +13770,17 @@ def main():
         cell["execution_count"] = None
         print(f"✅ Cell idx {idx}: W14H-VIZ-JOIN-UNION rebuilds visualization fan-in")
         break
+
+    # --- CP5-NATIVE-COMPLETION (#177): strict errors and canonical native handoff ---
+    # Apply after legacy recovery and prompt transformations, never to retired blocks.
+    for _cp5_idx in (25, 44, 57):
+        _cp5_cell = cells[_cp5_idx]
+        _cp5_cell["source"] = apply_cp5_native_completion_patch(
+            join_source(_cp5_cell["source"]), cell_idx=_cp5_idx
+        )
+        _cp5_cell["outputs"] = []
+        _cp5_cell["execution_count"] = None
+        print(f"✅ Cell idx {_cp5_idx}: CP5-NATIVE-COMPLETION strict native contracts")
 
     # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
     _W14I_VIZ_MEMBERSHIP_GUARD = (
