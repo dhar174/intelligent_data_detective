@@ -106,8 +106,12 @@ claim completion.
 
 A second source-grounded defect occurs with `viz_tasks=[]`: the baseline join
 clears `viz_results`, while the evaluator skips and the report orchestrator
-consumes that cleared channel. The corrected join appends only missing report
-metadata through the existing reducer on that path. With pending tasks it
+consumes that cleared channel. The corrected join clears worker envelopes and appends the complete flat,
+deduplicated figure inventory through the existing reducer on that path. It
+returns an ordered `Command(update=[..., ("viz_results", None),
+("viz_results", flat_records)])` with no `goto`; the existing graph edge still
+runs the evaluator. This uses the canonical clear-then-append protocol without
+changing the reducer or bypassing it with `Overwrite`. With pending tasks it
 preserves the existing clear/evaluate/repopulate sequence; a controlled real
 evaluator test ensures this does not append each figure twice.
 
@@ -179,7 +183,7 @@ approved revision. Antigravity must independently review the published PR SHA.
 ## Regeneration, environment, and regression validation
 
 The generated notebook's SHA-256 is
-`cc81acd21848e89c3e26056c3f19bcc677175b6de407521fd5e80c1240f3ded6`.
+`83c85342593379cab8b652ed961a83d5f6f9d59fc4bdf5948de25f19ad0bed12`.
 Two fresh regenerations from separate original-notebook input produce exactly
 those bytes. All 99 cell positions/order are preserved; only Cell 57 differs.
 AST comparison confines changed function bodies to `viz_join` and
@@ -213,8 +217,8 @@ python -m flake8 tests/unit/test_viz_join.py tests/integration/test_viz_join_rep
 git diff --check
 ```
 
-Focused results: **32 passed** (26 unit + 6 integration). Broad results:
-**1,037 passed, 1 skipped**, including 38 parity, 16 mandatory error handling,
+Focused results: **35 passed** (26 unit + 9 integration). Broad results:
+**1,040 passed, 1 skipped**, including 38 parity, 16 mandatory error handling,
 118 patcher integrity, 76 proof-runner unit, 54 CP0 diagnostics, 55 canonical
 state/graph, graph routing/compile, memory/prompt/core/report regressions, and
 33 notebook-integrity tests. The only broad skip is the absent historical
@@ -222,7 +226,7 @@ Run 88 fixture in `test_validate_run.py`. Four upstream deprecation/future
 warnings concern LangChain community/experimental, trustcall's Send import,
 and fitz. There are no unexplained test failures.
 
-Counts overlap: the 32 focused cases and named blocking gates are subsets of
+Counts overlap: the 35 focused cases and named blocking gates are subsets of
 the broad count, and the new kernel case reruns focused cases in another
 interpreter. They must not be added again as distinct unit tests.
 
@@ -234,15 +238,40 @@ mistake, not a suppressed failure. The generated database was preserved outside
 the checkout and subsequent checks were run sequentially. No historical
 checkpoint was touched and no guard was changed.
 
-Internal code review found no actionable issues, including review of relative
-artifact-root deduplication and the sticky completion reducer. That review is
-not Antigravity approval. Native Windows CI status and exact published source
+Internal review of the initial `c4c3a59` revision did not flag the remaining
+reduced-channel wrapper gap; the later external review identified it as
+documented below. Internal review is not Antigravity approval. Native Windows CI status and exact published source
 SHA are recorded on the Draft PR; there is no Linux CI workflow in this checkout,
 so Linux evidence is local execution. Raw Windows run forensics, full live
 supervisor/file-writer proof, production 12/12 + 9/9, and human report-substance
 review remain outside this offline repair's verified evidence.
 
 Final sequential real-kernel result: **48 passed, 0 skipped**, including the new
-strict synthetic proof-runner case that executes all 32 focused regressions in
+strict synthetic proof-runner case that executes all 35 focused regressions in
 the child kernel. The final checkout started without the validator-generated
 SQLite file; the existing preservation guards all passed.
+
+
+## Follow-up to review thread 4345576682
+
+The review identified a gap in the initial wrapper regression: it accepted a
+correct aggregate `visualization_results` while explicitly permitting nested
+worker envelopes to remain in the reduced `viz_results` reporting channel.
+Treating those envelope children as existing flat entries made the incremental
+append empty. The comment was reproduced before correction: **5 failed,
+30 passed** in the strengthened 35-case focused selection.
+
+The correction sends two ordered writes through the unchanged canonical
+reducer on the no-task path: clear with `None`, then append the full normalized
+flat union. It does not mutate the incoming State, redefine/bypass a reducer,
+add a node, or route via `Command.goto`. Pending-task evaluation retains its
+original reset/evaluate/repopulate behavior.
+
+Unit regressions now apply actual LangGraph `BinaryOperatorAggregate` channel
+semantics and assert the flat reduced channel, not only the aggregate model.
+The actual SQLite-backed production graph test additionally covers serialized
+worker envelopes, Pydantic envelopes, and a mixed source with duplicate envelope
+children plus a figure available only in the aggregate channel. Each case
+asserts flat records after joining, typed checkpoint decoding and reopening,
+at the orchestrator boundary, and through unchanged W14J rendering. The existing
+real-kernel smoke automatically executes all 35 focused cases.

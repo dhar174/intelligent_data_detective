@@ -13436,12 +13436,8 @@ def main():
         _w14h_ids.add(_item.visualization_id)
         _w14h_paths.add(_path_key)
 
-    _w14h_existing_ids = set()
-    _w14h_existing_paths = set()
     for _w14h_item in (state.get("viz_results", []) or []):
         _w14h_add_viz(_w14h_item)
-    _w14h_existing_ids.update(_w14h_ids)
-    _w14h_existing_paths.update(_w14h_paths)
     _w14h_vr = state.get("visualization_results")
     if isinstance(_w14h_vr, dict):
         _w14h_vr = VisualizationResults.model_validate(_w14h_vr)
@@ -13490,13 +13486,9 @@ def main():
         reply_msg_to_supervisor="",
         finished_this_task=_w14h_complete,
     )
-    # viz_results appends by reducer. Contribute only missing items, preserving the
-    # inventory consumed by report_orchestrator and canonical section dispatch.
-    _w14h_report_items = [
-        _v.model_dump() for _v in _w14h_viz_items
-        if _v.visualization_id not in _w14h_existing_ids
-        and _w14h_path_key(_v.path) not in _w14h_existing_paths
-    ]
+    # Reporting consumes flat records, including when workers supplied envelopes.
+    # Reset then append this complete union through the canonical reducer below.
+    _w14h_report_items = [_v.model_dump() for _v in _w14h_viz_items]
     n = len(all_viz.visualizations)
     pr = {}
     pr[f"viz_join_{datetime.now().isoformat(timespec='seconds')}"] = f"Collected {n} figure(s)."
@@ -13519,10 +13511,17 @@ def main():
         )
         _join_body = replace_required(
             _join_body,
-            '"viz_results": None,  # W2-BR1b: viz_join flushes viz_results',
-            '"viz_results": _w14h_report_items if not state.get("viz_tasks") else None,  # CP5: retain inventory when evaluation is skipped',
-            patch_id="CP5 viz_join reporting inventory",
+            '    return {\n        "visualization_complete": _w14h_complete,',
+            '    _w14h_update = {\n        "visualization_complete": _w14h_complete,',
+            patch_id="CP5 viz_join reporting update",
         )
+        _join_body += """    if not state.get("viz_tasks"):
+        # Ordered writes clear worker envelopes before appending flat records.
+        # Command has no goto: the existing viz_join -> evaluator edge is retained.
+        return Command(update=[*_w14h_update.items(), ("viz_results", _w14h_report_items)])
+    return _w14h_update
+
+"""
         src = src[:start] + _join_body + src[_join_end:]
         # No-task evaluation is skipped, so it must not claim an evaluated grade.
         _no_tasks_start = src.index("        if not tasks:  # _FIX_T_NO_TASKS_DICT")

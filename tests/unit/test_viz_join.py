@@ -12,7 +12,9 @@ import socket
 from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.channels.binop import BinaryOperatorAggregate
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.types import Command
 from PIL import Image, ImageDraw
 import pytest
 
@@ -51,6 +53,7 @@ def load_functions(base, names=("viz_join", "viz_evaluator_node")):
     assert {n.name for n in nodes} == set(names)
     ns = dict(
         State=State,
+        Command=Command,
         DataVisualization=DataVisualization,
         VisualizationResults=VisualizationResults,
         datetime=datetime,
@@ -108,13 +111,17 @@ def state_for(items):
 
 
 def apply_join(state, update):
-    return {
-        **state,
-        **update,
-        "viz_results": _reduce_viz_results_resettable(
-            state.get("viz_results"), update["viz_results"]
-        ),
-    }
+    # Exercise LangGraph's real reduced channel with the ordered node writes.
+    # A dict alone would collapse the clear and append into just the last value.
+    if isinstance(update, Command):
+        assert not update.goto
+        writes = list(update.update)
+    else:
+        writes = list(update.items())
+    channel = BinaryOperatorAggregate(list, _reduce_viz_results_resettable)
+    channel.update([state.get("viz_results") or []])
+    channel.update([value for key, value in writes if key == "viz_results"])
+    return {**state, **dict(writes), "viz_results": channel.get()}
 
 
 @pytest.mark.parametrize(
@@ -144,10 +151,10 @@ def test_structured_inventory_survives_without_tasks_or_disk_scan(
         raise AssertionError("Structured results must not need disk discovery")
 
     monkeypatch.setattr(Path, "rglob", forbidden_scan)
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_results"].visualizations == items
     assert update["visualization_complete"] is True
-    joined = apply_join(state, update)
+    joined = update
     assert [DataVisualization.model_validate(v) for v in joined["viz_results"]] == items
 
 
@@ -159,9 +166,9 @@ def test_union_deduplicates_ids_and_paths_preserving_real_metadata(tmp_path):
     state["viz_paths"] = [v.path for v in items] + [
         str(Path(items[0].path).parent / "." / Path(items[0].path).name)
     ]
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_results"].visualizations == items
-    joined = apply_join(state, update)
+    joined = update
     assert [DataVisualization.model_validate(v) for v in joined["viz_results"]] == items
 
 
@@ -194,7 +201,8 @@ def test_missing_required_figures_cannot_be_completed_from_stale_pngs(
 
 
 def test_no_inventory_no_tasks_does_not_claim_completion(tmp_path):
-    update = load_functions(tmp_path)["viz_join"](state_for([]))
+    state = state_for([])
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_complete"] is False
     assert update["last_agent_finished_this_task"] is False
     assert update["visualization_results"].finished_this_task is False
@@ -222,18 +230,20 @@ def test_worker_snapshot_containers_in_viz_results(tmp_path, serialized):
     state["viz_results"] = (
         [v.model_dump() for v in snapshots] if serialized else snapshots
     )
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_results"].visualizations == items
-    # Existing worker containers remain under the append reducer; no duplicate
-    # contributions may be appended simply because a child came from a container.
-    assert update["viz_results"] == []
+    joined = update
+    assert [DataVisualization.model_validate(v) for v in joined["viz_results"]] == items
+    assert all(
+        isinstance(v, dict) and "visualizations" not in v for v in joined["viz_results"]
+    )
 
 
 def test_explicit_owned_path_only_channel(tmp_path):
     items = figures(tmp_path)
     state = state_for([])
     state["viz_paths"] = [items[0].path]
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     joined = update["visualization_results"].visualizations
     assert len(joined) == 1
     assert joined[0].path == items[0].path
@@ -330,7 +340,7 @@ def test_relative_artifact_metadata_and_absolute_path_channel_are_one_figure(tmp
     ]
     state = state_for(relative)
     state.update(artifacts_path=str(tmp_path), viz_paths=[v.path for v in items])
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_results"].visualizations == relative
 
 
@@ -343,5 +353,5 @@ def test_duplicate_id_or_equivalent_path_does_not_inflate_inventory(tmp_path):
             update={"visualization_id": "another-id-for-the-same-file"}
         ),
     ]
-    update = load_functions(tmp_path)["viz_join"](state)
+    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
     assert update["visualization_results"].visualizations == items

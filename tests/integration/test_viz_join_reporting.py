@@ -21,6 +21,7 @@ from idd_state import (
     DataVisualization,
     ReportOutline,
     SectionOutline,
+    VisualizationResults,
 )
 from tests.unit.test_viz_join import (
     FLAGS,
@@ -34,12 +35,24 @@ from tests.unit.test_section_worker import load_worker
 from tests.unit.test_patcher_integrity import _compile_report_packager_node
 
 
-def run_selected_graph(base):
+def run_selected_graph(base, incoming="empty"):
     items = figures(base)
     state = state_for(items)
     state["visualization_results"] = state["visualization_results"].model_dump(
         mode="json"
     )
+    snapshots = [VisualizationResults(**FLAGS, visualizations=[v]) for v in items]
+    if incoming == "serialized_envelopes":
+        state["viz_results"] = [v.model_dump(mode="json") for v in snapshots]
+    elif incoming == "model_envelopes":
+        state["viz_results"] = snapshots
+    elif incoming == "mixed":
+        state["viz_results"] = [
+            items[0].model_dump(),
+            snapshots[1],
+            snapshots[2].model_dump(),
+            snapshots[0].model_dump(),
+        ]
     config = {"configurable": {"thread_id": "viz-report-offline"}}
     state.update(
         _config=config,
@@ -126,9 +139,21 @@ def run_selected_graph(base):
         seeded = graph.get_state(config).values
         assert isinstance(seeded["visualization_results"], dict)
         assert isinstance(seeded["visualization_results"]["visualizations"][0], dict)
+        if incoming != "empty":
+            assert any(
+                isinstance(v, VisualizationResults)
+                or (isinstance(v, dict) and "visualizations" in v)
+                for v in seeded["viz_results"]
+            )
         result = graph.invoke(None, config, interrupt_before=["supervisor"])
         assert result["visualization_results"].visualizations == items
-        assert len(result["viz_results"]) == 4
+        assert [
+            DataVisualization.model_validate(v) for v in result["viz_results"]
+        ] == items
+        assert all(
+            isinstance(v, dict) and "visualizations" not in v
+            for v in result["viz_results"]
+        )
         assert result["viz_grade"] == "not_evaluated"
         assert graph.get_state(config).next == ("supervisor",)
         # Decode the actual SQLite typed checkpoint, rather than assuming JSON.
@@ -139,11 +164,18 @@ def run_selected_graph(base):
         decoded = saver.serde.loads_typed(typed)
         inventory = decoded["channel_values"]["visualization_results"]
         assert inventory.visualizations == items
+        assert [
+            DataVisualization.model_validate(v)
+            for v in decoded["channel_values"]["viz_results"]
+        ] == items
     # Reopen the DB and graph: process-boundary restoration must preserve metadata.
     with SqliteSaver.from_conn_string(str(db)) as saver:
         graph = build_graph(node_overrides=overrides, checkpointer=saver)
         restored = graph.get_state(config).values
         assert restored["visualization_results"].visualizations == items
+        assert [
+            DataVisualization.model_validate(v) for v in restored["viz_results"]
+        ] == items
         # Controlled supervisor routing decision; its LLM/planning loop is outside
         # this selected-cell test. Canonical route_from_supervisor executes next.
         graph.update_state(
@@ -165,10 +197,13 @@ def run_selected_graph(base):
     return result, items
 
 
+@pytest.mark.parametrize(
+    "incoming", ["empty", "serialized_envelopes", "model_envelopes", "mixed"]
+)
 def test_sqlite_graph_inventory_reaches_orchestrator_sections_and_w14j(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, incoming
 ):
-    state, items = run_selected_graph(tmp_path)
+    state, items = run_selected_graph(tmp_path, incoming)
     monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(tmp_path))
     packager = _compile_report_packager_node(notebook(), tmp_path)
     update = packager(state)
