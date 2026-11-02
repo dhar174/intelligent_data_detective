@@ -1,0 +1,19 @@
+{
+  "idd-memory-lifecycle": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python .agents/hooks/idd_memory.py start",
+        "timeout": 30
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python .agents/hooks/idd_memory.py stop",
+        "timeout": 30
+      }
+    ]
+  }
+}

@@ -65,6 +65,16 @@ python idd_proof.py prepare --scenario sample_dirty --target-dir ../proof_attemp
 Draft PR #175: Antigravity architectural review completed and APPROVED for commit `f9bda27d252c54ce49d7814625b1325502ab76df`. Patch CP5-SW-FIGURE-ORDER resolves Cell 57 UnboundLocalError. 225/225 tests pass across 6 suites; 99 cells, 15 nodes/33 edges/70 State fields preserved; byte-identical regeneration determinism confirmed. Ready for merge to main and subsequent owner re-authorization for CP5 live proof campaign.
 <!-- repo-agent-bootstrap:managed:end -->
 
+<!-- session-curated:2026-11-02-antigravity:start -->
+## 2026-11-02 — Antigravity lifecycle repair (offline verified)
+
+- [x] Compared IDD with Backrooms and current Antigravity documentation; identified absent hook registration/adapters, discretionary coordination, and ignored JSON configuration.
+- [x] Registered shared mem0ry4ai initial recovery and idle capture hooks; made coordination always active with primary-only bookends, explicit local fallback, and search-before-save. Preserved existing agents and protected against recursive delegation and Unicode output failures.
+- [x] Broad no-key verification: **1,100 passed, 35 skipped, 4 dependency warnings** in 135.01 seconds. Final focused hook verification: **13 passed**; independent review found no remaining actionable defects.
+- [ ] Verify a fresh local Antigravity chat: loaded hooks/agents, actual MCP recall, specialist invocation, steward curation, and transcript capture. Interpreter/cwd launch and MCP inheritance remain unverified here; see [preflight instructions](../docs/architecture/antigravity-preflight.md).
+- Memory action: local memory-bank fallback only because mem0ry4ai tools are unavailable in this Codex environment; no external save claimed. No production notebook/core changes or paid CP5 execution; the halted campaign status above is unchanged.
+<!-- session-curated:2026-11-02-antigravity:end -->
+
 <!-- session-curated:start -->
 ## Pipeline run history (current session)
 

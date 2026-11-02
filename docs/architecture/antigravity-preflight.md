@@ -2,6 +2,86 @@
 
 This document records the canonical preflight configuration, rule-loading semantics, fail-closed notebook integrity gating, and CI-aligned regression baselines for Google Antigravity in the `intelligent_data_detective` repository (Issue #152).
 
+## Lifecycle investigation and repair (2026-11-02)
+
+The earlier preflight verified agent invocation in a particular Antigravity
+session, but deferred lifecycle hooks (see section 5). It did not establish
+automatic memory recovery or closeout in a new chat.
+
+Comparison with the default branch of
+[`backrooms_lore_scraper`](https://github.com/dhar174/backrooms_lore_scraper/blob/main/.agents/hooks.json)
+found these concrete differences:
+
+- IDD had no `.agents/hooks.json`, no hook adapters, and no bundled memory
+  plugin. Backrooms registered mem0ry4ai `PreInvocation` and `Stop` handlers,
+  translating Antigravity payloads to its shared local memory installation.
+- IDD's team-coordination rule used `model_decision`. That exposes a description
+  for optional retrieval, rather than continuously loading the full lifecycle.
+  Dedicated memory workflow proposals were also explicitly inactive under
+  `docs/evidence/proposals/`.
+- IDD's `.gitignore` ignored every `*.json`, including new hook registrations.
+- Backrooms uses machine-specific Windows interpreter and checkout paths. Copying
+  those commands into IDD would target the wrong repository.
+
+The repair registers `idd-memory-lifecycle` in `.agents/hooks.json`, explicitly
+unignores that file, and changes team coordination to `always_on`. The adapter
+`.agents/hooks/idd_memory.py` runs `hooks/session_start.py` from the shared
+mem0ry4ai installation on `PreInvocation` **only when `invocationNum == 0`**.
+It injects recalled context and the primary coordinator's memory checkpoints.
+`Stop` runs shared `hooks/capture.py` when `fullyIdle` is true. Child processes
+have a 25-second timeout inside the 30-second hook timeout. Diagnostics go to
+stderr; stdout contains only Antigravity JSON. Missing/failed recovery is also
+reported in the injected context, with a local memory-bank fallback.
+
+The adapter derives project identity from its own location, so another folder
+listed first in `workspacePaths` cannot redirect IDD's memory scope. It does not
+change production IDD code or the notebook. Primary-only orchestration avoids
+recursive memory-agent bookends in delegated sessions.
+
+### Local prerequisites and runtime verification
+
+1. Open **`intelligent_data_detective` itself** as the Antigravity project folder.
+   Opening only its parent does not discover customizations in child folders.
+2. Ensure `python` resolves to Python 3.10+ with the dependencies used by your
+   mem0ry4ai installation. The registered commands use repository-relative paths
+   and assume the hook starts in the repository root. If the local Antigravity
+   version launches elsewhere, use quoted absolute interpreter and adapter paths
+   in `.agents/hooks.json`, as Backrooms does, with **IDD's** paths.
+3. Shared memory scripts must exist at `~/mem0ry4ai/hooks/session_start.py` and
+   `~/mem0ry4ai/hooks/capture.py`, or set `MEM0RY4AI_HOME` to the shared engine's
+   directory **before launching Antigravity**. The bridge reuses the existing
+   store; it neither installs the engine nor configures its MCP server.
+4. Enable the `mem0ry4ai` MCP server in Antigravity independently. Verify the
+   actual tools in the parent and a memory subagent. The existing `inheritMcp`
+   metadata and historical successful query below are not evidence of current
+   server availability. Do not re-add `call_mcp_tool` to built-in tool lists.
+5. Start a fresh chat. Check Hooks in Customizations (CLI: `/hooks`), the custom
+   agent list (CLI: `/agents`), and MCP availability (CLI: `/mcp`). Expect
+   `idd-memory-lifecycle`, all nine repo agents, and mem0ry4ai tools. The current
+   custom-subagent documentation lists **App and CLI** support; verify capability
+   separately if using the standalone IDE or an older version.
+6. In a small non-trivial task, observe actual `memory-scout` invocation before
+   planning, relevant specialist delegation, and `memory-steward` before final
+   closeout. Confirm successful MCP recall and search-before-save, or an explicit
+   unavailability report and local fallback. An `action: none` closeout is valid.
+7. At idle stop, check hook diagnostics and the shared engine's staging output.
+   `capture.py` stages transcripts; **it does not itself certify a curated memory
+   save**. A zero child exit reports completion of the script, not a count of
+   newly saved memories. Verify semantic saves through MCP results.
+
+Offline checks exercise the registered commands with temporary stand-in engine
+scripts, including paths with spaces, multi-root scope, failed/missing engine,
+and idle capture. They do not certify the Windows launcher, Antigravity discovery,
+MCP inheritance, or the real local memory backend. This Codex cloud environment
+has no Antigravity executable or mem0ry4ai tools, so that final runtime smoke test
+must run in the user's Antigravity installation.
+
+Sources checked on 2026-11-02:
+[Hooks](https://antigravity.google/docs/hooks/),
+[Rules](https://antigravity.google/docs/rules/),
+[Customization discovery](https://antigravity.google/docs/customization-discovery/),
+and [Custom subagents](https://antigravity.google/docs/subagents/).
+
 ---
 
 ## 1. Current Antigravity Configuration
@@ -27,12 +107,15 @@ The repository provides modular rules under `.agents/rules/` configured with val
 | Rule File | Trigger Mode | Trigger Rationale | Description |
 | :--- | :--- | :--- | :--- |
 | `.agents/rules/code-architecture.md` | `always_on` | Truly universal repository constraints (never edit patched notebook, 99-cell invariant, channel collision avoidance, `DataFrameRegistry`, no `src/` directory). Active on every turn. | Non-negotiable architectural invariants, notebook generation rules, state reducers, Pydantic contracts, and DataFrameRegistry conventions. |
-| `.agents/rules/team-coordination.md` | `model_decision` | Task-specific orchestration: activated dynamically when delegating, coordinating subagents, or managing the 5-stage lifecycle. | Multi-agent team coordination protocols, subagent dispatch matrix, 5-stage orchestration lifecycle, and one-writer discipline for IDD engineering tasks. |
+| `.agents/rules/team-coordination.md` | `always_on` | Required memory checkpoints and primary-coordinator lifecycle must be present before planning, rather than selected on demand. | Multi-agent team coordination protocols, subagent dispatch matrix, 5-stage orchestration lifecycle, and one-writer discipline for IDD engineering tasks. |
 | `.agents/rules/validation-and-gates.md`| `model_decision` | Task-specific gating: activated dynamically during testing, validation, pre-commit checks, or release gating. | Validation criteria, test execution suites, notebook integrity checks, and release quality gates for code modifications and pipeline runs. |
 
 *Note on Path Corrections*: Stale links referencing `.agent/rules/` (singular) have been corrected to `.agents/rules/` across all documentation (`GEMINI.md`, agent manifests, and rules).
 
 ### MCP Inheritance & Memory Agents Status
+
+The following success claims record the earlier preflight session; they are not
+a certification of the current user's Antigravity/MCP environment.
 - **`inheritMcp: true`**: Successfully recognized by Antigravity. When enabled on subagents, MCP tools (including `mem0ry4ai` and `github-mcp-server`) are inherited by the agent execution context.
 - **`call_mcp_tool` Resolution Fix**:
   - *Root Cause*: Previous frontmatter in `memory-scout/agent.md` and `memory-steward/agent.md` listed `call_mcp_tool` inside the `tools:` list. In Antigravity's component architecture, `tools:` resolves built-in CLI tools (e.g., `view_file`, `list_dir`), whereas `call_mcp_tool` is an internal MCP dispatcher. This caused `failed to construct executor: unknown component: tool "call_mcp_tool" not found in registry`.
@@ -175,8 +258,10 @@ This preflight task establishes:
 ## 5. Follow-ups & Recommendations
 
 1. **Lifecycle Hooks (`.agents/hooks.json`)**:
+   - Memory lifecycle hooks were added in the 2026-11-02 repair described above.
    - A `PreToolUse` hook could be configured to prevent write tools from directly mutating `IntelligentDataDetective_beta_v5_patched.ipynb`, enforcing the one-way generation model through `_patch_notebook.py`.
    - A `PostToolUse` or `Stop` hook could automatically run `validate_notebook_integrity.py` whenever `_patch_notebook.py` is edited.
-   - Per Issue #152 boundaries, these lifecycle hooks remain deferred to a separate issue.
+   - The notebook write/validation hooks remain separate follow-up work; the
+     original Issue #152 deferral no longer describes the memory lifecycle hooks.
 2. **Subagent Session Caching**:
    - Custom subagent manifests discovered at Antigravity session startup are cached in memory for the duration of the conversation. Modifying `.agents/agents/<name>/agent.md` on disk takes full effect in new conversation sessions or via programmatic definition (`define_subagent`).

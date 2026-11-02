@@ -41,6 +41,17 @@ The pre-existing instruction-formatting ordering defect in Cell 57 (`section_wor
 4. Execute Attempt 1 retry on `retail_orders` scenario via `idd_proof.py` and validate against the 12/12 + 9/9 twin production gates.
 <!-- repo-agent-bootstrap:managed:end -->
 
+<!-- session-curated:2026-11-02-antigravity:start -->
+## 2026-11-02 — Antigravity memory lifecycle configuration repaired
+
+- Root cause: IDD had no `.agents/hooks.json` or memory adapters (historically deferred under Issue #152), while `backrooms_lore_scraper` registered shared mem0ry4ai startup/capture adapters. IDD's coordination rule was discretionary (`model_decision`), and `.gitignore` hid all new JSON files.
+- Repair: `.agents/hooks.json` now registers `.agents/hooks/idd_memory.py` for initial `PreInvocation` context recovery and idle `Stop` transcript capture. It reuses `MEM0RY4AI_HOME` or `~/mem0ry4ai`, reports unavailable backends with local fallback, and handles non-UTF-8 launchers. The JSON registration is explicitly unignored.
+- Coordination is now `always_on`, with every-chat recall, specialist routing, and non-trivial scout/steward bookends scoped to the primary coordinator; delegated agents must not recursively launch bookends. Steward curation requires search-before-write and verified reusable knowledge. Transcript capture stages session data and does not establish a curated memory save.
+- Verification: broad no-key suite passed **1,100 tests, 35 skipped, 4 dependency warnings**; final focused hook suite passed **13 tests** (including additional malformed-input, timeout, and Unicode coverage after the broad run collected). Independent review cleared the encoding fix. Notebook and canonical core were untouched.
+- Runtime remains **unverified** in the user's Antigravity installation: fresh-chat discovery, Windows interpreter/working directory, MCP inheritance, and real store recall/save/capture. Follow [the preflight smoke checks](../docs/architecture/antigravity-preflight.md). This Codex environment exposes no mem0ry4ai tools, so knowledge was preserved locally; no external memory save is claimed.
+- The current CP5 objective above is unchanged; paid production proof remains halted pending owner merge and re-authorization.
+<!-- session-curated:2026-11-02-antigravity:end -->
+
 <!-- session-curated:start -->
 ## 2026-09-29 — Historical Failed Live Run (not completion proof)
 
