@@ -27,6 +27,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Ensure full history for provenance checks
+        run: |
+          # Copilot code review can override checkout's fetch-depth to 2.
+          # Restore the history needed to verify recorded evidence commits.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --no-tags --unshallow origin
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

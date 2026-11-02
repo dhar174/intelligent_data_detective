@@ -92,7 +92,8 @@ def handle(event: str, data: dict) -> dict:
 def main() -> None:
     event = sys.argv[1]
     try:
-        data = json.load(sys.stdin)
+        # Antigravity sends JSON bytes; ignore the launcher's stdin encoding.
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("expected JSON object")
         output = handle(event, data)

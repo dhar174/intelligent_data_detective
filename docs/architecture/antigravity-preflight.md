@@ -33,6 +33,12 @@ have a 25-second timeout inside the 30-second hook timeout. Diagnostics go to
 stderr; stdout contains only Antigravity JSON. Missing/failed recovery is also
 reported in the injected context, with a local memory-bank fallback.
 
+PR #178 review also exposed an input-encoding gap: the adapter now reads JSON
+from binary stdin, so valid UTF-8 paths survive ASCII and CP1252 launchers.
+Tests send unescaped UTF-8 bytes and assert exact transcript-path preservation
+for both startup and idle capture, including accented and Chinese folder names.
+Invalid UTF-8 returns the existing safe fallback without invoking the backend.
+
 The adapter derives project identity from its own location, so another folder
 listed first in `workspacePaths` cannot redirect IDD's memory scope. It does not
 change production IDD code or the notebook. Primary-only orchestration avoids
@@ -71,10 +77,16 @@ recursive memory-agent bookends in delegated sessions.
 
 Offline checks exercise the registered commands with temporary stand-in engine
 scripts, including paths with spaces, multi-root scope, failed/missing engine,
-and idle capture. They do not certify the Windows launcher, Antigravity discovery,
+idle capture, and raw UTF-8 input under non-UTF-8 launchers. They do not certify
+the Windows launcher, Antigravity discovery,
 MCP inheritance, or the real local memory backend. This Codex cloud environment
 has no Antigravity executable or mem0ry4ai tools, so that final runtime smoke test
 must run in the user's Antigravity installation.
+
+CI provenance tests additionally require historical Git objects. Copilot's
+generated review job used checkout depth 2 even though this repository requests
+full history. The explicit post-checkout history step restores shallow clones
+before validation, preserving the evidence tests' fail-closed assertions.
 
 Sources checked on 2026-11-02:
 [Hooks](https://antigravity.google/docs/hooks/),

@@ -50,6 +50,13 @@ The pre-existing instruction-formatting ordering defect in Cell 57 (`section_wor
 - Verification: broad no-key suite passed **1,100 tests, 35 skipped, 4 dependency warnings**; final focused hook suite passed **13 tests** (including additional malformed-input, timeout, and Unicode coverage after the broad run collected). Independent review cleared the encoding fix. Notebook and canonical core were untouched.
 - Runtime remains **unverified** in the user's Antigravity installation: fresh-chat discovery, Windows interpreter/working directory, MCP inheritance, and real store recall/save/capture. Follow [the preflight smoke checks](../docs/architecture/antigravity-preflight.md). This Codex environment exposes no mem0ry4ai tools, so knowledge was preserved locally; no external memory save is claimed.
 - The current CP5 objective above is unchanged; paid production proof remains halted pending owner merge and re-authorization.
+
+### PR #178 review follow-up
+
+- Reproduced review issue `4448656170`: launcher-default stdin decoding could corrupt unescaped UTF-8 hook payloads. The adapter now strictly decodes stdin bytes as UTF-8 before JSON parsing. Regression coverage preserves exact startup/Stop transcript paths with accented/Chinese folders under ASCII/CP1252 launchers and safely rejects invalid UTF-8 and UTF-16/32 input; 10 failing cases became passing.
+- Copilot setup warning run `41538328704` traced to generated checkout configuration overriding `fetch-depth: 0` with depth 2, hiding historical provenance commit `b7687ab` and causing four fixture errors. A conditional post-checkout `git fetch --no-tags --unshallow origin` now restores history. The actual YAML step was exercised in a disposable depth-2 clone: **1 passed/4 errors before, 5 passed after**; HEAD was preserved and a full-history rerun did not fetch.
+- Updated verification: broad no-key suite **1,116 passed, 35 skipped, 4 dependency warnings** in 134.09 seconds; final focused hook suite **27 passed** (the broad run collected 23 hook tests before later strict-input negatives). Independent review found no remaining actionable issues. These are local results; remote CI success and posted review replies are not established by this note.
+- Antigravity runtime/MCP verification remains outstanding and external memory tools remain unavailable, so this closeout uses local memory-bank fallback only. Notebook/core and halted paid CP5 status are unchanged.
 <!-- session-curated:2026-11-02-antigravity:end -->
 
 <!-- session-curated:start -->

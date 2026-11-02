@@ -51,14 +51,16 @@ def run_hook(event, memory_home, *, raw_input=None, **fields):
         "modelName": "test-model",
         **fields,
     }
+    wire_input = json.dumps(payload, ensure_ascii=False) if raw_input is None else raw_input
+    if isinstance(wire_input, str):
+        wire_input = wire_input.encode("utf-8")
     result = subprocess.run(
-        command, input=json.dumps(payload) if raw_input is None else raw_input,
-        text=True, capture_output=True,
+        command, input=wire_input, capture_output=True,
         cwd=ROOT, timeout=10,
         env={**os.environ, "MEM0RY4AI_HOME": str(memory_home)},
     )
     assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout), result.stderr
+    return json.loads(result.stdout), result.stderr.decode("utf-8", errors="replace")
 
 
 def test_first_invocation_recovers_context_for_idd_in_multi_root_workspace(memory_home):
@@ -124,7 +126,11 @@ def test_capture_failure_is_visible_without_trapping_agent_in_stop_loop(memory_h
     assert "9" in stderr
 
 
-@pytest.mark.parametrize("raw_input", ["not JSON", "[]"])
+@pytest.mark.parametrize("raw_input", [
+    "not JSON", "[]", b'{"path": "\xff"}',
+    '{"invocationNum":0,"fullyIdle":true}'.encode("utf-16"),
+    '{"invocationNum":0,"fullyIdle":true}'.encode("utf-32"),
+], ids=["malformed-json", "non-object", "invalid-utf8", "utf16", "utf32"])
 @pytest.mark.parametrize("event,expected", [
     ("PreInvocation", {"injectSteps": []}), ("Stop", {"decision": ""}),
 ])
@@ -160,3 +166,28 @@ def test_non_ascii_memory_survives_non_utf8_launcher(memory_home, monkeypatch):
     output, _ = run_hook("PreInvocation", memory_home, invocationNum=0)
     messages = "\n".join(step["ephemeralMessage"] for step in output["injectSteps"])
     assert "北京" in messages
+
+
+@pytest.mark.parametrize("launcher_encoding", ["ascii", "cp1252"])
+@pytest.mark.parametrize("transcript_folder", ["café", "会话"])
+@pytest.mark.parametrize("event,backend", [
+    ("PreInvocation", "session_start"), ("Stop", "capture"),
+])
+def test_utf8_transcript_path_survives_non_utf8_stdin(
+    memory_home, monkeypatch, launcher_encoding, transcript_folder, event, backend
+):
+    monkeypatch.setenv("PYTHONIOENCODING", launcher_encoding)
+    transcript_path = str(memory_home / transcript_folder / "transcript.jsonl")
+    output, _ = run_hook(
+        event, memory_home, invocationNum=0, fullyIdle=True,
+        transcriptPath=transcript_path,
+    )
+    received_path = memory_home / "hooks" / f"{backend}.received"
+    assert received_path.is_file(), "Valid UTF-8 payload must reach the memory backend"
+    received = json.loads(received_path.read_text(encoding="utf-8"))
+    assert received["transcript_path"] == transcript_path
+    if event == "PreInvocation":
+        assert any("Recovered project decision" in step["ephemeralMessage"]
+                   for step in output["injectSteps"])
+    else:
+        assert output == {"decision": ""}
