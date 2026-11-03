@@ -4107,6 +4107,39 @@ def main():
     if not sg_patched:
         print("⚠️  stream_graph_output patch: target cell not found")
 
+    # Cell 75 receives both strings and structured responses/v1 content blocks.
+    # Scope the replacement to the complete-message handler and fail on drift.
+    stream_cell = cells[75]
+    stream_source = join_source(stream_cell["source"])
+    stream_nodes = [
+        node
+        for node in ast.parse(stream_source).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "print_ai_message_complete"
+    ]
+    if len(stream_nodes) != 1:
+        raise RequiredPatchError("CP5 stream content: expected one message handler")
+    stream_node = stream_nodes[0]
+    stream_lines = stream_source.splitlines(keepends=True)
+    stream_handler = "".join(stream_lines[stream_node.lineno - 1 : stream_node.end_lineno])
+    old_content_branch = '    elif content and content.strip() != "":\n'
+    new_content_branch = "    elif content and not isinstance(content, str):\n"
+    if old_content_branch in stream_handler:
+        stream_handler = replace_required(
+            stream_handler,
+            old_content_branch,
+            new_content_branch,
+            patch_id="CP5 stream structured content",
+        )
+    elif stream_handler.count(new_content_branch) != 1:
+        raise RequiredPatchError("CP5 stream content: expected structured-content branch")
+    stream_lines[stream_node.lineno - 1 : stream_node.end_lineno] = [stream_handler]
+    stream_cell["source"] = "".join(stream_lines)
+    ast.parse(stream_cell["source"])
+    stream_cell["outputs"] = []
+    stream_cell["execution_count"] = None
+    print("✅ Cell idx 75: CP5 structured message content display")
+
     # --- Patch final-state cell: add _log_final_state call ---
     # Find the post-run inspection cell that contains state_vals = final_state.values
     # and the "Final state summary" print. Inject _log_final_state after state_vals assignment.
