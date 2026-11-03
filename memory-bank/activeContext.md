@@ -41,6 +41,31 @@ The pre-existing instruction-formatting ordering defect in Cell 57 (`section_wor
 4. Execute Attempt 1 retry on `retail_orders` scenario via `idd_proof.py` and validate against the 12/12 + 9/9 twin production gates.
 <!-- repo-agent-bootstrap:managed:end -->
 
+<!-- session-curated:2026-11-02-antigravity:start -->
+## 2026-11-02 — Antigravity memory lifecycle configuration repaired
+
+- Root cause: IDD had no `.agents/hooks.json` or memory adapters (historically deferred under Issue #152), while `backrooms_lore_scraper` registered shared mem0ry4ai startup/capture adapters. IDD's coordination rule was discretionary (`model_decision`), and `.gitignore` hid all new JSON files.
+- Repair: `.agents/hooks.json` now registers `.agents/hooks/idd_memory.py` for initial `PreInvocation` context recovery and idle `Stop` transcript capture. It reuses `MEM0RY4AI_HOME` or `~/mem0ry4ai`, reports unavailable backends with local fallback, and handles non-UTF-8 launchers. The JSON registration is explicitly unignored.
+- Coordination is now `always_on`, with every-chat recall, specialist routing, and non-trivial scout/steward bookends scoped to the primary coordinator; delegated agents must not recursively launch bookends. Steward curation requires search-before-write and verified reusable knowledge. Transcript capture stages session data and does not establish a curated memory save.
+- Verification: broad no-key suite passed **1,100 tests, 35 skipped, 4 dependency warnings**; final focused hook suite passed **13 tests** (including additional malformed-input, timeout, and Unicode coverage after the broad run collected). Independent review cleared the encoding fix. Notebook and canonical core were untouched.
+- Runtime remains **unverified** in the user's Antigravity installation: fresh-chat discovery, Windows interpreter/working directory, MCP inheritance, and real store recall/save/capture. Follow [the preflight smoke checks](../docs/architecture/antigravity-preflight.md). This Codex environment exposes no mem0ry4ai tools, so knowledge was preserved locally; no external memory save is claimed.
+- The current CP5 objective above is unchanged; paid production proof remains halted pending owner merge and re-authorization.
+
+### PR #178 review follow-up
+
+- Reproduced review issue `4448656170`: launcher-default stdin decoding could corrupt unescaped UTF-8 hook payloads. The adapter now strictly decodes stdin bytes as UTF-8 before JSON parsing. Regression coverage preserves exact startup/Stop transcript paths with accented/Chinese folders under ASCII/CP1252 launchers and safely rejects invalid UTF-8 and UTF-16/32 input; 10 failing cases became passing.
+- Copilot setup warning run `41538328704` traced to generated checkout configuration overriding `fetch-depth: 0` with depth 2, hiding historical provenance commit `b7687ab` and causing four fixture errors. A conditional post-checkout `git fetch --no-tags --unshallow origin` now restores history. The actual YAML step was exercised in a disposable depth-2 clone: **1 passed/4 errors before, 5 passed after**; HEAD was preserved and a full-history rerun did not fetch.
+- Updated verification: broad no-key suite **1,116 passed, 35 skipped, 4 dependency warnings** in 134.09 seconds; final focused hook suite **27 passed** (the broad run collected 23 hook tests before later strict-input negatives). Independent review found no remaining actionable issues. These are local results; remote CI success and posted review replies are not established by this note.
+- Antigravity runtime/MCP verification remains outstanding and external memory tools remain unavailable, so this closeout uses local memory-bank fallback only. Notebook/core and halted paid CP5 status are unchanged.
+
+### PR #178 final documentation and hosted verification
+
+- Copilot review `5745068853` found no open code issues. Preflight documentation now explicitly labels earlier discovery results as historical and the current Windows/Antigravity/MCP smoke checks **NOT RUN**. This follow-up changes documentation only.
+- Generated setup run `41547684581` checked out `e883ce6` but omitted the new history-restoration step entirely, repeating four missing-`b7687ab` fixture errors. The generated setup matches the pre-fix default-branch workflow; this is evidence of setup activation lag, not a failed execution of the new step. Merge through normal review, then confirm a fresh generated setup includes the step; do not weaken provenance checks or rerun unchanged setup repeatedly.
+- [Hosted branch workflow `41553081052`](https://github.com/dhar174/intelligent_data_detective/actions/runs/41553081052) completed **successfully** on `e883ce6e915fa70355e7e725c75ff3120eb97728`: **1,149 tests passed across invocations**, with no errors/failures, plus successful notebook/graph validation, formatting, and lint. All five provenance tests passed within the 954-test unit/integration result. Hosted checkout already had full history, so restoration was a no-op; the earlier depth-2 clone test separately proves restoration.
+- Independent documentation review cleared. This hosted Ubuntu success does not certify actual Antigravity discovery or MCP memory behavior. Local memory fallback only; no external save, paid CP5 execution, or posted-review-reply status is claimed here.
+<!-- session-curated:2026-11-02-antigravity:end -->
+
 <!-- session-curated:start -->
 ## 2026-09-29 — Historical Failed Live Run (not completion proof)
 

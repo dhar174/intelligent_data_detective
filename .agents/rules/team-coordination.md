@@ -1,9 +1,43 @@
 ---
-trigger: model_decision
+trigger: always_on
 description: "Multi-agent team coordination protocols, subagent dispatch matrix, 5-stage orchestration lifecycle, and one-writer discipline for IDD engineering tasks."
 ---
 
 # Multi-Agent Team Coordination & Orchestration Rules
+
+## Applicability and every-chat memory checkpoints
+
+The orchestration lifecycle applies to the **primary coordinator**. A delegated
+subagent executes only its assigned role and returns its findings; it must not
+spawn its own memory-scout/memory-steward bookends. This also applies when hooks
+inject a memory reminder into a subagent session.
+
+At the beginning of **each chat**, recover relevant context using the available
+`mem0ry4ai` MCP tools (`memory_resume` and targeted `memory_search`, with
+`session_search` when needed), scoped to `project:intelligent_data_detective`.
+Read `memory-bank/activeContext.md` and `memory-bank/progress.md`. For non-trivial
+work, delegate this recovery to `memory-scout` before substantive planning; pass
+the task and known target files. Consult relevant specialists from the roster
+below before implementing changes in their domain.
+
+Before final closeout, search for duplicates and save only verified, reusable
+knowledge with `memory_add`; use `memory_note` for useful tentative work, not
+durable conclusions. For non-trivial tasks, invoke `memory-steward` after the
+specialists, validation, and documentation have settled. Include test results and
+limitations in its handoff. A steward may return `action: none` if nothing merits
+saving. Do not repeat the bookends for each small subtask.
+
+If MCP memory tools are unavailable, state that limitation, recover from the
+local memory-bank, and preserve useful verified outcomes there. If
+`invoke_subagent` or a named repo agent is unavailable, state the missing
+capability and perform the role in the primary session. Never claim a tool call,
+delegation, or external memory save that did not succeed. Current user
+instructions and repository evidence take precedence over recalled memory.
+
+`.agents/hooks.json` supplies automatic context injection and transcript capture
+through the local mem0ry4ai installation. Capture stages a transcript; it does
+**not** replace these semantic memory checkpoints or prove a durable memory was
+saved. The hooks do not install or configure the MCP server.
 
 ## 1. Primary Coordinator Persona & Mission
 

@@ -65,6 +65,28 @@ python idd_proof.py prepare --scenario sample_dirty --target-dir ../proof_attemp
 Draft PR #175: Antigravity architectural review completed and APPROVED for commit `f9bda27d252c54ce49d7814625b1325502ab76df`. Patch CP5-SW-FIGURE-ORDER resolves Cell 57 UnboundLocalError. 225/225 tests pass across 6 suites; 99 cells, 15 nodes/33 edges/70 State fields preserved; byte-identical regeneration determinism confirmed. Ready for merge to main and subsequent owner re-authorization for CP5 live proof campaign.
 <!-- repo-agent-bootstrap:managed:end -->
 
+<!-- session-curated:2026-11-02-antigravity:start -->
+## 2026-11-02 — Antigravity lifecycle repair (offline verified)
+
+- [x] Compared IDD with Backrooms and current Antigravity documentation; identified absent hook registration/adapters, discretionary coordination, and ignored JSON configuration.
+- [x] Registered shared mem0ry4ai initial recovery and idle capture hooks; made coordination always active with primary-only bookends, explicit local fallback, and search-before-save. Preserved existing agents and protected against recursive delegation and Unicode output failures.
+- [x] Broad no-key verification: **1,100 passed, 35 skipped, 4 dependency warnings** in 135.01 seconds. Final focused hook verification: **13 passed**; independent review found no remaining actionable defects.
+- [ ] Verify a fresh local Antigravity chat: loaded hooks/agents, actual MCP recall, specialist invocation, steward curation, and transcript capture. Interpreter/cwd launch and MCP inheritance remain unverified here; see [preflight instructions](../docs/architecture/antigravity-preflight.md).
+- Memory action: local memory-bank fallback only because mem0ry4ai tools are unavailable in this Codex environment; no external save claimed. No production notebook/core changes or paid CP5 execution; the halted campaign status above is unchanged.
+
+### PR #178 review follow-up
+
+- [x] Fixed stdin decoding for real unescaped UTF-8 hook bytes; startup/Stop transcript paths survive accented/Chinese folders and ASCII/CP1252 launchers. Strict invalid-encoding fallback is covered; the reproduced 10 failing review cases now pass.
+- [x] Diagnosed Copilot run `41538328704`: generated depth-2 checkout hid provenance commit `b7687ab`. Verified the new conditional unshallow YAML step in a disposable clone: **1 passed/4 errors → 5 passed**, unchanged HEAD, and no fetch on full-history rerun.
+- [x] Follow-up local verification: **1,116 passed, 35 skipped, 4 dependency warnings** in 134.09 seconds; final focused hook suite **27 passed** (23 collected during the broad run). Independent review cleared. Remote CI outcome, review replies, and actual Antigravity/MCP runtime are not certified here; external memory save remains unavailable and CP5 remains halted.
+
+### PR #178 final documentation and hosted verification
+
+- [x] Review `5745068853`: no open code issues. Documentation now separates historical results from the explicitly **NOT RUN** current Antigravity/Windows/MCP smoke matrix; independent review cleared, with no executable/test changes this round.
+- [x] [Branch workflow `41553081052`](https://github.com/dhar174/intelligent_data_detective/actions/runs/41553081052) succeeded on `e883ce6e915fa70355e7e725c75ff3120eb97728`: **1,149 passed across invocations**, no errors/failures; provenance, notebook/graph, formatting, and lint checks passed. Full-history hosted checkout made restoration a no-op; earlier depth-2 testing remains separate evidence.
+- [ ] After normal reviewed merge, confirm generated Copilot setup activates the new history step. Run `41547684581` omitted it and repeated the four missing-history fixture errors, rather than exercising the fix. Actual Antigravity/MCP smoke remains pending; local memory fallback only, no external save, and halted paid CP5 status unchanged.
+<!-- session-curated:2026-11-02-antigravity:end -->
+
 <!-- session-curated:start -->
 ## Pipeline run history (current session)
 

@@ -2,6 +2,14 @@
 
 Welcome to the **Intelligent Data Detective (IDD)** repository. This document defines the primary coordinator behavior, subagent team delegation patterns, memory workflows, and core architectural invariants for Google Antigravity.
 
+The five-stage lifecycle is for the **primary coordinator**. Delegated subagents
+perform only their assigned role and must not launch another pair of memory
+bookends. Follow the always-active [team-coordination rule](.agents/rules/team-coordination.md)
+for every-chat memory recovery, specialist routing, closeout, and explicit
+fallbacks when MCP tools or custom subagents are unavailable. Lifecycle plumbing
+is registered in [`.agents/hooks.json`](.agents/hooks.json); setup and runtime
+checks are documented in [Antigravity preflight](docs/architecture/antigravity-preflight.md).
+
 ---
 
 ## 1. Primary Coordinator Role

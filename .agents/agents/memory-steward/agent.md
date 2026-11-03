@@ -67,7 +67,9 @@ You act as the bookend at the completion of non-trivial tasks, after all other s
    - Test execution results (`test_intelligent_data_detective.py`, `validate_run.py`, etc.).
    - Known limitations or follow-up items.
 2. **Execute Memory Additions**:
+   - Search existing project memories first to avoid duplicates. Save only verified, reusable findings; `action: none` is valid when nothing merits saving.
    - Call inherited `mem0ry4ai` tools (`memory_add`, `memory_note`) directly with concise, tagged knowledge entries.
+   - If MCP tools are unavailable, report that explicitly and use the local memory-bank fallback. Never report an external save without a successful tool result.
 3. **Update Memory Bank**:
    - Update `memory-bank/activeContext.md` and `memory-bank/progress.md`.
 4. **Return Steward Report**:

@@ -86,6 +86,7 @@ dmypy.json
 *.csv
 !tests/trajectory/fixtures/sample_dirty.csv
 *.json
+!.agents/hooks.json
 !idd_manifest.json
 !tests/trajectory/fixtures/idd_test_dataset.json
 *.xlsx
