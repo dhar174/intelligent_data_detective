@@ -56,7 +56,7 @@ def run_hook(event, memory_home, *, raw_input=None, **fields):
         wire_input = wire_input.encode("utf-8")
     result = subprocess.run(
         command, input=wire_input, capture_output=True,
-        cwd=ROOT, timeout=10,
+        cwd=ROOT / ".agents", timeout=10,
         env={**os.environ, "MEM0RY4AI_HOME": str(memory_home)},
     )
     assert result.returncode == 0, result.stderr

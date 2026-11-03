@@ -49,10 +49,10 @@ recursive memory-agent bookends in delegated sessions.
 1. Open **`intelligent_data_detective` itself** as the Antigravity project folder.
    Opening only its parent does not discover customizations in child folders.
 2. Ensure `python` resolves to Python 3.10+ with the dependencies used by your
-   mem0ry4ai installation. The registered commands use repository-relative paths
-   and assume the hook starts in the repository root. If the local Antigravity
-   version launches elsewhere, use quoted absolute interpreter and adapter paths
-   in `.agents/hooks.json`, as Backrooms does, with **IDD's** paths.
+   mem0ry4ai installation. Antigravity CLI 1.4.12 on Windows launches commands
+   from the directory containing `.agents/hooks.json`. The script path is
+   `hooks/idd_memory.py` relative to `.agents`. The adapter derives the
+   repository root from its own path before invoking the shared memory scripts.
 3. Shared memory scripts must exist at `~/mem0ry4ai/hooks/session_start.py` and
    `~/mem0ry4ai/hooks/capture.py`, or set `MEM0RY4AI_HOME` to the shared engine's
    directory **before launching Antigravity**. The bridge reuses the existing
@@ -75,20 +75,18 @@ recursive memory-agent bookends in delegated sessions.
    save**. A zero child exit reports completion of the script, not a count of
    newly saved memories. Verify semantic saves through MCP results.
 
-Offline checks exercise the registered commands with temporary stand-in engine
-scripts, including paths with spaces, multi-root scope, failed/missing engine,
-idle capture, and raw UTF-8 input under non-UTF-8 launchers. They do not certify
-the Windows launcher, Antigravity discovery,
-MCP inheritance, or the real local memory backend. This Codex cloud environment
-has no Antigravity executable or mem0ry4ai tools, so that final runtime smoke test
-must run in the user's Antigravity installation.
+Offline checks exercise the registered commands from the hook configuration
+directory with temporary stand-in engine scripts. They cover paths with spaces,
+multi-root scope, backend failure, idle capture, and raw UTF-8 input under
+non-UTF-8 launchers.
 
-### Runtime evidence still required for this repair
+### Runtime evidence checklist
 
-The latest PR #178 review reports no open code issues; it does not establish
-live runtime behavior. The following checks remain **NOT RUN** for this repair
-because this workspace has no Antigravity installation, Windows host, or
-mem0ry4ai MCP connection:
+The initial Windows run on CLI 1.4.12 reproduced launch failures for both
+handlers because the commands included an extra `.agents` path segment. A
+config-relative probe recovered context and staged a real transcript. See the
+[PR #178 smoke-test report](https://github.com/dhar174/intelligent_data_detective/pull/178#issuecomment-6592496756)
+for the results and coverage limits. Use this checklist for fresh runtime runs.
 
 | Check | Evidence to record in the PR after the local smoke test |
 | --- | --- |

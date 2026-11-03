@@ -1,7 +1,7 @@
 """Bridge Antigravity lifecycle JSON to the existing local mem0ry4ai store.
 
-Uses only the standard library. Run from the repository root with the Python
-interpreter used by the local mem0ry4ai installation (Python 3.10+).
+Uses only the standard library. Antigravity launches it from the hook
+configuration directory using Python 3.10+.
 """
 
 from __future__ import annotations
