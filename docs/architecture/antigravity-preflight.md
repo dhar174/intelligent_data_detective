@@ -83,10 +83,67 @@ MCP inheritance, or the real local memory backend. This Codex cloud environment
 has no Antigravity executable or mem0ry4ai tools, so that final runtime smoke test
 must run in the user's Antigravity installation.
 
+### Runtime evidence still required for this repair
+
+The latest PR #178 review reports no open code issues; it does not establish
+live runtime behavior. The following checks remain **NOT RUN** for this repair
+because this workspace has no Antigravity installation, Windows host, or
+mem0ry4ai MCP connection:
+
+| Check | Evidence to record in the PR after the local smoke test |
+| --- | --- |
+| Actual environment | Antigravity surface/version, OS, tested commit, workspace path, and resolved Python interpreter. |
+| Discovery and launch | Loaded `idd-memory-lifecycle` handlers and all nine custom agents; actual hook invocation with successful script diagnostics. |
+| Parent/subagent MCP access | Successful project-scoped recall in the coordinator and an invoked `memory-scout`; report missing tools explicitly. |
+| Team coordination | `memory-scout` before planning, relevant specialist invocation, and `memory-steward` after verification without recursive bookends. |
+| Semantic memory closeout | Search-before-write and a successful curated save/read-back, or an explained `action: none` when nothing merits saving. |
+| Idle capture | Actual `capture.py` invocation and the shared engine's captured-session/staging record for the conversation. |
+
+Use a small non-trivial repository task and record redacted tool results or log
+references. A successful pytest run, a historical discovery result, and a child
+process exit code alone do not satisfy these checks. This is an evidence
+checklist, not a record that any local runtime checks have passed.
+
+### Copilot setup activation and hosted verification
+
 CI provenance tests additionally require historical Git objects. Copilot's
 generated review job used checkout depth 2 even though this repository requests
 full history. The explicit post-checkout history step restores shallow clones
 before validation, preserving the evidence tests' fail-closed assertions.
+
+Follow-up run `41547684581` checked out `e883ce6` but its generated setup omitted
+`Ensure full history for provenance checks` entirely. It repeated the same four
+missing-history fixture errors (950 passed, 3 skipped). The step is absent on
+`main` and present on the PR branch: this run did not exercise the proposed fix.
+GitHub documents the setup workflow's default-branch requirement and its
+override of checkout depth in
+[Configure the development environment for agents on GitHub Actions](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/customize-the-agent-environment).
+Do not repeatedly rerun the unchanged generated setup or weaken provenance
+assertions. Deploy the setup change through the normal reviewed merge, then
+check that a fresh Copilot run includes and executes the history step.
+
+The branch's workflow can also be tested independently, without merging:
+
+```bash
+gh workflow run copilot-setup-steps.yml \
+  --repo dhar174/intelligent_data_detective \
+  --ref codex/fix-antigravity-memory-hooks
+```
+
+Record that run's tested SHA and result separately from generated Copilot setup
+and from the local Antigravity smoke test. They validate different environments.
+
+[Hosted branch run `41553081052`](https://github.com/dhar174/intelligent_data_detective/actions/runs/41553081052)
+completed successfully on `e883ce6e915fa70355e7e725c75ff3120eb97728`:
+unit/integration **954 passed, 3 skipped** (all five provenance tests passed),
+scientific kernel **3 passed**, SQLite-present notebook **21 passed**, synthetic
+proof runner **27 passed**, SQLite-uninstalled notebook **1 passed** (20
+intentionally deselected), root regressions **110 passed**, prompt regressions
+**17 passed**, and mandatory error handling **16 passed**. Notebook/graph
+validation, formatting, and lint also passed. The hosted checkout used full
+history, so the history step was a no-op; the earlier disposable depth-2 clone
+separately established actual restoration. This green Ubuntu run does not
+complete the Antigravity runtime evidence checklist above.
 
 Sources checked on 2026-11-02:
 [Hooks](https://antigravity.google/docs/hooks/),
@@ -98,7 +155,11 @@ and [Custom subagents](https://antigravity.google/docs/subagents/).
 
 ## 1. Current Antigravity Configuration
 
-### Agents Discovered
+### Historical agent discovery (earlier preflight session)
+
+The statuses below describe the earlier preflight session only. They do not
+certify discovery or invocation for this repair; use the runtime evidence
+checklist above to record current results.
 Antigravity automatically discovers custom agents defined under `.agents/agents/<name>/agent.md`:
 
 | Agent Name | Persona / Role | Configuration Type | Default Model | Discoverable Status |
