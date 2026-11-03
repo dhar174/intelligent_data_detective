@@ -1082,7 +1082,11 @@ class DummyCommand:
 def _compile_report_packager_node(notebook, base_dir: Path, mock_safe_invoke=None):
     source = _cell_source(notebook, "report_packager_node")
     function = _function_node(source, "report_packager_node")
-    module = ast.Module(body=[function], type_ignores=[])
+    helpers = [
+        _function_node(source, name)
+        for name in ("_cp5_report_inventory", "_cp5_report_runtime_context")
+    ]
+    module = ast.Module(body=[*helpers, function], type_ignores=[])
     ast.fix_missing_locations(module)
     code = compile(module, "<report_packager_node>", "exec")
 

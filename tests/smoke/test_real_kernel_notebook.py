@@ -567,6 +567,28 @@ em_cmd = emergency_correspondence_node({{
 assert em_cmd.goto == "analyst"
 assert em_cmd.update["messages"].content == "Use median imputation."
 
+# The generated report boundary reconciles a real figure and rejects a fake.
+_kernel_fig = DataVisualization(
+    path="owned-figure.png", visualization_id="owned-figure", visualization_type="bar",
+    visualization_description="Controlled figure", visualization_style="default",
+    visualization_title="Owned figure", reply_msg_to_supervisor="done",
+    finished_this_task=True, expect_reply=False,
+)
+_kernel_section = Section(
+    name="Finding", section_num=1, description="Controlled finding", goals=[],
+    data_signals=[], expected_figures=[_kernel_fig.model_copy(update={{"path": ""}})],
+    content="Controlled finding.", reply_msg_to_supervisor="done",
+    finished_this_task=True, expect_reply=False,
+)
+_kernel_inventory = {{"viz_results": [_kernel_fig.model_dump()]}}
+_kernel_grounded = _cp5_ground_report_figures(_kernel_inventory, _kernel_section)
+assert _kernel_grounded.expected_figures == [_kernel_fig]
+assert _kernel_section.expected_figures[0].path == ""
+_kernel_fake = _kernel_section.model_copy(deep=True)
+_kernel_fake.expected_figures[0].visualization_id = "invented"
+with pytest.raises(ValueError, match="(?i)figure"):
+    _cp5_ground_report_figures(_kernel_inventory, _kernel_fake)
+
 print({PROBE_PREFIX!r} + json.dumps({{
     "status": "ok",
     "kernel_shell": type(shell).__name__,
@@ -1492,7 +1514,19 @@ assert cmd_short.update["next"] == "data_cleaner"
 assert cmd_short.update["_supervisor_turn_count"] == 1
 assert _STRUCTURED_INVOCATIONS == []
 
-# C. W4 global turn cap forces FINISH.
+# C. Native revision takes precedence over the sticky visualization flag.
+cmd_revision, _ = _run({{
+    "user_prompt": "Analyze dataset", "messages": [],
+    "initial_analysis_complete": True, "data_cleaning_complete": True,
+    "analyst_complete": True, "visualization_complete": True,
+    "last_agent_id": "viz_evaluator", "viz_grade": "revise",
+    "viz_feedback": "Correct the axis.", "next": "analyst",
+}})
+assert cmd_revision.goto == "analyst"
+assert "Correct the axis." in cmd_revision.update["next_agent_prompt"]
+assert _STRUCTURED_INVOCATIONS == []
+
+# D. W4 global turn cap forces FINISH.
 cmd_cap, out_cap = _run({{"user_prompt": "Analyze dataset", "messages": [], "_supervisor_turn_count": 30}})
 assert cmd_cap.goto == "FINISH"
 assert "[W4-SUPLIMIT]" in out_cap

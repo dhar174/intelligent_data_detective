@@ -25,7 +25,7 @@ from idd_state import (
     VizFeedback,
     VizSpec,
 )
-from tests.unit.test_native_completion import ControlledChatModel, load_native
+from tests.unit.test_native_completion import ControlledChatModel, execute_definitions, load_native
 from tests.unit.test_viz_join import (
     FLAGS,
     figures,
@@ -87,6 +87,7 @@ def run_selected_graph(base, incoming="empty"):
             "report_join",
         ),
     )
+    execute_definitions(ns, 57, {"_cp5_report_inventory", "_cp5_ground_report_figures", "_cp5_report_runtime_context"})
     observed = []
 
     def outline_invoke(payload, config):
@@ -349,6 +350,12 @@ def test_original_w14j_rejects_unresolved_or_manufactured_inventory(
         available_df_ids=[],
     )
     packager = _compile_report_packager_node(notebook(), root)
+    if control == "invented_id":
+        # The new context boundary fails first; also exercise the unchanged
+        # W14J validator directly with the same invalid underlying state.
+        with pytest.raises(ValueError, match="(?i)figure inventory"):
+            packager(state)
+        packager.__globals__["_cp5_report_inventory"] = lambda state: []
     with pytest.raises(
         RuntimeError,
         match="W14J canonical report (has unresolved expected figures|requires at least 3 distinct figures)",

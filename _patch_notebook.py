@@ -797,6 +797,232 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
     return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
 
 
+def apply_cp5_report_grounding_patch(cells) -> None:
+    """Ground report inputs and respect native visualization revision feedback."""
+    report_helpers = '''\
+# CP5-REPORT-GROUNDING: use only current structured visualization evidence.
+def _cp5_report_inventory(state):
+    import os as _cp5_os
+    from pathlib import Path as _CP5Path
+
+    roots = [WORKING_DIRECTORY, state.get("artifacts_path"),
+             getattr(globals().get("RUNTIME"), "run_dir", None),
+             getattr(globals().get("RUNTIME"), "artifacts_dir", None)]
+
+    def path_keys(value):
+        raw = str(value or "").strip().replace("\\\\", "/")
+        if not raw:
+            return set()
+        norm = _cp5_os.path.normcase(_cp5_os.path.normpath(raw))
+        path = _CP5Path(raw)
+        if path.is_absolute():
+            return {norm}
+        keys = {norm}
+        for root in roots:
+            if root:
+                keys.add(_cp5_os.path.normcase(_cp5_os.path.normpath(str(_CP5Path(root) / path))))
+        return keys
+
+    items = []
+    def collect(value):
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                collect(child)
+            return
+        if isinstance(value, dict) and "visualizations" in value:
+            collect(value["visualizations"])
+            return
+        if hasattr(value, "visualizations"):
+            collect(value.visualizations)
+            return
+        try:
+            item = value if isinstance(value, DataVisualization) else DataVisualization.model_validate(value)
+        except Exception as exc:
+            raise ValueError("Report figure inventory contains invalid metadata") from exc
+        figure_id = str(item.visualization_id or "").strip()
+        keys = path_keys(item.path)
+        if not figure_id or not keys:
+            raise ValueError("Report figure inventory is missing an ID or path")
+        for previous in items:
+            same_id = previous.visualization_id == figure_id
+            same_path = bool(path_keys(previous.path) & keys)
+            if same_id and same_path:
+                return
+            if same_id or same_path:
+                raise ValueError("Report figure inventory has ambiguous IDs or paths")
+        items.append(item)
+
+    collect(state.get("visualization_results"))
+    collect(state.get("viz_results"))
+    return items
+
+
+def _cp5_ground_report_figures(state, result):
+    inventory = _cp5_report_inventory(state)
+    result = result.model_copy(deep=True)
+    # Only exact metadata paths are copied to output. A missing ID or path can
+    # be resolved by the other field, but conflicts are never silently repaired.
+    for owner in [result, *(getattr(result, "sections", None) or [])]:
+        grounded = []
+        for figure in (getattr(owner, "expected_figures", None) or []):
+            figure_id = str(figure.visualization_id or "").strip()
+            path = str(figure.path or "").strip().replace("\\\\", "/")
+            if not figure_id and not path:
+                raise ValueError("Report figure reference is missing both ID and path")
+            matches = [item for item in inventory
+                       if (not figure_id or str(item.visualization_id or "").strip() == figure_id)
+                       and (not path or str(item.path).strip().replace("\\\\", "/") == path)]
+            if len(matches) != 1:
+                raise ValueError(f"Report figure reference is not uniquely grounded in the inventory: id={figure_id!r}, path={path!r}")
+            grounded.append(matches[0].model_copy(deep=True))
+        owner.expected_figures = grounded
+    return result
+
+
+def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memories=None):
+    import json as _cp5_json
+    payload = {
+        "user_request": state.get("user_prompt", ""),
+        "current_task": task,
+        "cleaning_metadata": state.get("cleaning_metadata"),
+        "cleaned_dataset_description": state.get("cleaned_dataset_description") or getattr(state.get("cleaning_metadata"), "data_description_after_cleaning", ""),
+        "analysis_insights": state.get("analysis_insights"),
+        "available_dataframe_ids": state.get("available_df_ids") or [],
+        "visualization_inventory": [item.model_dump(mode="json") for item in inventory],
+        "report_outline": state.get("report_outline"),
+        "memories": memories,
+        "response_schema": schema.model_json_schema(),
+    }
+    if draft is not None:
+        payload["report_draft"] = draft
+    def encode(value):
+        return value.model_dump(mode="json") if hasattr(value, "model_dump") else str(value)
+    return _cp5_json.dumps(payload, default=encode, ensure_ascii=False)
+
+
+'''
+
+    def edit_function(source, name, transform):
+        nodes = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == name]
+        if len(nodes) != 1:
+            raise RequiredPatchError(f"CP5 report grounding: expected one {name}")
+        node = nodes[0]
+        lines = source.splitlines(keepends=True)
+        text = "".join(lines[node.lineno - 1:node.end_lineno])
+        return "".join(lines[:node.lineno - 1]) + transform(text) + "".join(lines[node.end_lineno:])
+
+    def replace(text, old, new):
+        return replace_required(text, old, new, patch_id="CP5 report grounding")
+
+    def orchestrator(text):
+        start = text.index("    # Fix AL-2: focused report_orchestrator task")
+        end = text.index("    topic = ", start)
+        text = text[:start] + text[end:]
+        old = '    outline_response = _safe_report_orchestrator_invoke(report_generator_agent, invoke_state, config=state.get("_config"))  # Fix W3\n'
+        new = '''    _cp5_inventory = _cp5_report_inventory(state)
+    invoke_state["viz_results"] = _cp5_inventory
+    invoke_state["visualization_results"] = state.get("visualization_results") or _cp5_inventory
+    invoke_state["messages"] = [m for m in rendered if m is not None]
+    invoke_state["messages"].append(HumanMessage(name="runtime_context", content=(
+        "Create the report outline using only real figures in this inventory. "
+        "Copy their exact IDs and paths; use an empty expected_figures list when none apply. "
+        "Never invent a figure or path. Complete with the ReportOutline response tool.\\n"
+        + _cp5_report_runtime_context(state, default_instruction, ReportOutline, _cp5_inventory, memories=rg_vars.get("memories")))))
+    outline_response = _safe_report_orchestrator_invoke(report_generator_agent, invoke_state, config=state.get("_config"))  # Fix W3
+    outline_response["structured_response"] = _cp5_ground_report_figures(state, outline_response["structured_response"])
+'''
+        return replace(text, old, new)
+
+    def worker(text):
+        text = replace(text, '    user_t = f"""Write the section titled:',
+            '    section = _cp5_ground_report_figures(state, section)\n    user_t = f"""Write the section titled:')
+        text = replace(text, '    _w13h_section_state = {', '''    rendered.append(HumanMessage(name="runtime_context", content=(
+        "Use only the assigned real figures above. Copy their exact IDs and paths into "
+        "Section.expected_figures; use an empty list if no figure applies. "
+        "Do not invent figures or paths. Complete using the Section response tool.")))
+    _w13h_section_state = {''')
+        return replace(text, '    content = section_text.content\n',
+            '    section_text = _cp5_ground_report_figures(state, section_text)\n    content = section_text.content\n')
+
+    def packager(text):
+        start = text.index("    # Fix AL-2: focused report_packager task")
+        end = text.index("    # # W2-BR3:", start)
+        text = text[:start] + text[end:]
+        start = text.index('    default_instruction = f"Package the provided report draft')
+        end = text.index('    global_df_registry =', start)
+        text = text[:start] + '''    default_instruction = (
+        "Review the supplied report draft and actual figure inventory. "
+        "Complete using the ReportResults response tool. The deterministic renderer "
+        "creates report files after this response; leave uncreated paths empty."
+    )
+    if state.get("next_agent_prompt"):
+        default_instruction = str(state["next_agent_prompt"]) + "\\n" + default_instruction
+''' + text[end:]
+        old = '    final_msgs =  [*rendered, AIMessage(content=default_instruction,name="supervisor")]\n'
+        new = '''    _cp5_inventory = _cp5_report_inventory(state)
+    final_msgs = [m for m in rendered if m is not None]
+    final_msgs.append(HumanMessage(name="runtime_context", content=(
+        "Review the draft and figure inventory below. Do not invent report paths or figures. "
+        "Complete with the ReportResults response tool.\\n"
+        + _cp5_report_runtime_context(state, default_instruction, ReportResults, _cp5_inventory, draft=draft, memories=rg_vars.get("memories")))))
+'''
+        return replace(text, old, new)
+
+    def visualization_orchestrator(text):
+        return replace(text, '    tasks = valid_tasks\n', '''    tasks = valid_tasks
+    if state.get("viz_grade") == "revise" and (not tasks or len(tasks) != len(state.get("viz_tasks") or [])):
+        raise ValueError("Visualization revision contains missing or invalid tasks or specifications")
+''')
+
+    src = join_source(cells[57]["source"])
+    for name, transform in (("report_orchestrator", orchestrator), ("section_worker", worker), ("report_packager_node", packager), ("visualization_orchestrator", visualization_orchestrator)):
+        src = edit_function(src, name, transform)
+    src = replace(src, "def report_orchestrator(state: State):", report_helpers + "def report_orchestrator(state: State):")
+    ast.parse(src)
+    cells[57]["source"] = src
+    cells[57]["outputs"] = []
+    cells[57]["execution_count"] = None
+
+    supervisor = join_source(cells[46]["source"])
+    anchor = "        # --- PATCH: force viz routing after analyst ---\n"
+    route = '''        # CP5-REVISION-ROUTE: the completion flag is sticky; the native verdict wins.
+        if state.get("viz_grade") == "revise":
+            _cp5_last = state.get("last_agent_id") or ""
+            _cp5_fb = state.get("viz_eval_result")
+            _cp5_redo = (_cp5_fb.get("redo_list", []) if isinstance(_cp5_fb, dict)
+                         else getattr(_cp5_fb, "redo_list", [])) or []
+            _cp5_feedback = str(state.get("viz_feedback") or "")
+            _cp5_instruction = ("Revise the visualization plan in response to this evaluator feedback: "
+                                + _cp5_feedback + "\\nFigures to redo: " + str(_cp5_redo)
+                                + "\\nProduce complete revised visualization specifications that address these issues.")
+            if state.get("report_generator_complete"):
+                raise ValueError("Visualization revision cannot use an already completed report")
+            if _cp5_last == "viz_evaluator":
+                return Command(goto="analyst", update={
+                    "_count_": int(state.get("_count_", 0)) + 1, "next": "analyst",
+                    "next_agent_prompt": _cp5_instruction, "next_agent_metadata": None,
+                })
+            if _cp5_last == "analyst":
+                if not state.get("viz_tasks") or not state.get("viz_specs"):
+                    raise ValueError("Visualization revision returned no revised tasks or specifications")
+                from langgraph.types import Overwrite as _CP5Overwrite
+                return Command(goto="visualization", update={
+                    "_count_": int(state.get("_count_", 0)) + 1, "next": "visualization",
+                    "next_agent_prompt": _cp5_instruction, "next_agent_metadata": None,
+                    "viz_results": None, "visualization_results": None,
+                    "viz_paths": _CP5Overwrite([]),
+                })
+            raise ValueError("Visualization revision has not completed; refusing report routing")
+'''
+    supervisor = replace(supervisor, anchor, route + anchor)
+    ast.parse(supervisor)
+    cells[46]["source"] = supervisor
+    cells[46]["outputs"] = []
+    cells[46]["execution_count"] = None
+
+
 def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
     """Repair native completion at notebook boundaries without changing core contracts."""
 
@@ -16186,6 +16412,10 @@ def main():
     print(
         "✅ Cell idx 96: reconciled and isolated checkpoint restore demo without graph replacement (CP4-CELL96-RECONCILE)"
     )
+
+    # Run after inherited report/supervisor transformations so the generated
+    # notebook and every subsequent regeneration share the same final behavior.
+    apply_cp5_report_grounding_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
