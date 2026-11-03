@@ -13867,7 +13867,7 @@ def main():
         if len(events) >= 3:
             recent = events[-3:]
             if all(event[0] == 'list_visualizations' and event[1] == request.tool_call.get('args') for event in recent) and all(event[3] == result.content for event in recent[:2]):
-                raise ValueError('Repeated unchanged visualization inventory lookup')
+                raise ValueError('viz_evaluator integrity: Repeated unchanged visualization inventory lookup')
         return result
 
     return create_agent(
@@ -13877,7 +13877,9 @@ def main():
                     _old = "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n"
                     _new = "    from langchain_core.messages import HumanMessage as _VE_HM\n    _w2_msgs = [_VE_HM(content=m.content, name='runtime_context', id=m.id) if isinstance(m, _W2_SM) else m for m in _w2_msgs]\n"
                     _body = replace_required(_body, _old, _new, patch_id='evaluator runtime context')
+                    _body = replace_required(_body, '        except Exception as _veexc:\n', "        except Exception as _veexc:\n            if isinstance(_veexc, ValueError) and str(_veexc).startswith('viz_evaluator integrity:'):\n                raise\n", patch_id='evaluator guard failure')
                 else:
+                    _body = replace_required(_body, '    except Exception as _w4_ve_exc:  # W4-VE-OUTERGUARD: outer try/except around viz_evaluator_node\n', "    except Exception as _w4_ve_exc:  # W4-VE-OUTERGUARD: outer try/except around viz_evaluator_node\n        if isinstance(_w4_ve_exc, ValueError) and str(_w4_ve_exc).startswith('viz_evaluator integrity:'):\n            raise\n", patch_id='evaluator integrity failure')
                     _body = replace_required(_body, 'tasks = state.get("viz_tasks", []) or []', 'tasks = list(state.get("viz_tasks", []) or [])', patch_id='evaluator task copy')
                     _body = replace_required(_body, 'results = state["visualization_results"].visualizations if isinstance(state["visualization_results"], VisualizationResults) else []', 'results = list(state["visualization_results"].visualizations) if isinstance(state["visualization_results"], VisualizationResults) else []', patch_id='evaluator inventory copy')
                     _body = replace_required(_body, 'specs = state.get("viz_specs", []) or []', 'specs = list(state.get("viz_specs", []) or [])', patch_id='evaluator spec copy')
@@ -13892,7 +13894,7 @@ def main():
                     _start = _body.index('        # Quick rule:')
                     _end = _body.index('    except Exception as _w4_ve_exc:', _start)
                     _body = _body[:_start] + """        if len(results) < len(tasks) or any(not v.finished_this_task or not all(str(getattr(v, f) or '').strip() for f in ('path', 'visualization_id', 'visualization_title', 'visualization_type', 'visualization_description', 'visualization_style')) for v in results):
-            raise ValueError('Missing or unfinished visualization metadata')
+            raise ValueError('viz_evaluator integrity: Missing or unfinished visualization metadata')
         fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {
             'viz_tasks': tasks, 'viz_results': results,
             'visualization_results': state.get('visualization_results'),
@@ -13906,14 +13908,17 @@ def main():
         }, config=state.get('_config'))
         parsed = fb.get('structured_response') if isinstance(fb, dict) else None
         if isinstance(parsed, dict):
-            parsed = VizFeedback.model_validate(parsed)
+            try:
+                parsed = VizFeedback.model_validate(parsed)
+            except ValueError as exc:
+                raise ValueError('viz_evaluator integrity: invalid native VizFeedback') from exc
         if not isinstance(parsed, VizFeedback):
-            raise ValueError('Missing or invalid native VizFeedback')
+            raise ValueError('viz_evaluator integrity: Missing or invalid native VizFeedback')
         if not parsed.finished_this_task:
-            raise ValueError('Unfinished native VizFeedback')
+            raise ValueError('viz_evaluator integrity: Unfinished native VizFeedback')
         prior = int(state.get('viz_revise_count', 0) or 0)
         if parsed.grade == 'revise' and prior >= 2:
-            raise ValueError(f'Revision budget exhausted: {parsed.feedback}; redo: {parsed.redo_list}')
+            raise ValueError(f'viz_evaluator integrity: Revision budget exhausted: {parsed.feedback}; redo: {parsed.redo_list}')
         memory_text = f'Visualization evaluation: {parsed.grade}. Feedback: {parsed.feedback}. Redo: {parsed.redo_list}.\\n'
         for item in results:
             memory_text += f'Visualization {item.visualization_id}: {item.visualization_title}, path {item.path}.\\n'

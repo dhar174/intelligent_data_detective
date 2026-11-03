@@ -349,3 +349,44 @@ def test_completed_native_feedback_is_recorded_in_visualization_memory(tmp_path)
     assert len(records) == 1
     assert response.feedback in records[0]
     assert "fig-retail-0" in records[0]
+
+
+def test_no_progress_guard_cannot_be_recovered_into_approval(tmp_path, monkeypatch):
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    class LoopModel(ControlledChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self._requests.append(messages)
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "list_visualizations",
+                                    "args": {},
+                                    "id": f"loop-{len(self._requests)}",
+                                }
+                            ],
+                        )
+                    )
+                ]
+            )
+
+    ns, state, _, _ = invoke(tmp_path)
+    model = LoopModel(response_name="VizFeedback", payload={})
+    ns["viz_evaluator_llm"] = model
+    ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", "1")
+    with pytest.raises(ValueError, match="(?i)repeated.*inventory"):
+        ns["viz_evaluator_node"](state)
+
+
+def test_missing_figures_cannot_be_recovered_into_approval(tmp_path, monkeypatch):
+    ns, state, _, _ = invoke(tmp_path)
+    state["visualization_results"].visualizations[0].visualization_description = ""
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", "1")
+    with pytest.raises(ValueError, match="(?i)metadata"):
+        ns["viz_evaluator_node"](state)
