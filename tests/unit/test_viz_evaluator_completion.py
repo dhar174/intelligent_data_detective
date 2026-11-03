@@ -337,3 +337,15 @@ def test_revision_routes_through_canonical_sqlite_graph(tmp_path):
         ] == ids
         graph.update_state(config, {"next": result["next"]}, as_node="supervisor")
         assert graph.get_state(config).next == ("analyst",)
+
+
+def test_completed_native_feedback_is_recorded_in_visualization_memory(tmp_path):
+    ns, state, _, response = invoke(tmp_path)
+    records = []
+    ns["update_memory_with_kind"] = lambda *args, **kwargs: records.append(
+        kwargs["text"]
+    )
+    ns["viz_evaluator_node"](state)
+    assert len(records) == 1
+    assert response.feedback in records[0]
+    assert "fig-retail-0" in records[0]

@@ -13914,6 +13914,10 @@ def main():
         prior = int(state.get('viz_revise_count', 0) or 0)
         if parsed.grade == 'revise' and prior >= 2:
             raise ValueError(f'Revision budget exhausted: {parsed.feedback}; redo: {parsed.redo_list}')
+        memory_text = f'Visualization evaluation: {parsed.grade}. Feedback: {parsed.feedback}. Redo: {parsed.redo_list}.\\n'
+        for item in results:
+            memory_text += f'Visualization {item.visualization_id}: {item.visualization_title}, path {item.path}.\\n'
+        update_memory_with_kind(state, state['_config'], 'visualization', in_memory_store or get_store(), text=memory_text)
         return {'viz_revise_count': prior + (parsed.grade == 'revise'),
                 'next': 'report_orchestrator' if parsed.grade == 'acceptable' else 'analyst',
                 'viz_grade': parsed.grade, 'viz_feedback': parsed.feedback, 'viz_eval_result': parsed,
