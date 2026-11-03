@@ -13884,7 +13884,7 @@ def main():
                     _body = replace_required(
                         _body,
                         'base_prompt = ChatPromptTemplate.from_messages([*viz_evaluator_prompt_template.messages,\n                MessagesPlaceholder("messages", optional=True),\n            ])',
-                        'base_prompt = viz_evaluator_prompt_template',
+                        'base_prompt = ChatPromptTemplate.from_messages([*viz_evaluator_prompt_template.messages])',
                         patch_id='evaluator message ordering',
                     )
                     _body = replace_required(_body, '"memories" : enhanced_retrieve_mem(state),  "visualization_results": results,', '"memories" : enhanced_retrieve_mem(state), "visualization_results": results, "viz_tasks": tasks, "viz_specs": specs,', patch_id='evaluator prompt inputs')
