@@ -285,3 +285,55 @@ def test_supervisor_emergency_instruction_reaches_model(tmp_path):
     assert any(
         "UNIQUE EMERGENCY INSTRUCTION" in str(m.content) for m in model._requests[0]
     )
+
+
+def test_native_invalid_feedback_exhausts_without_approval(tmp_path):
+    from langgraph.errors import GraphRecursionError
+
+    ns, state, _, response = invoke(tmp_path)
+    payload = response.model_dump()
+    payload["grade"] = "invalid"
+    model = ControlledChatModel(response_name="VizFeedback", payload=payload)
+    ns["viz_evaluator_llm"] = model
+    ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+    with pytest.raises(GraphRecursionError):
+        ns["viz_evaluator_node"](state)
+
+
+def test_partial_inventory_cannot_be_approved(tmp_path):
+    from idd_state import VisualizationResults
+
+    ns, state, _, _ = invoke(tmp_path)
+    state["visualization_results"] = VisualizationResults(
+        **FLAGS, visualizations=state["visualization_results"].visualizations[:1]
+    )
+    state["viz_results"] = state["viz_results"][:1]
+    with pytest.raises(ValueError, match="(?i)metadata"):
+        ns["viz_evaluator_node"](state)
+
+
+def test_revision_routes_through_canonical_sqlite_graph(tmp_path):
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    from idd_graph import build_graph
+
+    ns, state, _, response = invoke(tmp_path, grade="revise")
+    ids = [v.visualization_id for v in state["visualization_results"].visualizations]
+    config = {"configurable": {"thread_id": "offline-revision"}}
+    state["_config"] = config
+    with SqliteSaver.from_conn_string(str(tmp_path / "checkpoint.sqlite")) as saver:
+        graph = build_graph(
+            node_overrides={
+                "viz_join": ns["viz_join"],
+                "viz_evaluator": ns["viz_evaluator_node"],
+            },
+            checkpointer=saver,
+        )
+        graph.update_state(config, state, as_node="viz_worker")
+        result = graph.invoke(None, config, interrupt_before=["supervisor"])
+        assert result["next"] == "analyst"
+        assert result["viz_eval_result"] == response
+        assert [
+            v.visualization_id for v in result["visualization_results"].visualizations
+        ] == ids
+        graph.update_state(config, {"next": result["next"]}, as_node="supervisor")
+        assert graph.get_state(config).next == ("analyst",)
