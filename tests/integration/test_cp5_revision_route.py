@@ -148,3 +148,53 @@ def test_revision_regenerates_before_acceptable_report_and_restores_sqlite(tmp_p
         assert restored.next == ("report_orchestrator",)
         assert restored.values["visualization_results"].visualizations == revised
         assert restored.values["viz_grade"] == "acceptable"
+
+
+def test_exhausted_retries_stop_the_canonical_graph_without_a_report(tmp_path):
+    items = figures(tmp_path)
+    state = {
+        "initial_analysis_complete": True,
+        "data_cleaning_complete": True,
+        "analyst_complete": True,
+        "visualization_complete": False,
+        "report_generator_complete": False,
+        "last_agent_id": "analyst",
+        "viz_grade": None,
+        "viz_results": [item.model_dump() for item in items],
+        "visualization_results": VisualizationResults(**FLAGS, visualizations=items),
+        "viz_paths": [item.path for item in items],
+        "_viz_retry_count": 4,
+    }
+    calls = []
+
+    def unexpected(current):
+        calls.append(current)
+        return {}
+
+    overrides = {
+        "supervisor": generated_supervisor(),
+        "visualization": unexpected,
+        "viz_evaluator": unexpected,
+        "report_orchestrator": unexpected,
+    }
+    cfg = {"configurable": {"thread_id": "exhausted-retries"}}
+    db = tmp_path / "exhausted.sqlite"
+    with SqliteSaver.from_conn_string(str(db)) as saver:
+        graph = build_graph(node_overrides=overrides, checkpointer=saver)
+        graph.update_state(cfg, state, as_node="analyst")
+        with pytest.raises(RuntimeError, match=r"(?i)visualization.*retr.*exhaust"):
+            graph.invoke(None, cfg)
+        assert calls == []
+        pending = graph.get_state(cfg)
+        assert pending.next == ("supervisor",)
+        assert pending.values["visualization_complete"] is False
+        assert pending.values["viz_grade"] is None
+        assert pending.values["_viz_retry_count"] == 4
+        assert pending.values["visualization_results"].visualizations == items
+        assert pending.values["viz_paths"] == [item.path for item in items]
+    with SqliteSaver.from_conn_string(str(db)) as saver:
+        graph = build_graph(node_overrides=overrides, checkpointer=saver)
+        restored = graph.get_state(cfg)
+        assert restored.next == ("supervisor",)
+        assert restored.values["visualization_complete"] is False
+        assert restored.values["viz_grade"] is None

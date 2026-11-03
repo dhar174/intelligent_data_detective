@@ -395,3 +395,70 @@ def test_supervisor_routes_acceptable_evaluation_to_report():
         next="report_orchestrator",
     )
     assert generated_supervisor()(state, {}).goto == "report_orchestrator"
+
+
+@pytest.mark.parametrize("retry_count", [4, 5])
+@pytest.mark.parametrize("recovery", ["0", "1"])
+def test_supervisor_retry_exhaustion_fails_without_approving(
+    monkeypatch, retry_count, recovery
+):
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", recovery)
+    state = dict(
+        initial_analysis_complete=True,
+        data_cleaning_complete=True,
+        analyst_complete=True,
+        visualization_complete=False,
+        report_generator_complete=False,
+        last_agent_id="analyst",
+        viz_grade=None,
+        _viz_retry_count=retry_count,
+    )
+    before = dict(state)
+    with pytest.raises(RuntimeError, match=r"(?i)visualization.*retr.*exhaust"):
+        generated_supervisor()(state, {})
+    assert state == before
+
+
+@pytest.mark.parametrize("retry_count", [0, 1, 3])
+def test_supervisor_retry_budget_still_dispatches_visualization(retry_count):
+    state = dict(
+        initial_analysis_complete=True,
+        data_cleaning_complete=True,
+        analyst_complete=True,
+        visualization_complete=False,
+        last_agent_id="analyst",
+        _viz_retry_count=retry_count,
+    )
+    result = generated_supervisor()(state, {})
+    assert result.goto == "visualization"
+    assert result.update["_viz_retry_count"] == retry_count + 1
+    assert not result.update.get("visualization_complete")
+
+
+def test_supervisor_completed_evaluation_is_not_blocked_by_retry_count():
+    state = dict(
+        initial_analysis_complete=True,
+        data_cleaning_complete=True,
+        analyst_complete=True,
+        visualization_complete=True,
+        last_agent_id="viz_evaluator",
+        viz_grade="acceptable",
+        _viz_retry_count=4,
+    )
+    assert generated_supervisor()(state, {}).goto == "report_orchestrator"
+
+
+def test_supervisor_revision_feedback_takes_precedence_over_retry_exhaustion():
+    state = dict(
+        initial_analysis_complete=True,
+        data_cleaning_complete=True,
+        analyst_complete=True,
+        visualization_complete=False,
+        last_agent_id="viz_evaluator",
+        viz_grade="revise",
+        viz_feedback="Correct the axis.",
+        _viz_retry_count=4,
+    )
+    result = generated_supervisor()(state, {})
+    assert result.goto == "analyst"
+    assert "Correct the axis." in result.update["next_agent_prompt"]

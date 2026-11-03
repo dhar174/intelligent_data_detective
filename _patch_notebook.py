@@ -1017,6 +1017,8 @@ def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memo
             raise ValueError("Visualization revision has not completed; refusing report routing")
 '''
     supervisor = replace(supervisor, anchor, route + anchor)
+    if supervisor.count("# CP5-FAIL-CLOSED-VIZ-RETRIES") != 1:
+        raise RequiredPatchError("CP5 supervisor retry exhaustion guard missing")
     ast.parse(supervisor)
     cells[46]["source"] = supervisor
     cells[46]["outputs"] = []
@@ -3158,9 +3160,9 @@ def main():
     if not fixd_patched:
         print("⚠️  Fix D: target cell not found")
 
-    # --- Fix B2: escape hatch — bail out of viz loop after 4 retries ---
-    # If the viz agent keeps failing and SHORTCUT2 keeps firing, _viz_retry_count eventually
-    # reaches 4 and the supervisor is rerouted directly to report_orchestrator, breaking the loop.
+    # --- Fix B2: stop the viz loop after 4 retries without claiming completion ---
+    # The counter bounds repeated dispatches. Exhaustion is a failure, not evidence
+    # that the requested figures were produced or evaluated.
     import re as _re_fixb2
 
     fixb2_patched = False
@@ -3171,7 +3173,7 @@ def main():
         if "# --- PATCH: force viz routing after analyst ---" not in src:
             continue
         if "_viz_retry_count" in src:
-            print(f"ℹ️  Cell idx {idx}: Fix B2 (escape hatch) already applied")
+            print(f"ℹ️  Cell idx {idx}: Fix B2 (retry guard) already applied")
             fixb2_patched = True
             break
         m_b2 = _re_fixb2.search(
@@ -3202,14 +3204,8 @@ def main():
             f"{_dd2}_sc2 = int(state.get('_count_', 0)) + 1\n"
             f"{_dd2}_viz_retries_b2 = int(state.get('_viz_retry_count') or 0)\n"
             f"{_dd2}if _viz_retries_b2 >= 4:\n"
-            f"{_dd2}    return Command(goto='report_orchestrator', update={{\n"
-            f"{_dd2}        '_count_': _sc2,\n"
-            f"{_dd2}        'next': 'report_orchestrator',\n"
-            f"{_dd2}        'visualization_complete': True,\n"
-            f"{_dd2}        '_viz_retry_count': _viz_retries_b2,\n"
-            f"{_dd2}        'next_agent_prompt': 'Please generate a comprehensive data analysis report.',\n"
-            f"{_dd2}        'next_agent_metadata': None,\n"
-            f"{_dd2}    }})\n"
+            f"{_dd2}    # CP5-FAIL-CLOSED-VIZ-RETRIES\n"
+            f"{_dd2}    raise RuntimeError(f'Visualization retry budget exhausted after {{_viz_retries_b2}} dispatches; visualization is incomplete.')\n"
             f"{_dd2}return Command(goto='visualization', update={{\n"
             f"{_dd2}    '_count_': _sc2,\n"
             f"{_dd2}    'next': 'visualization',\n"
@@ -3228,7 +3224,7 @@ def main():
             cell["outputs"] = []
             cell["execution_count"] = None
             print(
-                f"✅ Cell idx {idx}: Fix B2 applied — viz escape hatch after 4 retries"
+                f"✅ Cell idx {idx}: Fix B2 applied — viz retry exhaustion fails closed"
             )
             fixb2_patched = True
         else:

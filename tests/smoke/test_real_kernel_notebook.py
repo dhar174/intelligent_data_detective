@@ -1526,7 +1526,26 @@ assert cmd_revision.goto == "analyst"
 assert "Correct the axis." in cmd_revision.update["next_agent_prompt"]
 assert _STRUCTURED_INVOCATIONS == []
 
-# D. W4 global turn cap forces FINISH.
+# D. The normal visualization retry budget fails closed instead of approving.
+_retry_state = {{
+    "user_prompt": "Analyze dataset", "messages": [],
+    "initial_analysis_complete": True, "data_cleaning_complete": True,
+    "analyst_complete": True, "visualization_complete": False,
+    "last_agent_id": "analyst", "_viz_retry_count": 3,
+}}
+cmd_retry, _ = _run(_retry_state)
+assert cmd_retry.goto == "visualization"
+assert cmd_retry.update["_viz_retry_count"] == 4
+_retry_state["_viz_retry_count"] = 4
+try:
+    _run(_retry_state)
+except RuntimeError as exc:
+    assert "visualization" in str(exc).lower() and "exhaust" in str(exc).lower()
+else:
+    raise AssertionError("exhausted visualization retries must fail without approval")
+assert _STRUCTURED_INVOCATIONS == []
+
+# E. W4 global turn cap forces FINISH.
 cmd_cap, out_cap = _run({{"user_prompt": "Analyze dataset", "messages": [], "_supervisor_turn_count": 30}})
 assert cmd_cap.goto == "FINISH"
 assert "[W4-SUPLIMIT]" in out_cap
