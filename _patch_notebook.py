@@ -13782,6 +13782,156 @@ def main():
         _cp5_cell["execution_count"] = None
         print(f"✅ Cell idx {_cp5_idx}: CP5-NATIVE-COMPLETION strict native contracts")
 
+    # Preserve tool artifacts while exposing their metadata to the model.
+    _ve_tools = cells[32]
+    _ve_tool_src = join_source(_ve_tools['source'])
+    _ve_tool_src = replace_required(
+        _ve_tool_src, '        return msg, artifact\n',
+        "        import json as _ve_json\n"
+        "        _ve_items = [{k: v for k, v in item.items() if k != 'image_base64'} for item in page]\n"
+        "        return msg + '\\n' + _ve_json.dumps(_ve_items, default=str), artifact\n",
+        patch_id='evaluator visible inventory')
+    _ve_tool_src = replace_required(
+        _ve_tool_src,
+        '''        return f"Visualization: {pick.get('visualization_title','(untitled)')}", {"item": pick}\n''',
+        '''        import json as _ve_json
+        _ve_content = _ve_json.dumps({k: v for k, v in pick.items() if k != "image_base64"}, default=str)
+        if include_preview and pick.get("image_base64"):
+            _ve_mime = "image/jpeg" if str(pick.get("path", "")).lower().endswith((".jpg", ".jpeg")) else "image/png"
+            _ve_content = [{"type": "text", "text": _ve_content}, {"type": "image_url", "image_url": {"url": "data:" + _ve_mime + ";base64," + pick["image_base64"]}}]
+        return _ve_content, {"item": pick}
+''',
+        patch_id='evaluator visible figure')
+    _ve_tools['source'] = _ve_tool_src
+    _ve_tools['outputs'] = []
+    _ve_tools['execution_count'] = None
+
+    # Native evaluator completion: run after all inherited CP5 transformations.
+    for _ve_idx in (25, 44, 57):
+        _ve_cell = cells[_ve_idx]
+        _ve_src = join_source(_ve_cell["source"])
+        if _ve_idx == 25:
+            _tree = ast.parse(_ve_src)
+            _lines = _ve_src.splitlines(keepends=True)
+            _nodes = [n for n in _tree.body if isinstance(n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id in ("viz_evaluator_prompt_template", "viz_evaluator_prompt_template_mini")
+                for t in n.targets)]
+            if len(_nodes) != 2:
+                raise RequiredPatchError("evaluator prompt templates missing")
+            for _node in reversed(_nodes):
+                _name = _node.targets[0].id
+                _replacement = _name + " = ChatPromptTemplate.from_messages([('system', " + repr(
+                    "Evaluate the current visualizations against the user's request and available evidence. "
+                    "User request: {user_prompt}\nCleaned dataset: {cleaned_dataset_description}\n"
+                    "Analyst insights: {analysis_insights}\nVisualization inventory: {visualization_results}\n"
+                    "Tasks: {viz_tasks}\nSpecifications: {viz_specs}\nRevision count: {viz_revise_count}\n"
+                    "Memories: {memories}\nRequired response schema: {output_format}\n"
+                    "Use available tools only when additional evidence is needed. Repeating an unchanged inventory lookup is not productive. "
+                    "Complete by calling the VizFeedback response tool with an evidence-based acceptable or revise verdict. "
+                    "If the evidence is insufficient, report concrete issues and request revision; do not invent findings."
+                ) + "), MessagesPlaceholder('messages', optional=True)]).partial(memories='')\n"
+                _lines[_node.lineno - 1:_node.end_lineno] = [_replacement]
+            _ve_src = ''.join(_lines)
+        else:
+            _tree = ast.parse(_ve_src)
+            _lines = _ve_src.splitlines(keepends=True)
+            _targets = {'create_viz_evaluator_agent'} if _ve_idx == 44 else {'_safe_viz_evaluator_invoke', 'viz_evaluator_node'}
+            _nodes = [n for n in _tree.body if isinstance(n, ast.FunctionDef) and n.name in _targets]
+            if len(_nodes) != len(_targets):
+                raise RequiredPatchError("evaluator functions missing")
+            for _node in reversed(_nodes):
+                _body = ''.join(_lines[_node.lineno - 1:_node.end_lineno])
+                if _node.name == 'create_viz_evaluator_agent':
+                    _start = _body.index('    init_viz_vars =')
+                    _end = _body.index('    return create_agent(', _start)
+                    _body = _body[:_start] + "    system_prompt = ('You are the visualization evaluator. Use the latest runtime context and available tools. '\n        'Evaluate the evidence and call the VizFeedback structured-response tool to finish. '\n        'Do not repeat unchanged inventory lookups or invent evidence.')\n"+ _body[_end:]
+                    _body = _body.replace('    return create_agent(\n', '''    from langchain.agents.middleware import wrap_tool_call
+    from langchain_core.messages import AIMessage as _VE_AI, ToolMessage as _VE_TOOL
+
+    @wrap_tool_call
+    def _ve_no_progress(request, handler):
+        result = handler(request)
+        if request.tool_call.get('name') != 'list_visualizations':
+            return result
+        events = []
+        for message in request.state.get('messages', []):
+            if getattr(message, 'name', None) == 'runtime_context':
+                events = []
+            elif isinstance(message, _VE_AI):
+                events.extend([call.get('name'), call.get('args'), call.get('id'), None] for call in message.tool_calls)
+            elif isinstance(message, _VE_TOOL):
+                for event in reversed(events):
+                    if event[2] == message.tool_call_id:
+                        event[3] = message.content
+                        break
+        if len(events) >= 3:
+            recent = events[-3:]
+            if all(event[0] == 'list_visualizations' and event[1] == request.tool_call.get('args') for event in recent) and all(event[3] == result.content for event in recent[:2]):
+                raise ValueError('Repeated unchanged visualization inventory lookup')
+        return result
+
+    return create_agent(
+''', 1)
+                    _body = _body.replace('middleware =[prehook],', 'middleware =[prehook, _ve_no_progress],', 1)
+                elif _node.name == '_safe_viz_evaluator_invoke':
+                    _old = "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n"
+                    _new = "    from langchain_core.messages import HumanMessage as _VE_HM\n    _w2_msgs = [_VE_HM(content=m.content, name='runtime_context', id=m.id) if isinstance(m, _W2_SM) else m for m in _w2_msgs]\n"
+                    _body = replace_required(_body, _old, _new, patch_id='evaluator runtime context')
+                else:
+                    _body = replace_required(_body, 'tasks = state.get("viz_tasks", []) or []', 'tasks = list(state.get("viz_tasks", []) or [])', patch_id='evaluator task copy')
+                    _body = replace_required(_body, 'results = state["visualization_results"].visualizations if isinstance(state["visualization_results"], VisualizationResults) else []', 'results = list(state["visualization_results"].visualizations) if isinstance(state["visualization_results"], VisualizationResults) else []', patch_id='evaluator inventory copy')
+                    _body = replace_required(_body, 'specs = state.get("viz_specs", []) or []', 'specs = list(state.get("viz_specs", []) or [])', patch_id='evaluator spec copy')
+                    _body = replace_required(
+                        _body,
+                        'base_prompt = ChatPromptTemplate.from_messages([*viz_evaluator_prompt_template.messages,\n                MessagesPlaceholder("messages", optional=True),\n            ])',
+                        'base_prompt = viz_evaluator_prompt_template',
+                        patch_id='evaluator message ordering',
+                    )
+                    _body = replace_required(_body, '"memories" : enhanced_retrieve_mem(state),  "visualization_results": results,', '"memories" : enhanced_retrieve_mem(state), "visualization_results": results, "viz_tasks": tasks, "viz_specs": specs,', patch_id='evaluator prompt inputs')
+                    _body = _body.replace('\"cleaned_dataset_description\": state.get(\"cleaned_dataset_description\", None)', '\"cleaned_dataset_description\": state.get(\"cleaned_dataset_description\") or getattr(state.get(\"cleaning_metadata\"), \"data_description_after_cleaning\", None)', 1)
+                    _start = _body.index('        # Quick rule:')
+                    _end = _body.index('    except Exception as _w4_ve_exc:', _start)
+                    _body = _body[:_start] + """        if len(results) < len(tasks) or any(not v.finished_this_task or not all(str(getattr(v, f) or '').strip() for f in ('path', 'visualization_id', 'visualization_title', 'visualization_type', 'visualization_description', 'visualization_style')) for v in results):
+            raise ValueError('Missing or unfinished visualization metadata')
+        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {
+            'viz_tasks': tasks, 'viz_results': results,
+            'visualization_results': state.get('visualization_results'),
+            'viz_paths': state.get('viz_paths'), 'artifacts_path': state.get('artifacts_path'),
+            'available_df_ids': state.get('available_df_ids', []),
+            'current_dataframe': state.get('current_dataframe'),
+            'current_dataframe_id': state.get('current_dataframe_id'),
+            'messages': [*(state.get('messages') or []), rendered[0],
+                         *[m for m in rendered[1:] if m is not None and m not in (state.get('messages') or [])],
+                         HumanMessage(content=default_instruction)],
+        }, config=state.get('_config'))
+        parsed = fb.get('structured_response') if isinstance(fb, dict) else None
+        if isinstance(parsed, dict):
+            parsed = VizFeedback.model_validate(parsed)
+        if not isinstance(parsed, VizFeedback):
+            raise ValueError('Missing or invalid native VizFeedback')
+        if not parsed.finished_this_task:
+            raise ValueError('Unfinished native VizFeedback')
+        prior = int(state.get('viz_revise_count', 0) or 0)
+        if parsed.grade == 'revise' and prior >= 2:
+            raise ValueError(f'Revision budget exhausted: {parsed.feedback}; redo: {parsed.redo_list}')
+        return {'viz_revise_count': prior + (parsed.grade == 'revise'),
+                'next': 'report_orchestrator' if parsed.grade == 'acceptable' else 'analyst',
+                'viz_grade': parsed.grade, 'viz_feedback': parsed.feedback, 'viz_eval_result': parsed,
+                'viz_results': results, 'viz_specs': specs,
+                'last_agent_message': fb['messages'][-1], 'last_agent_expects_reply': parsed.expect_reply,
+                'last_agent_reply_msg': parsed.reply_msg_to_supervisor,
+                'last_agent_finished_this_task': parsed.finished_this_task,
+                'last_created_obj': 'viz_feedback', 'last_agent_id': 'viz_evaluator',
+                'current_turn_agent_id': 'supervisor', 'emergency_reroute': None}
+
+""" + _body[_end:]
+                _lines[_node.lineno - 1:_node.end_lineno] = [_body]
+            _ve_src = ''.join(_lines)
+        ast.parse(_ve_src)
+        _ve_cell['source'] = _ve_src
+        _ve_cell['outputs'] = []
+        _ve_cell['execution_count'] = None
+
     # --- W14I-VIZ-MEMBERSHIP: optimize evaluator lookups without dropping normalized matching ---
     _W14I_VIZ_MEMBERSHIP_GUARD = (
         "# W14I-VIZ-MEMBERSHIP: preserve normalized spec-key matching"
@@ -13795,6 +13945,7 @@ def main():
         if (
             "def viz_evaluator_node(state: State):" not in src
             or _W14I_VIZ_MEMBERSHIP_GUARD in src
+            or "'viz_eval_result': parsed" in src
         ):
             continue
         if (
