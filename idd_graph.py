@@ -359,6 +359,8 @@ def dispatch_sections(state: State):
             "_config": _sec_cfg,
             "user_prompt": _sec_prompt,
             "viz_results": _sec_viz,
+            "visualization_results": state.get("visualization_results"),
+            "artifacts_path": state.get("artifacts_path"),
             "cleaned_dataset_description": _sec_cdd,
             "final_turn_msgs_list": _sec_ftml,
             "messages": _sec_msgs,

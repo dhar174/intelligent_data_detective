@@ -74,6 +74,8 @@ from idd_tools import (
     handle_tool_errors,
     is_safe_artifact_path,
     validate_dataframe_exists,
+    report_figure_inventory,
+    ground_report_figures,
 )
 
 # Canonical state, reducers, and domain schemas (Checkpoint 3)
@@ -577,6 +579,8 @@ __all__ = [  # noqa: F822
     "handle_tool_errors",
     "is_safe_artifact_path",
     "validate_dataframe_exists",
+    "report_figure_inventory",
+    "ground_report_figures",
     # Re-exports: idd_state (CP3)
     "State",
     "VizWorkerState",

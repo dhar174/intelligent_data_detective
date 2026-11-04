@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional, Sequence, Union
 import pandas as pd
 
 from idd_registry import get_global_registry
+from idd_state import DataVisualization
 
 logger = logging.getLogger(__name__)
 
@@ -487,3 +488,115 @@ def is_safe_artifact_path(
         return False
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Canonical report figure provenance
+# ---------------------------------------------------------------------------
+
+
+def report_figure_inventory(state, *, working_directory=None, artifact_roots=()):
+    """Collect canonical figure metadata without file discovery or input mutation.
+
+    Accept model or serialized envelopes and flat worker results. Duplicate
+    identities must agree on their paths; conflicting identities fail closed.
+    Roots supply runtime path context, not permission to discover more figures.
+    """
+    roots = [
+        working_directory if working_directory is not None else WORKING_DIRECTORY,
+        state.get("artifacts_path"),
+        *artifact_roots,
+    ]
+
+    def path_keys(value):
+        raw = str(value or "").strip().replace("\\", "/")
+        if not raw:
+            return set()
+        norm = os.path.normcase(os.path.normpath(raw))
+        path = PathlibPath(raw)
+        if path.is_absolute():
+            return {norm}
+        keys = {norm}
+        for root in roots:
+            if root:
+                keys.add(
+                    os.path.normcase(os.path.normpath(str(PathlibPath(root) / path)))
+                )
+        return keys
+
+    items = []
+
+    def collect(value):
+        if value is None:
+            return
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                collect(child)
+            return
+        if isinstance(value, dict) and "visualizations" in value:
+            collect(value["visualizations"])
+            return
+        if hasattr(value, "visualizations"):
+            collect(value.visualizations)
+            return
+        try:
+            item = (
+                value
+                if isinstance(value, DataVisualization)
+                else DataVisualization.model_validate(value)
+            )
+        except Exception as exc:
+            raise ValueError(
+                "Report figure inventory contains invalid metadata"
+            ) from exc
+        figure_id = str(item.visualization_id or "").strip()
+        keys = path_keys(item.path)
+        if not figure_id or not keys:
+            raise ValueError("Report figure inventory is missing an ID or path")
+        for previous in items:
+            same_id = previous.visualization_id == figure_id
+            same_path = bool(path_keys(previous.path) & keys)
+            if same_id and same_path:
+                return
+            if same_id or same_path:
+                raise ValueError("Report figure inventory has ambiguous IDs or paths")
+        items.append(item)
+
+    collect(state.get("visualization_results"))
+    collect(state.get("viz_results"))
+    return items
+
+
+def ground_report_figures(inventory, result):
+    """Return a deep copy whose figure references match one inventory entry.
+
+    Reconcile missing IDs or paths only when the other field uniquely identifies
+    an actual figure. Reject missing, invented or contradictory references.
+    File ownership, existence and report completeness remain publication checks.
+    """
+    result = result.model_copy(deep=True)
+    # Only exact metadata paths are copied to output. A missing ID or path can
+    # be resolved by the other field, but conflicts are never silently repaired.
+    for owner in [result, *(getattr(result, "sections", None) or [])]:
+        grounded = []
+        for figure in getattr(owner, "expected_figures", None) or []:
+            figure_id = str(figure.visualization_id or "").strip()
+            path = str(figure.path or "").strip().replace("\\", "/")
+            if not figure_id and not path:
+                raise ValueError("Report figure reference is missing both ID and path")
+            matches = [
+                item
+                for item in inventory
+                if (
+                    not figure_id
+                    or str(item.visualization_id or "").strip() == figure_id
+                )
+                and (not path or str(item.path).strip().replace("\\", "/") == path)
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Report figure reference is not uniquely grounded in the inventory: id={figure_id!r}, path={path!r}"
+                )
+            grounded.append(matches[0].model_copy(deep=True))
+        owner.expected_figures = grounded
+    return result

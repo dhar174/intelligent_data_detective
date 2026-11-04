@@ -55,9 +55,11 @@ def load_worker(notebook, tmp_path):
     functions = [
         node
         for node in ast.parse(source).body
-        if isinstance(node, ast.FunctionDef) and node.name == "section_worker"
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "_cp5_report_inventory", "_cp5_ground_report_figures", "section_worker"
+        }
     ]
-    assert len(functions) == 1
+    assert len(functions) == 3
     calls = []
     store = InMemoryStore()  # No embedding index or provider.
 
@@ -94,6 +96,7 @@ def load_worker(notebook, tmp_path):
         cls.__name__: cls
         for cls in (
             State,
+            DataVisualization,
             Section,
             SectionOutline,
             CleaningMetadata,
@@ -215,7 +218,7 @@ def test_multiple_figures_reach_model_with_exact_metadata(worker, state):
     for figure in state["viz_results"]:
         assert call.instruction.count(figure_line(figure)) == 1
         assert call.payload["messages"][0].content.count(figure_line(figure)) == 1
-    assert call.payload["section"] is state["section"]
+    assert call.payload["section"] == state["section"]
     assert result["section_complete"] is True
     assert result["sections"][0].expected_figures == state["viz_results"]
     assert "r = -0.1607" in result["written_sections"][0]
