@@ -570,6 +570,36 @@ print('CP5_VIZ_FANIN_OFFLINE_OK')
     assert "CP5_VIZ_FANIN_OFFLINE_OK" in output
 
 
+def test_cp5_structured_stream_messages_in_real_kernel(tmp_path):
+    """Exercise generated Cell 75 message handling in an attested no-key kernel."""
+    import hashlib
+
+    repo = Path(__file__).resolve().parents[2]
+    notebook = repo / "IntelligentDataDetective_beta_v5_patched.ipynb"
+    digest = hashlib.sha256(notebook.read_bytes()).hexdigest()
+    source = f"""
+import sys, hashlib
+from pathlib import Path
+sys.path.insert(0, {str(repo)!r})
+assert hashlib.sha256(Path({str(notebook)!r}).read_bytes()).hexdigest() == {digest!r}
+import pytest
+result = pytest.main([
+    {str(repo / 'tests/unit/test_stream_message_content.py')!r},
+    '-q', '--basetemp', str(Path.cwd() / 'stream-fixtures'),
+])
+assert result == 0, f'Offline stream regression failure: {{result}}'
+print('CP5_STREAM_CONTENT_OFFLINE_OK')
+"""
+    error, record, _, evidence_dir = execute(tmp_path, [source], timeout=90)
+    assert error is None
+    assert record["execution"]["status"] == "COMPLETED"
+    assert record["execution_kind"] == "synthetic-no-key"
+    assert record["cp5_pass"] is False
+    executed = nbformat.read(evidence_dir / "executed.ipynb", as_version=4)
+    output = "".join(o.get("text", "") for o in executed.cells[0].outputs)
+    assert "CP5_STREAM_CONTENT_OFFLINE_OK" in output
+
+
 @pytest.mark.parametrize(
     "role,llm",
     [
