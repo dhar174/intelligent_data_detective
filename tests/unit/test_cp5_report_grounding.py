@@ -144,6 +144,60 @@ def test_native_outline_model_receives_current_inventory_and_request(
     assert {"list_visualizations", "get_visualization", "ReportOutline"}.issubset(names)
 
 
+@pytest.mark.parametrize("serialized", [False, True])
+def test_envelope_only_outline_reaches_native_section_worker(
+    tmp_path, report_state, serialized
+):
+    from idd_graph import dispatch_sections
+    from idd_state import VisualizationResults
+
+    figures = list(report_state["viz_results"])
+    envelope = VisualizationResults(**FLAGS, visualizations=figures)
+    report_state["visualization_results"] = (
+        envelope.model_dump() if serialized else envelope
+    )
+    report_state["viz_results"] = []
+    outline_ns, _ = report_agent(tmp_path, "outline", report_state["report_outline"])
+    report_state["report_outline"] = outline_ns["report_orchestrator"](report_state)[
+        "report_outline"
+    ]
+    sends = dispatch_sections(report_state)
+    assert len(sends) == 1
+    section = report_state["report_outline"].sections[0]
+    response = Section(
+        **FLAGS,
+        name=section.name,
+        section_num=section.section_num,
+        description=section.description,
+        goals=section.goals,
+        data_signals=[],
+        expected_figures=section.expected_figures,
+        content="Revenue varies by channel."
+    )
+    worker_ns, model = report_agent(tmp_path, "section", response)
+    result = worker_ns["section_worker"](sends[0].arg)
+    assert len(model._requests) == 1
+    assert result["sections"][0].expected_figures == figures
+    assert report_state["viz_results"] == []
+
+
+def test_report_grounding_is_available_from_canonical_modules(tmp_path, report_state):
+    import idd_tools
+    import idd_core
+
+    collect = getattr(idd_tools, "report_figure_inventory", None)
+    ground = getattr(idd_tools, "ground_report_figures", None)
+    assert callable(collect) and callable(ground)
+    assert idd_core.report_figure_inventory is collect
+    assert idd_core.ground_report_figures is ground
+    inventory = collect(report_state, working_directory=tmp_path)
+    original = report_state["report_outline"].model_dump()
+    result = ground(inventory, report_state["report_outline"])
+    assert result == report_state["report_outline"]
+    assert result is not report_state["report_outline"]
+    assert report_state["report_outline"].model_dump() == original
+
+
 def test_outline_inventory_tool_can_be_used_before_native_completion(
     tmp_path, report_state
 ):

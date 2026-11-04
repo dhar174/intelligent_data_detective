@@ -8,11 +8,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from idd_graph import build_graph
 from idd_state import VizFeedback, VizSpec, VisualizationResults
 from tests.unit.test_cp5_report_grounding import generated_supervisor
+from tests.unit.test_cp5_report_grounding import report_agent, report_state
 from tests.unit.test_native_completion import (
     ControlledChatModel,
     FLAGS,
     evaluator_state,
     load_native,
+    execute_definitions,
 )
 from tests.unit.test_viz_join import figures
 
@@ -198,3 +200,55 @@ def test_exhausted_retries_stop_the_canonical_graph_without_a_report(tmp_path):
         assert restored.next == ("supervisor",)
         assert restored.values["visualization_complete"] is False
         assert restored.values["viz_grade"] is None
+
+
+@pytest.mark.parametrize("serialized", [False, True])
+def test_envelope_only_report_dispatch_and_checkpoint(
+    tmp_path, report_state, serialized
+):
+    from idd_state import Section
+
+    figures = list(report_state["viz_results"])
+    envelope = VisualizationResults(**FLAGS, visualizations=figures)
+    report_state["visualization_results"] = (
+        envelope.model_dump() if serialized else envelope
+    )
+    report_state["viz_results"] = []
+    outline_ns, outline_model = report_agent(
+        tmp_path, "outline", report_state["report_outline"]
+    )
+    section = report_state["report_outline"].sections[0]
+    response = Section(
+        **FLAGS,
+        name=section.name,
+        section_num=section.section_num,
+        description=section.description,
+        goals=section.goals,
+        data_signals=[],
+        expected_figures=figures,
+        content="Measured channel revenue varies.",
+    )
+    worker_ns, worker_model = report_agent(tmp_path, "section", response)
+    execute_definitions(outline_ns, 57, {"report_join"})
+    overrides = {
+        "report_orchestrator": outline_ns["report_orchestrator"],
+        "report_section_worker": worker_ns["section_worker"],
+        "report_join": outline_ns["report_join"],
+    }
+    cfg = {"configurable": {"thread_id": "envelope-report"}}
+    report_state["_config"] = cfg
+    report_state["next"] = "report_orchestrator"
+    db = tmp_path / "envelope-report.sqlite"
+    with SqliteSaver.from_conn_string(str(db)) as saver:
+        graph = build_graph(node_overrides=overrides, checkpointer=saver)
+        graph.update_state(cfg, report_state, as_node="supervisor")
+        result = graph.invoke(None, cfg, interrupt_before=["report_packager"])
+        assert len(outline_model._requests) == len(worker_model._requests) == 1
+        assert result["sections"][0].expected_figures == figures
+        assert result["viz_results"] == []
+    with SqliteSaver.from_conn_string(str(db)) as saver:
+        restored = build_graph(node_overrides=overrides, checkpointer=saver).get_state(
+            cfg
+        )
+        assert "report_packager" in restored.next
+        assert restored.values["sections"][0].expected_figures == figures

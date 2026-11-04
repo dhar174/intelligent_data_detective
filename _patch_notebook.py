@@ -800,85 +800,19 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
 def apply_cp5_report_grounding_patch(cells) -> None:
     """Ground report inputs and respect native visualization revision feedback."""
     report_helpers = '''\
-# CP5-REPORT-GROUNDING: use only current structured visualization evidence.
+# CP5-REPORT-GROUNDING: bind notebook runtime context to canonical validation.
 def _cp5_report_inventory(state):
-    import os as _cp5_os
-    from pathlib import Path as _CP5Path
-
-    roots = [WORKING_DIRECTORY, state.get("artifacts_path"),
-             getattr(globals().get("RUNTIME"), "run_dir", None),
-             getattr(globals().get("RUNTIME"), "artifacts_dir", None)]
-
-    def path_keys(value):
-        raw = str(value or "").strip().replace("\\\\", "/")
-        if not raw:
-            return set()
-        norm = _cp5_os.path.normcase(_cp5_os.path.normpath(raw))
-        path = _CP5Path(raw)
-        if path.is_absolute():
-            return {norm}
-        keys = {norm}
-        for root in roots:
-            if root:
-                keys.add(_cp5_os.path.normcase(_cp5_os.path.normpath(str(_CP5Path(root) / path))))
-        return keys
-
-    items = []
-    def collect(value):
-        if value is None:
-            return
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                collect(child)
-            return
-        if isinstance(value, dict) and "visualizations" in value:
-            collect(value["visualizations"])
-            return
-        if hasattr(value, "visualizations"):
-            collect(value.visualizations)
-            return
-        try:
-            item = value if isinstance(value, DataVisualization) else DataVisualization.model_validate(value)
-        except Exception as exc:
-            raise ValueError("Report figure inventory contains invalid metadata") from exc
-        figure_id = str(item.visualization_id or "").strip()
-        keys = path_keys(item.path)
-        if not figure_id or not keys:
-            raise ValueError("Report figure inventory is missing an ID or path")
-        for previous in items:
-            same_id = previous.visualization_id == figure_id
-            same_path = bool(path_keys(previous.path) & keys)
-            if same_id and same_path:
-                return
-            if same_id or same_path:
-                raise ValueError("Report figure inventory has ambiguous IDs or paths")
-        items.append(item)
-
-    collect(state.get("visualization_results"))
-    collect(state.get("viz_results"))
-    return items
+    from idd_tools import report_figure_inventory
+    runtime = globals().get("RUNTIME")
+    return report_figure_inventory(
+        state, working_directory=WORKING_DIRECTORY,
+        artifact_roots=(getattr(runtime, "run_dir", None), getattr(runtime, "artifacts_dir", None)),
+    )
 
 
 def _cp5_ground_report_figures(state, result):
-    inventory = _cp5_report_inventory(state)
-    result = result.model_copy(deep=True)
-    # Only exact metadata paths are copied to output. A missing ID or path can
-    # be resolved by the other field, but conflicts are never silently repaired.
-    for owner in [result, *(getattr(result, "sections", None) or [])]:
-        grounded = []
-        for figure in (getattr(owner, "expected_figures", None) or []):
-            figure_id = str(figure.visualization_id or "").strip()
-            path = str(figure.path or "").strip().replace("\\\\", "/")
-            if not figure_id and not path:
-                raise ValueError("Report figure reference is missing both ID and path")
-            matches = [item for item in inventory
-                       if (not figure_id or str(item.visualization_id or "").strip() == figure_id)
-                       and (not path or str(item.path).strip().replace("\\\\", "/") == path)]
-            if len(matches) != 1:
-                raise ValueError(f"Report figure reference is not uniquely grounded in the inventory: id={figure_id!r}, path={path!r}")
-            grounded.append(matches[0].model_copy(deep=True))
-        owner.expected_figures = grounded
-    return result
+    from idd_tools import ground_report_figures
+    return ground_report_figures(_cp5_report_inventory(state), result)
 
 
 def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memories=None):

@@ -568,6 +568,8 @@ assert em_cmd.goto == "analyst"
 assert em_cmd.update["messages"].content == "Use median imputation."
 
 # The generated report boundary reconciles a real figure and rejects a fake.
+assert idd_core.report_figure_inventory is idd_tools.report_figure_inventory
+assert idd_core.ground_report_figures is idd_tools.ground_report_figures
 _kernel_fig = DataVisualization(
     path="owned-figure.png", visualization_id="owned-figure", visualization_type="bar",
     visualization_description="Controlled figure", visualization_style="default",
