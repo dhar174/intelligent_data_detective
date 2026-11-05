@@ -122,6 +122,20 @@ jobs:
           python -m pytest tests/unit/test_proof_runner.py tests/unit/test_live_runner_configuration.py -v
           python -m pytest tests/smoke/test_proof_runner_kernel.py -v -s
 
+      - name: Run CP5 native completion and analyst revision regressions on Windows (no keys)
+        shell: bash
+        env:
+          OPENAI_API_KEY: ""
+          AZURE_OPENAI_API_KEY: ""
+          TAVILY_API_KEY: ""
+          IDD_ALLOW_RECOVERY: "0"
+        run: |
+          python -m pytest \
+            tests/unit/test_native_completion.py \
+            tests/unit/test_viz_evaluator_completion.py \
+            tests/unit/test_analyst_revision_completion.py \
+            tests/integration/test_cp5_revision_route.py -v
+
       - name: Run real-kernel notebook validation on Windows (SQLite absent - package uninstalled)
         shell: bash
         env:

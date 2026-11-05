@@ -1,0 +1,90 @@
+{
+  "method": "Controlled generated revision node/factory with native LangChain and canonical Responses payload serializer; no provider client or credentials",
+  "baseline_sha": "88bac1c4c0b5687ceaee9cc01e9514270380214f",
+  "results": {
+    "before": {
+      "message_types_and_names": [
+        [
+          "SystemMessage",
+          null
+        ],
+        [
+          "HumanMessage",
+          "user"
+        ],
+        [
+          "AIMessage",
+          "supervisor"
+        ],
+        [
+          "AIMessage",
+          "supervisor"
+        ]
+      ],
+      "serialized_roles": [
+        "system",
+        "user",
+        "assistant",
+        "assistant"
+      ],
+      "registered_response_tool": "AnalysisInsights",
+      "registered_respond": false,
+      "positive_respond_instruction": true,
+      "feedback_visible": true,
+      "prior_findings_visible": false,
+      "runtime_context_count": 0,
+      "native_completion_type": "AnalysisInsights",
+      "model_calls": 1,
+      "langchain_bind_tool_choice": "any",
+      "serialized_tool_choice_after_sdk_normalization": "required"
+    },
+    "after": {
+      "message_types_and_names": [
+        [
+          "SystemMessage",
+          null
+        ],
+        [
+          "HumanMessage",
+          null
+        ],
+        [
+          "AIMessage",
+          "supervisor"
+        ],
+        [
+          "AIMessage",
+          "supervisor"
+        ],
+        [
+          "HumanMessage",
+          "runtime_context"
+        ]
+      ],
+      "serialized_roles": [
+        "system",
+        "user",
+        "assistant",
+        "assistant",
+        "user"
+      ],
+      "registered_response_tool": "AnalysisInsights",
+      "registered_respond": false,
+      "positive_respond_instruction": false,
+      "feedback_visible": true,
+      "prior_findings_visible": true,
+      "runtime_context_count": 1,
+      "native_completion_type": "AnalysisInsights",
+      "model_calls": 1,
+      "langchain_bind_tool_choice": "any",
+      "serialized_tool_choice_after_sdk_normalization": "required"
+    }
+  },
+  "sdk_normalization": {
+    "owner": "MyChatOpenai inherits langchain_openai.ChatOpenAI.bind_tools",
+    "langchain_openai_version": "1.7.2",
+    "source_rule": "any -> required",
+    "verification": "Installed bind_tools source inspected and canonical Responses serializer exercised with required; no provider client constructed",
+    "limit": "This is a local serialization probe, not an archived or live provider request"
+  }
+}

@@ -1,0 +1,23 @@
+Baseline RED evidence (captured before analyst production edits)
+
+Repository HEAD: 88bac1c4c0b5687ceaee9cc01e9514270380214f
+Generated notebook SHA-256: 927EDC5FFE015F4D2ABB13507E7F7C52643655FC9427CE220F2B7AA39D59619F
+Loader test SHA-256 at capture: E6BBD54F2829C4E020D16C1E26C04E66998052E3CA5752CAAFD508D08CD689F5
+Analyst test SHA-256 at capture: A3C69F3646759C40534046BF2CCC2C0185E54B12C5AE0C970944C013117C3D27
+
+Command:
+  python -m pytest tests/unit/test_analyst_revision_completion.py -q --maxfail=2
+
+Result: exit code 1; 2 failed, 2 warnings in 11.11 seconds.
+
+Failures:
+- test_analyst_initial_completion_uses_native_schema_without_respond:
+  The real generated analyst node exhausted its recursion limit at 160 instead of
+  returning the controlled AnalysisInsights completion.
+- test_analyst_revision_receives_real_feedback_png_inventory_and_supervisor_instruction:
+  The controlled chat boundary observed no HumanMessage named `runtime_context`;
+  its assertion was raised while the generated analyst agent was invoked.
+
+The tests used the generated notebook definitions and an in-memory controlled chat
+model. The native completion test fixture denies socket connections. No live proof
+runner was invoked.

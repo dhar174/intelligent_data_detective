@@ -1,0 +1,956 @@
+{
+  "captured_cell75_tool_name_occurrences": {
+    "counting_method": "Substring occurrences in archived executed notebook cell 75 stream; 13 list_visualizations plus 26 get_visualization in the revision window, plus one get_column_names header. Headers are not invocation IDs; no raw output copied.",
+    "inner_revision_argument_values_or_fingerprints_available": false,
+    "inner_revision_invocation_ids_available": false,
+    "inner_revision_message_roles_available": false,
+    "revision_retrieval_header_count": 39,
+    "revision_window_from_first_revision_marker": {
+      "get_column_names": 1,
+      "get_visualization": 26,
+      "list_visualizations": 13
+    },
+    "whole_attempt": {
+      "get_column_names": 2,
+      "get_visualization": 34,
+      "list_visualizations": 14
+    }
+  },
+  "checkpoint_store": {
+    "argument_capture_policy": {
+      "allowlisted_keys": [
+        "columns",
+        "df_id",
+        "include_preview",
+        "limit",
+        "query",
+        "start",
+        "visualization_id",
+        "vizfilters",
+        "x",
+        "y"
+      ],
+      "fingerprint": {
+        "algorithm": "SHA-256",
+        "canonicalization": "JSON with sorted keys, compact separators, UTF-8, ensure_ascii=False; non-JSON values replaced by a type marker before hashing."
+      },
+      "full_argument_sha256_retained": true,
+      "path_values": "attempt-owned paths are normalized to attempt:// relative aliases; external or unresolved paths are redacted with a fingerprint",
+      "safe_allowlisted_values_included": true,
+      "unallowlisted_key_names_recorded": true,
+      "unallowlisted_values_included": false
+    },
+    "checkpoint_count": 13,
+    "checkpoints": [
+      {
+        "checkpoint_id": "1f1d9365-7dc5-6042-bfff-47daa02bc306",
+        "namespace": "",
+        "parent_checkpoint_id": null,
+        "source": "input",
+        "step": -1,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9365-7dc5-6042-bfff-47daa02bc306",
+        "source": "loop",
+        "step": 0,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9366-114d-61ae-8001-7002bb9f3c80",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+        "source": "loop",
+        "step": 1,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9366-114d-61ae-8001-7002bb9f3c80",
+        "source": "loop",
+        "step": 2,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9369-1bca-6929-8003-5dbb430e61b5",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+        "source": "loop",
+        "step": 3,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9369-1bca-6929-8003-5dbb430e61b5",
+        "source": "loop",
+        "step": 4,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d936c-90e7-629b-8005-b4b7f1bef66f",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+        "source": "loop",
+        "step": 5,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d936c-9102-6064-8006-786ca86b32dd",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d936c-90e7-629b-8005-b4b7f1bef66f",
+        "source": "loop",
+        "step": 6,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d936c-9102-6064-8006-786ca86b32dd",
+        "source": "loop",
+        "step": 7,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9371-3dcf-6b27-8008-66a5ec05dbf0",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+        "source": "loop",
+        "step": 8,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9371-42e5-6739-8009-5aad82bd85ed",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9371-3dcf-6b27-8008-66a5ec05dbf0",
+        "source": "loop",
+        "step": 9,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9372-fc8c-654b-800a-71ffed015c45",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9371-42e5-6739-8009-5aad82bd85ed",
+        "source": "loop",
+        "step": 10,
+        "type": "msgpack"
+      },
+      {
+        "checkpoint_id": "1f1d9372-fc9d-657c-800b-bd233573cc40",
+        "namespace": "",
+        "parent_checkpoint_id": "1f1d9372-fc8c-654b-800a-71ffed015c45",
+        "source": "loop",
+        "step": 11,
+        "type": "msgpack"
+      }
+    ],
+    "integrity_check": "ok",
+    "message_tool_call_records": [
+      {
+        "args_sha256": "a0b9bdcf8bbf692741d2e145aca7e5cbd97eec6a5db9b38ef7a72d43c6b418ec",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "anomaly_insights",
+          "correlation_insights",
+          "expect_reply",
+          "finished_this_task",
+          "recommended_next_steps",
+          "recommended_visualizations",
+          "reply_msg_to_supervisor",
+          "summary"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_nYKgr5YfbTUdIItJ8sWQclCp",
+        "tool_name": "AnalysisInsights"
+      },
+      {
+        "args_sha256": "0c6d94dee8b053e6e3ba1c02162cbed1ea1ac47dc5df36817a4b854230f57b9d",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "data_description_after_cleaning",
+          "expect_reply",
+          "finished_this_task",
+          "reply_msg_to_supervisor",
+          "steps_taken"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_LkFsZOHSaYb2873HjAZ5rL7i",
+        "tool_name": "CleaningMetadata"
+      },
+      {
+        "args_sha256": "739c2f29717bc5b2037cce79ea289b10934e957250994c1f6d7fbcb6b0195016",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+            "source": "loop",
+            "step": 0
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "data_sample",
+          "dataset_description",
+          "expect_reply",
+          "finished_this_task",
+          "notes",
+          "reply_msg_to_supervisor"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_sb3tuWDsTsk57Jl191U24j6z",
+        "tool_name": "InitialDescription"
+      },
+      {
+        "args_sha256": "76390126334a27a7fee00e5f508203ac6e851183af3e46f08971f232e3810d1a",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "expect_reply",
+          "finished_this_task",
+          "reply_msg_to_supervisor",
+          "visualizations"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_SZBoRoWL1ovCGcFQnXLU49Ue",
+        "tool_name": "VisualizationResults"
+      },
+      {
+        "args_sha256": "0de502e92c5ae85f249c85bb1565f1954047f3dd98839316db884b8f59cda753",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "expect_reply",
+          "finished_this_task",
+          "reply_msg_to_supervisor",
+          "visualizations"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_jQGZ6iXEdJK7Mjyag37nIpg0",
+        "tool_name": "VisualizationResults"
+      },
+      {
+        "args_sha256": "24a68dfbb80340dc76fde1c629bf386e978f98322f8eaa543f233da368e0673e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "expect_reply",
+          "finished_this_task",
+          "reply_msg_to_supervisor",
+          "visualizations"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {},
+        "tool_call_id": "call_xrhmXtIAJMR3Dt7iMIgOKkjG",
+        "tool_name": "VisualizationResults"
+      },
+      {
+        "args_sha256": "94d4b5a8d0ea619941d749125e243326e8c3e8f4722a48256882eafd572b3c09",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_names"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_sXiopCGDTxyMsQ7x9NaWEi7l",
+        "tool_name": "calculate_correlation_matrix"
+      },
+      {
+        "args_sha256": "d38056ff9cb98ef4b8572cbc956ff8c903b7e80917abd84b6742f3fe4c14fe55",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "coerce_numeric",
+          "dropna",
+          "group",
+          "hue",
+          "hue_order",
+          "legend",
+          "linewidth",
+          "max_overlay",
+          "notch",
+          "order",
+          "orient",
+          "overlay_values",
+          "return_bytes",
+          "rotate_xticks",
+          "rows",
+          "sample_frac",
+          "sample_n",
+          "showcaps",
+          "showfliers",
+          "tight_layout",
+          "values",
+          "whis",
+          "width",
+          "y_range"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_Z824jEpUzegAoYuHUpZSJHeM",
+        "tool_name": "create_box_plot"
+      },
+      {
+        "args_sha256": "175699b84b97f05b96dcc1b5d75b2e923bafa111389461c55f8ab743bb4346c9",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "alpha",
+          "coerce_numeric",
+          "dropna",
+          "edgecolor",
+          "hue",
+          "legend",
+          "linewidth",
+          "marker",
+          "max_overlay",
+          "overlay_y",
+          "point_sizes",
+          "return_bytes",
+          "rows",
+          "sample_frac",
+          "sample_n",
+          "size",
+          "style",
+          "x_range",
+          "y_range"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders",
+          "x": "gross_revenue",
+          "y": "net_revenue"
+        },
+        "tool_call_id": "call_ETjvRqieP1Cgp85t86J0g6wE",
+        "tool_name": "create_scatter_plot"
+      },
+      {
+        "args_sha256": "55cdbe4934e4d0db9bac5e40d0899247e9ca4a335edd687b17e2779c5212a693",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "alpha",
+          "coerce_numeric",
+          "dropna",
+          "edgecolor",
+          "hue",
+          "legend",
+          "linewidth",
+          "marker",
+          "max_overlay",
+          "overlay_y",
+          "point_sizes",
+          "return_bytes",
+          "rows",
+          "sample_frac",
+          "sample_n",
+          "size",
+          "style",
+          "x_range",
+          "y_range"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders",
+          "x": "gross_revenue",
+          "y": "net_revenue"
+        },
+        "tool_call_id": "call_X5pI19VxzubMWbFJrNU3MxN8",
+        "tool_name": "create_scatter_plot"
+      },
+      {
+        "args_sha256": "f3129f29419c7c40ad93467edcbc7490909ad8dca7377f38502f7b1ac6542300",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "conditions"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_trgGMPU7DvlVNo02sZX38hT6",
+        "tool_name": "delete_rows"
+      },
+      {
+        "args_sha256": "932dfb1bd26e78c73275d8aba520c03c3333d44f38a00ad696c740afe50a1934",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "casefold",
+          "dry_run",
+          "keep",
+          "normalize_ws",
+          "sample_duplicates",
+          "subset"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_xKPexoeh2cOSCusrPbdICDGM",
+        "tool_name": "detect_and_remove_duplicates"
+      },
+      {
+        "args_sha256": "48f52c346eebe681bac37ade531d1119d259d0a1307a2692b903b92a25d1cc9a",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_name"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_3IVPegUfCrgP00cZTruW8U9s",
+        "tool_name": "detect_outliers"
+      },
+      {
+        "args_sha256": "978b671eb78322e422428a0d33c777f24f62fdc19130903a9ce80f965bf740af",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_name"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_3aPPCpzAcxyVOC1DXsRlSZud",
+        "tool_name": "detect_outliers"
+      },
+      {
+        "args_sha256": "4adcd62b4373b9ac153642b6b7f42259059e6e5fa05df772d38ad260b7e89b77",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "compression",
+          "date_format",
+          "encoding",
+          "file_format",
+          "file_name",
+          "float_format",
+          "include_index",
+          "indent",
+          "json_lines",
+          "json_orient",
+          "na_rep",
+          "overwrite",
+          "parquet_engine",
+          "quoting",
+          "sep",
+          "sheet_name"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "columns": null,
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_EdEyE7bykyUnE18nYgg7kQpH",
+        "tool_name": "export_dataframe"
+      },
+      {
+        "args_sha256": "4950f15b6052583f1b1e8388e3367933533b0973738cbc901fe14b4181f7e5ab",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "compression",
+          "date_format",
+          "encoding",
+          "file_format",
+          "file_name",
+          "float_format",
+          "include_index",
+          "indent",
+          "json_lines",
+          "json_orient",
+          "na_rep",
+          "overwrite",
+          "parquet_engine",
+          "quoting",
+          "sep",
+          "sheet_name"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "columns": null,
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_Li2RqmiASCVqjKtz3tfgZH8T",
+        "tool_name": "export_dataframe"
+      },
+      {
+        "args_sha256": "f2c3afbaaf3adf45dd33ce65f9e2e741492a9b621970cc7b9ac91e0f164fa061",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_name"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_lwltHTJFzzUOqJYPGd9BMQaJ",
+        "tool_name": "fill_missing_median"
+      },
+      {
+        "args_sha256": "dbc6d718ffa641f4c2e2bb1f41c26d6361e284f02f6efa046b0d222c38c0b39e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+            "source": "loop",
+            "step": 0
+          }
+        ],
+        "omitted_unallowlisted_keys": [],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_aTEbQiDBwJdMa5Pum5ZqrLNc",
+        "tool_name": "get_column_names"
+      },
+      {
+        "args_sha256": "dbc6d718ffa641f4c2e2bb1f41c26d6361e284f02f6efa046b0d222c38c0b39e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9366-1160-6a38-8002-6ab0f4f2e173",
+            "source": "loop",
+            "step": 2
+          }
+        ],
+        "omitted_unallowlisted_keys": [],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_3CsgEgPJ5XknQNGTuDc3prEk",
+        "tool_name": "get_dataframe_schema"
+      },
+      {
+        "args_sha256": "dbc6d718ffa641f4c2e2bb1f41c26d6361e284f02f6efa046b0d222c38c0b39e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+            "source": "loop",
+            "step": 0
+          }
+        ],
+        "omitted_unallowlisted_keys": [],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_9ckLmkKvaEVObkp5Ja9oH7MZ",
+        "tool_name": "get_dataframe_schema"
+      },
+      {
+        "args_sha256": "dbc6d718ffa641f4c2e2bb1f41c26d6361e284f02f6efa046b0d222c38c0b39e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_BcHK9gBG5oCEY5NmZu4eKCVR",
+        "tool_name": "get_dataframe_schema"
+      },
+      {
+        "args_sha256": "dbc6d718ffa641f4c2e2bb1f41c26d6361e284f02f6efa046b0d222c38c0b39e",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_COgFobTBKvwZHzKgkZ7rBwlN",
+        "tool_name": "get_dataframe_schema"
+      },
+      {
+        "args_sha256": "e23def118b0bb7c108b4b0ee545e2283860f88e7a3e13a0260e515d4f6335853",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9365-7dc9-6cbb-8000-3d36d54b549d",
+            "source": "loop",
+            "step": 0
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_names"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_VvNQ1hjNt8kuPuQBwKkQtiyj",
+        "tool_name": "get_descriptive_statistics"
+      },
+      {
+        "args_sha256": "e23def118b0bb7c108b4b0ee545e2283860f88e7a3e13a0260e515d4f6335853",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d9369-1be0-6ed2-8004-fcafc4a79b5e",
+            "source": "loop",
+            "step": 4
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "column_names"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_z0hCb397Q6M03Fnpfn1ONxx3",
+        "tool_name": "get_descriptive_statistics"
+      },
+      {
+        "args_sha256": "cc40230998d638b8eda743d28a982a79cf505bbfb0ed744274e6f868d0c43a93",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "code"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_ViJNOY43cVJQ03OfpM1Y2BnB",
+        "tool_name": "python_repl_tool"
+      },
+      {
+        "args_sha256": "f7fabd6500268633d92610fb13e715e6b2acf3d54674b49980d393a2478063a9",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "code"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_dBiT1feubLnoAkuwwSAG3j0C",
+        "tool_name": "python_repl_tool"
+      },
+      {
+        "args_sha256": "0d6c01fe20ad5d22e95e72f0f158d7752100de5fb98bc1df9729fe01d789dcc3",
+        "checkpoint_observations": [
+          {
+            "checkpoint_id": "1f1d936c-9875-62c8-8007-f9834600aedc",
+            "source": "loop",
+            "step": 7
+          }
+        ],
+        "omitted_unallowlisted_keys": [
+          "code"
+        ],
+        "redacted_allowlisted_keys": [],
+        "role": "ai",
+        "safe_arguments": {
+          "df_id": "retail_orders"
+        },
+        "tool_call_id": "call_hX0xukziDS0NRMEASPH9GW64",
+        "tool_name": "python_repl_tool"
+      }
+    ],
+    "message_tool_calls_include": "LangChain AI message tool calls and structured-output tool-call entries from accessible outer-thread checkpoints.",
+    "message_write_count": 9,
+    "raw_unfiltered_argument_values_included": false,
+    "reader": "Python sqlite3 URI mode=ro; PRAGMA query_only=ON",
+    "thread_id": "thread-3a766093-d6bc-451e-804e-1266ea655012",
+    "unique_message_tool_call_count": 27,
+    "write_count": 161
+  },
+  "current_source_compatibility_note": {
+    "installed_langchain_version": "1.4.6",
+    "installed_source": "langchain/agents/factory.py",
+    "model_node_builds_messages_from": "request.messages",
+    "model_node_input_lines": [
+      1502,
+      1504,
+      1506
+    ],
+    "notebook_cells_with_llm_input_messages": [
+      40,
+      43
+    ],
+    "repair_boundary": "No shared pre-model hook changes are included in this repair.",
+    "review_note": "Independent review found the installed model_node does not consume llm_input_messages returned by the notebook pre-model hook. The model-bound spy is the authority for hook behavior and the scoped pin remains effective.",
+    "status": "separate current-source compatibility concern; not live root-cause proof"
+  },
+  "evidence_kind": "sanitized_cp5_analyst_revision_forensic_summary",
+  "execution": {
+    "attempt_2_authorized": false,
+    "attempt_cost_usd": 0.14,
+    "attempt_status": "FAILED",
+    "cp5_pass": false,
+    "duration_seconds": 658.2,
+    "ended_utc": "2026-11-05T16:41:53.023198+00:00",
+    "reconciled_cumulative_spend": {
+      "budget_ceiling_usd": 10.0,
+      "cumulative_total_usd": 0.92,
+      "current_attempt_usd": 0.14,
+      "headroom_usd": 7.08,
+      "historical_attempts_total_usd": 0.78,
+      "safety_tripwire_usd": 8.0
+    },
+    "started_utc": "2026-11-05T16:30:54.806051+00:00",
+    "total_http_requests": 111
+  },
+  "failure": {
+    "cell75_error_text_confirms_160": true,
+    "cell75_step185_marker_present": true,
+    "exception_type": "langgraph.errors.GraphRecursionError",
+    "first_failure": {
+      "cell_index": 75,
+      "code": "STREAM_FAILURE",
+      "stage": "cell",
+      "type": "ProofError",
+      "utc": "2026-11-05T16:41:49.059836+00:00"
+    },
+    "node": "analyst",
+    "recovery_policy": "strict fail-closed; IDD_ALLOW_RECOVERY=0; no legacy final-hop shim invoked",
+    "reported_recursion_budget": 160,
+    "step_counter_interpretation": {
+      "exact_analyst_subgraph_resume_offset_proven": false,
+      "installed_langgraph_version": "1.2.16",
+      "installed_source": "langgraph/pregel/_loop.py",
+      "loop_initializes_step_from_checkpoint_metadata_plus_one": true,
+      "marker_does_not_establish_budget_185": true,
+      "reason": "The accessible SQLite database holds only the outer-thread checkpoints; the analyst subgraph start step is unavailable.",
+      "reported_budget_from_archived_error": 160,
+      "reported_step_marker": 185,
+      "source_lines": [
+        1880,
+        1881,
+        2138,
+        2139
+      ],
+      "stop_formula_uses_configured_recursion_limit": true
+    }
+  },
+  "privacy_and_evidence_limits": [
+    "No prompts, model reasoning, credentials, raw unfiltered arguments, console output, pipeline logs, or notebook output text are copied into this file.",
+    "For the 27 unique outer-thread message tool calls, only allowlisted safe argument values are included; all unallowlisted argument values are omitted and represented only by the full canonical SHA-256 fingerprint.",
+    "The 39 analyst-revision retrieval-header occurrences (13 list_visualizations and 26 get_visualization) plus one get_column_names header are aggregate trace counts. The failed inner calls do not appear in SQLite; header occurrences do not establish inner call IDs, argument values or fingerprints, or per-message roles.",
+    "The SQLite store inspected here contains only 13 root-thread checkpoints (steps -1 through 11); it does not establish the analyst subgraph starting checkpoint step or reconstruct the exact offset for the reported step-185 marker.",
+    "The archived bundle marks evidence PARTIAL_CAPTURED; source provenance, run association, automatic validation, and independent artifact inspection are incomplete or pending. This attempt is a failure record, not CP5 acceptance evidence.",
+    "Original console-log warning text is not reproduced. The safe token scan found 7 warning/warn matches in console.log and 0 in notebook_run_log.txt.",
+    "The current-source llm_input_messages concern is documented separately and is not attributed as the cause of the archived analyst recursion failure."
+  ],
+  "provenance": {
+    "attempt_id": "4dae2a34-bad2-428f-9462-b049c6e0830a",
+    "git_tree": "6e6bff4f9e06d052466831dfeadf7d948cb8f731",
+    "pinned_notebook_cell_count": 99,
+    "pinned_notebook_lf_sha256": "1016d3ab2579d8974d515c37d2a6d464061f7ad7a594e8a7e26cc323dcefd64d",
+    "source_artifacts": [
+      "evidence/evidence.json",
+      "evidence/executed.ipynb",
+      "evidence/console.log",
+      "workspace/notebook_run_log.txt",
+      "workspace/checkpoints.sqlite",
+      "workspace/current_run_thread_id.txt"
+    ],
+    "source_sha": "88bac1c4c0b5687ceaee9cc01e9514270380214f",
+    "sqlite_thread_id": "thread-3a766093-d6bc-451e-804e-1266ea655012"
+  },
+  "runtime_versions": {
+    "langchain": "1.4.6",
+    "langgraph": "1.2.16",
+    "langgraph_checkpoint": "4.3.0",
+    "langgraph_checkpoint_sqlite": "3.1.2"
+  },
+  "schema_version": 1,
+  "scope": {
+    "attempt_id": "4dae2a34-bad2-428f-9462-b049c6e0830a",
+    "no_live_retry_or_provider_call_in_this_repair": true,
+    "scenario": "retail_orders",
+    "task": "offline repair of the CP5 analyst revision completion path"
+  },
+  "source_bundle_status": {
+    "artifact_inspection": "PENDING_INDEPENDENT_REVIEW",
+    "association": "NOT_REACHED",
+    "automatic_validation": "NOT_REACHED",
+    "evidence_completeness": "PARTIAL_CAPTURED",
+    "provenance": "NOT_REACHED"
+  },
+  "source_integrity": {
+    "archived_file_hashes_match_manifest": {
+      "console_log": {
+        "lf_sha256": "d64affca2d2eb93a810baf90510816b0ac0bf84cb1be454526579ff50a493122",
+        "matches_recorded_lf": true,
+        "matches_recorded_raw": true,
+        "raw_sha256": "c7b77a42691762f286e15ced6401f7544e30521b92c17e56b7de7b089a8de1a4"
+      },
+      "executed_notebook": {
+        "lf_sha256": "f30f0888b25936a2db10b9d757adf8a5a09966bb8e4c356e9fa6be9ad1a2808d",
+        "matches_recorded_lf": true,
+        "matches_recorded_raw": true,
+        "raw_sha256": "b48d225c65b1fccf12244e5364a5cdc172538ab14c63b82b37c9e1a54c0ae0b8"
+      },
+      "pipeline_log": {
+        "lf_sha256": "69350946b6d0e68dd56e9caa6301748f603ededdffee2efff5cdd1f99dd23ea1",
+        "matches_recorded_lf": true,
+        "matches_recorded_raw": true,
+        "raw_sha256": "1a79450a04a734ffa3de1abf6d1056ed61ca9368237672be3d36144bbf818db6"
+      }
+    },
+    "bundle_sha256": "fef1f22bcdb4d3a875ff4e91ab44da9c202eadda81b7e0baa9499166548ce85b",
+    "bundle_source_sha_matches_evidence_json": true,
+    "evidence_json_sha256": "a9017c7ec0f7867bbf0ac7bc5cb9761415afde54b7ada1e535f12a88a586e619",
+    "raw_warning_text_included": false,
+    "sqlite_sha256": "418f2148370b8f06714c123b8921a50134a449c6877d8ea1fc3d58630277d8c1",
+    "thread_id_file_sha256": "d8fabd648015071010258edf67e828f8cac1345ba70354262e95ac8994422a2b",
+    "warning_token_scan": {
+      "console_log": {
+        "line_count": 1673,
+        "warning_or_warn_token_occurrences": 7
+      },
+      "pipeline_log": {
+        "line_count": 25,
+        "warning_or_warn_token_occurrences": 0
+      }
+    }
+  },
+  "status": "PARTIAL_CAPTURED_FAILED_ATTEMPT_NOT_ACCEPTANCE_EVIDENCE"
+}

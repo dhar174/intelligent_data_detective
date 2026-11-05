@@ -959,6 +959,651 @@ def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memo
     cells[46]["execution_count"] = None
 
 
+def _apply_cp5_analyst_revision_patch(source: str, *, cell_idx: int) -> str:
+    """Replace the analyst's ineffective prompt path with native revision handling."""
+
+    if cell_idx == 25:
+        matches = [
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "analyst_prompt_template_main"
+                for target in node.targets
+            )
+        ]
+        if len(matches) != 1:
+            raise RequiredPatchError(
+                "CP5 analyst revision: expected one main analyst prompt template"
+            )
+        node = matches[0]
+        lines = source.splitlines(keepends=True)
+        prompt = "".join(lines[node.lineno - 1 : node.end_lineno])
+        policy = (
+            "- CP5-ANALYST-REVISION: Use tools only when they provide evidence needed for the assigned work.\n"
+            "- For a visualization revision, return the complete revised AnalysisInsights and visualization plan.\n"
+            "- Preserve prior numeric findings unless the assignment or evaluator feedback explicitly asks you to recalculate them.\n"
+        )
+        if "CP5-ANALYST-REVISION:" not in prompt:
+            prompt = replace_required(
+                prompt,
+                "- Hard cap: after your 3rd tool call total, you MUST call `AnalysisInsights` with best-effort values for any incomplete fields.\n"
+                "- INCOMPLETE RESULTS ARE ACCEPTABLE — infinite loops are NOT.\n",
+                policy,
+                patch_id="CP5 analyst revision prompt policy",
+            )
+        source = (
+            "".join(lines[: node.lineno - 1])
+            + prompt
+            + "".join(lines[node.end_lineno :])
+        )
+
+    elif cell_idx == 44:
+        middleware_block = r'''# CP5-ANALYST-REVISION-MIDDLEWARE: context and retrieval integrity are analyst-local.
+from langchain.agents.middleware import wrap_model_call as _cp5_wrap_model_call
+
+
+@_cp5_wrap_model_call
+def _cp5_analyst_pin_runtime_context(request, handler):
+    """Restore the latest rendered context after any history summarization."""
+    import copy as _cp5_copy
+
+    _cp5_state = getattr(request, "state", None)
+    if isinstance(_cp5_state, dict):
+        _cp5_state_messages = list(_cp5_state.get("messages") or [])
+    else:
+        _cp5_state_messages = list(getattr(_cp5_state, "messages", []) or [])
+    _cp5_contexts = [
+        message for message in _cp5_state_messages
+        if (message.get("name") if isinstance(message, dict) else getattr(message, "name", None)) == "runtime_context"
+    ]
+    if not _cp5_contexts:
+        raise ValueError("analyst integrity: runtime_context is missing from agent state")
+    _cp5_latest_context = _cp5_contexts[-1]
+    if hasattr(_cp5_latest_context, "model_copy"):
+        _cp5_latest_context = _cp5_latest_context.model_copy(deep=True)
+    else:
+        _cp5_latest_context = _cp5_copy.deepcopy(_cp5_latest_context)
+
+    _cp5_messages = []
+    for _cp5_message in list(request.messages or []):
+        _cp5_name = (
+            _cp5_message.get("name")
+            if isinstance(_cp5_message, dict)
+            else getattr(_cp5_message, "name", None)
+        )
+        if _cp5_name != "runtime_context":
+            _cp5_messages.append(_cp5_message)
+    _cp5_messages.append(_cp5_latest_context)
+    return handler(request.override(messages=_cp5_messages))
+
+
+def _cp5_analyst_result_fingerprint(tool_message):
+    """Hash canonical result content and artifact metadata without retaining previews."""
+    import hashlib as _cp5_hashlib
+    import json as _cp5_json
+    import ntpath as _cp5_ntpath
+    import re as _cp5_re
+
+    def _normalize(value, key=""):
+        _key = str(key or "").lower()
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return {"bytes_sha256": _cp5_hashlib.sha256(bytes(value)).hexdigest()}
+        if isinstance(value, dict):
+            _normalized = {}
+            for _name, _item in sorted(value.items(), key=lambda pair: str(pair[0])):
+                _name_text = str(_name)
+                _name_lower = _name_text.lower()
+                if "base64" in _name_lower or _name_lower in {"preview", "image_preview"}:
+                    _raw = _item if isinstance(_item, (bytes, bytearray, memoryview)) else str(_item).encode("utf-8", "replace")
+                    _normalized[_name_text + "_sha256"] = _cp5_hashlib.sha256(bytes(_raw)).hexdigest()
+                else:
+                    _normalized[_name_text] = _normalize(_item, _name_text)
+            return _normalized
+        if isinstance(value, (list, tuple)):
+            _items = [_normalize(item, key) for item in value]
+            return sorted(_items, key=lambda item: _cp5_json.dumps(item, sort_keys=True, separators=(",", ":"), default=str))
+        if isinstance(value, str):
+            if value.startswith("data:image/") and ";base64," in value:
+                _preview = value.split(";base64,", 1)[1]
+                return {"preview_sha256": _cp5_hashlib.sha256(_preview.encode("ascii", "replace")).hexdigest()}
+            if "base64" in _key:
+                return {"preview_sha256": _cp5_hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()}
+            if any(token in _key for token in ("path", "file")) and "://" not in value:
+                return _cp5_ntpath.normcase(_cp5_ntpath.normpath(value))
+            if len(value) > 1024 and _cp5_re.fullmatch(r"[A-Za-z0-9+/=_-]+", value):
+                return {"large_payload_sha256": _cp5_hashlib.sha256(value.encode("ascii", "replace")).hexdigest()}
+            return value
+        return value
+
+    _content = tool_message.get("content") if isinstance(tool_message, dict) else getattr(tool_message, "content", None)
+    _artifact = tool_message.get("artifact") if isinstance(tool_message, dict) else getattr(tool_message, "artifact", None)
+    if _artifact is None:
+        _additional = tool_message.get("additional_kwargs") if isinstance(tool_message, dict) else getattr(tool_message, "additional_kwargs", None)
+        if isinstance(_additional, dict):
+            _artifact = _additional.get("artifact")
+    _payload = {"content": _normalize(_content), "artifact": _normalize(_artifact)}
+    _encoded = _cp5_json.dumps(_payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return _cp5_hashlib.sha256(_encoded).hexdigest()
+
+
+@_cp5_wrap_model_call
+def _cp5_analyst_retrieval_guard(request, handler):
+    """Stop a same-task loop after three unchanged visualization retrievals."""
+    _cp5_state = getattr(request, "state", None)
+    if isinstance(_cp5_state, dict):
+        _cp5_history = list(_cp5_state.get("messages") or [])
+    else:
+        _cp5_history = list(getattr(_cp5_state, "messages", []) or [])
+
+    def _name(message):
+        return message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
+
+    def _field(message, name, default=None):
+        return message.get(name, default) if isinstance(message, dict) else getattr(message, name, default)
+
+    _context_indexes = [index for index, message in enumerate(_cp5_history) if _name(message) == "runtime_context"]
+    if not _context_indexes:
+        raise ValueError("analyst integrity: runtime_context is missing from retrieval history")
+
+    _messages = _cp5_history[_context_indexes[-1] + 1 :]
+    _pending_calls = {}
+    _seen_results = set()
+    _repeat_streak = 0
+    _retrieval_tools = {"list_visualizations", "get_visualization"}
+    for _message in _messages:
+        _class_name = _message.get("type") if isinstance(_message, dict) else _message.__class__.__name__
+        if _class_name in {"AIMessage", "ai"}:
+            _tool_calls = _field(_message, "tool_calls", []) or []
+            for _call in _tool_calls:
+                _call_id = _field(_call, "id", "")
+                _tool_name = _field(_call, "name", "")
+                if _call_id and _tool_name:
+                    _pending_calls[str(_call_id)] = str(_tool_name)
+            continue
+        if _class_name not in {"ToolMessage", "tool"}:
+            continue
+        _call_id = str(_field(_message, "tool_call_id", "") or "")
+        _tool_name = _pending_calls.pop(_call_id, None)
+        if not _tool_name:
+            continue
+        _status = str(_field(_message, "status", "success") or "success").lower()
+        if _status == "error":
+            continue
+        if _tool_name in _retrieval_tools:
+            _fingerprint = (_tool_name, _cp5_analyst_result_fingerprint(_message))
+            if _fingerprint in _seen_results:
+                _repeat_streak += 1
+            else:
+                _seen_results.add(_fingerprint)
+                _repeat_streak = 0
+            if _repeat_streak >= 3:
+                raise ValueError("analyst integrity: repeated unchanged visualization retrieval")
+        else:
+            _repeat_streak = 0
+    return handler(request)
+
+
+'''
+        if "CP5-ANALYST-REVISION-MIDDLEWARE" not in source:
+            source = replace_required(
+                source,
+                "def create_analyst_agent(initial_description: InitialDescription, df_ids: List[str] = []):",
+                middleware_block
+                + "def create_analyst_agent(initial_description: InitialDescription, df_ids: List[str] = []):",
+                patch_id="CP5 analyst revision middleware insertion",
+            )
+
+        def analyst_factory(text):
+            text = replace_required(
+                text,
+                "Use the runtime SystemMessage for cleaned dataset context, available DataFrame IDs, analysis tools, data sample, memories, and AnalysisInsights schema.",
+                "Use the newest runtime_context message for the assigned work, registered DataFrame IDs, cleaned dataset context, prior insights/specifications, evaluator feedback, and current figure metadata.",
+                patch_id="CP5 analyst runtime-context system prompt",
+            )
+            text = replace_required(
+                text,
+                '        "1. Explore distributions, relationships, group differences, outliers, anomalies, correlations, and fields relevant to the user request.",\n'
+                '        "2. Prioritize findings with numeric evidence and note limitations introduced by cleaning or data quality.",\n'
+                '        "3. Recommend visualization targets that will help stakeholders understand the strongest findings.",',
+                '        "Initial-analysis assignment: explore distributions, relationships, group differences, outliers, anomalies, correlations, and fields relevant to the original user request.",\n'
+                '        "Prioritize evidence with numeric values and note relevant cleaning or data-quality limits.",\n'
+                '        "Visualization-revision assignment: address every evaluator feedback item and redo selector, preserve prior numeric findings and unaffected specifications, and return the complete plan.",',
+                patch_id="CP5 analyst initial versus revision instructions",
+            )
+            text = replace_required(
+                text,
+                "Completion: return exactly one AnalysisInsights structured response through the response tool, then stop.",
+                "Completion: call the native AnalysisInsights structured-response tool exactly once, then stop. For a visualization revision, preserve prior summary, correlation, anomaly, and next-step findings verbatim unless the assignment or evaluator feedback explicitly asks for recalculation; return the full revised plan with unaffected specifications unchanged.",
+                patch_id="CP5 analyst native completion system prompt",
+            )
+            old_middleware = (
+                'middleware =[prehook_critical_complex, _make_unknown_tool_guard("analyst", '
+                '[t.name for t in analyst_tools] + ["AnalysisInsights"])],  '
+                "# W2-REC6[AN]: unknown-tool guard wired"
+            )
+            new_middleware = (
+                'middleware =[prehook_critical_complex, _make_unknown_tool_guard("analyst", '
+                '[t.name for t in analyst_tools] + ["AnalysisInsights"]), '
+                "_cp5_analyst_pin_runtime_context, _cp5_analyst_retrieval_guard],  "
+                "# W2-REC6[AN]: unknown-tool guard wired; CP5-ANALYST-REVISION"
+            )
+            return replace_required(
+                text,
+                old_middleware,
+                new_middleware,
+                patch_id="CP5 analyst middleware order",
+            )
+
+        nodes = [
+            node
+            for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_analyst_agent"
+        ]
+        if len(nodes) != 1:
+            raise RequiredPatchError(
+                "CP5 analyst revision: expected one create_analyst_agent factory"
+            )
+        node = nodes[0]
+        lines = source.splitlines(keepends=True)
+        original = "".join(lines[node.lineno - 1 : node.end_lineno])
+        if "CP5-ANALYST-REVISION" not in original:
+            replacement = analyst_factory(original)
+            source = (
+                "".join(lines[: node.lineno - 1])
+                + replacement
+                + "".join(lines[node.end_lineno :])
+            )
+
+    elif cell_idx == 57:
+        if "CP5-ANALYST-REVISION-NODE" not in source:
+            safe_nodes = [
+                node
+                for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == "_safe_analyst_invoke"
+            ]
+            if len(safe_nodes) != 1:
+                raise RequiredPatchError(
+                    "CP5 analyst revision: expected one _safe_analyst_invoke"
+                )
+            safe_node = safe_nodes[0]
+            lines = source.splitlines(keepends=True)
+            safe_source = "".join(lines[safe_node.lineno - 1 : safe_node.end_lineno])
+            safe_source = replace_required(
+                safe_source,
+                "    except Exception as _aexc:\n        # CP5-STRICT-NATIVE: fail before retries and recovery.\n",
+                "    except Exception as _aexc:\n"
+                "        if str(_aexc).startswith('analyst integrity:'):\n"
+                "            raise\n"
+                "        # CP5-STRICT-NATIVE: fail before retries and recovery.\n",
+                patch_id="CP5 analyst integrity errors cannot recover",
+            )
+            source = (
+                "".join(lines[: safe_node.lineno - 1])
+                + safe_source
+                + "".join(lines[safe_node.end_lineno :])
+            )
+
+            node_block = r'''def _cp5_analyst_context(state, assignment):
+    """Build compact, current analysis context without carrying encoded previews."""
+    import json as _cp5_json
+
+    def _plain(value, key=""):
+        _key = str(key or "").lower()
+        if "base64" in _key or _key in {"image", "image_url", "preview", "image_preview"}:
+            return "[preview omitted]"
+        if hasattr(value, "model_dump"):
+            return _plain(value.model_dump(mode="json"), key)
+        if isinstance(value, dict):
+            return {
+                str(name): _plain(item, str(name))
+                for name, item in value.items()
+                if "base64" not in str(name).lower()
+                and str(name).lower() not in {"image", "image_url", "preview", "image_preview"}
+            }
+        if isinstance(value, (list, tuple)):
+            return [_plain(item, key) for item in value]
+        if isinstance(value, str) and value.startswith("data:image/") and ";base64," in value:
+            return "[preview omitted]"
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        return str(value)
+
+    def _value(obj, name, default=None):
+        return obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)
+
+    _initial = state.get("initial_description")
+    _cleaning = state.get("cleaning_metadata")
+    _prior = state.get("analysis_insights")
+    _specs = state.get("viz_specs") or _value(_prior, "recommended_visualizations", []) or []
+    _eval = state.get("viz_eval_result")
+    _redo = _value(_eval, "redo_list", None)
+    if _redo is None:
+        _redo = state.get("redo_list") or []
+
+    def _figures(value):
+        if hasattr(value, "visualizations"):
+            value = value.visualizations
+        elif isinstance(value, dict) and "visualizations" in value:
+            value = value.get("visualizations")
+        if not isinstance(value, (list, tuple)):
+            return []
+        _items = []
+        for _item in value:
+            _row = _item.model_dump(mode="json") if hasattr(_item, "model_dump") else _item
+            if not isinstance(_row, dict):
+                continue
+            _items.append({
+                "visualization_id": _row.get("visualization_id") or _row.get("viz_id"),
+                "title": _row.get("visualization_title") or _row.get("title"),
+                "type": _row.get("visualization_type") or _row.get("viz_type"),
+                "style": _row.get("visualization_style") or _row.get("style"),
+                "description": _row.get("visualization_description") or _row.get("description"),
+                "path": _row.get("path") or _row.get("file_path"),
+            })
+        return _items
+
+    _current_figures = []
+    _figure_seen = set()
+    for _collection in (state.get("visualization_results"), state.get("viz_results")):
+        for _figure in _figures(_collection):
+            _key = _cp5_json.dumps(_figure, sort_keys=True, separators=(",", ":"), default=str)
+            if _key not in _figure_seen:
+                _figure_seen.add(_key)
+                _current_figures.append(_figure)
+    for _path in state.get("viz_paths") or []:
+        _figure = {"path": str(_path)}
+        if _cp5_json.dumps(_figure, sort_keys=True, separators=(",", ":"), default=str) not in _figure_seen:
+            _current_figures.append(_figure)
+
+    _available_ids = list(state.get("available_df_ids") or [])
+    _payload = {
+        "assignment": str(assignment or ""),
+        "revision": state.get("viz_grade") == "revise",
+        "evaluator_grade": state.get("viz_grade"),
+        "evaluator_feedback": state.get("viz_feedback") or _value(_eval, "feedback", ""),
+        "figures_to_redo": _plain(_redo),
+        "prior_analysis_insights": _plain(_prior),
+        "prior_visualization_specs": _plain(_specs),
+        "current_figures": _current_figures,
+        "cleaned_dataset_description": (
+            _value(_cleaning, "data_description_after_cleaning")
+            or state.get("cleaned_dataset_description")
+            or _value(_initial, "dataset_description")
+        ),
+        "cleaning_steps": _plain(_value(_cleaning, "steps_taken", []) or []),
+        "data_sample": _plain(_value(_initial, "data_sample", state.get("data_sample"))),
+        "analysis_config": _plain(state.get("analysis_config", default_an_config)),
+        "memories": _plain(state.get("memories", "")),
+        "available_dataframe_ids": _available_ids,
+    }
+    return _cp5_json.dumps(_payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def analyst_node(state: State):
+    """Run one native analyst completion for initial analysis or evaluator revision."""
+    import copy as _cp5_copy
+    import uuid as _cp5_uuid
+    from langchain_core.messages import AIMessage as _CP5AIMessage, HumanMessage as _CP5HumanMessage
+
+    user_prompt = state.get("user_prompt", sample_prompt_text)
+    if not isinstance(user_prompt, str):
+        user_prompt = str(user_prompt)
+    _is_revision = state.get("viz_grade") == "revise"
+    _prior_insights = state.get("analysis_insights")
+    if _is_revision and not isinstance(_prior_insights, AnalysisInsights):
+        raise ValueError("analyst integrity: visualization revision has no prior AnalysisInsights")
+
+    cm = state.get("cleaning_metadata")
+    _dc_already_done = bool(state.get("data_cleaning_complete")) or cm is not None
+    if (
+        not cm
+        or not isinstance(cm, CleaningMetadata)
+        or not cm.data_description_after_cleaning
+    ) and not _dc_already_done:
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [
+                        MessagesPlaceholder(variable_name="messages"),
+                        HumanMessage("Please run data_cleaner first. I received no cleaning metadata."),
+                    ]
+                ).format_messages(messages=state.get("messages", []))
+            },
+        )
+    if (not cm or not isinstance(cm, CleaningMetadata)) and _dc_already_done:
+        cm = CleaningMetadata(
+            steps_taken=["recovery: data cleaning was marked complete"],
+            data_description_after_cleaning="Dataset cleaned; recovery metadata.",
+            finished_this_task=True,
+            expect_reply=False,
+            reply_msg_to_supervisor="Data cleaning complete.",
+        )
+    if (
+        isinstance(cm, CleaningMetadata)
+        and (cm.data_description_after_cleaning or "").strip() == ""
+        and not _dc_already_done
+    ):
+        return Command(
+            goto="data_cleaner",
+            update={
+                "messages": ChatPromptTemplate.from_messages(
+                    [
+                        MessagesPlaceholder(variable_name="messages"),
+                        HumanMessage("Please run data_cleaner first. I received no description of the dataset after cleaning."),
+                    ]
+                ).format_messages(messages=state.get("messages", []))
+            },
+        )
+    cleaning_metadata = cm
+
+    _assignment = state.get("next_agent_prompt")
+    if not isinstance(_assignment, str) or not _assignment.strip():
+        _assignment = "Perform expert analysis on the registered dataset and provide evidence-backed insights."
+    _messages = []
+    for _message in list(state.get("messages") or []):
+        if hasattr(_message, "model_copy"):
+            _message = _message.model_copy(deep=True)
+        else:
+            _message = _cp5_copy.deepcopy(_message)
+        _messages.append(_message)
+    if not any(
+        (getattr(_message, "name", None) == "user" or getattr(_message, "type", None) == "human")
+        and getattr(_message, "content", None) == user_prompt
+        for _message in _messages
+    ):
+        _messages.append(_CP5HumanMessage(content=user_prompt, name="user"))
+
+    _supervisor_messages = state.get("supervisor_to_agent_msgs") or []
+    _emergency_active = state.get("emergency_reroute") == "analyst" or (
+        bool(_supervisor_messages)
+        and all(isinstance(message, SendAgentMessage) for message in _supervisor_messages)
+        and any(
+            message.recipient == "analyst" and not message.delivery_status
+            for message in _supervisor_messages
+        )
+    )
+    _emergency_texts = []
+    _supervisor_messages_update = None
+    if _emergency_active:
+        _local_messages = [
+            message.model_copy(deep=True)
+            if hasattr(message, "model_copy")
+            else _cp5_copy.deepcopy(message)
+            for message in _supervisor_messages
+            if isinstance(message, SendAgentMessage)
+        ]
+        _pending = [
+            message
+            for message in _local_messages
+            if message.recipient == "analyst" and not message.delivery_status
+        ]
+        for _message in _pending:
+            _emergency_texts.append(str(_message.message or ""))
+            _message.delivery_status = True
+        _supervisor_messages_update = _local_messages
+    if _emergency_texts:
+        _assignment = _assignment + "\nEmergency supervisor messages: " + "\n".join(_emergency_texts)
+
+    _context_state = dict(state)
+    _context_state["cleaning_metadata"] = cleaning_metadata
+    _context_state["cleaned_dataset_description"] = (
+        cleaning_metadata.data_description_after_cleaning
+        or state.get("cleaned_dataset_description")
+    )
+    _memories = enhanced_retrieve_mem(state)
+    _context_state["memories"] = _memories
+    _context = _cp5_analyst_context(_context_state, _assignment)
+    _invoke_messages = [
+        *_messages,
+        _CP5AIMessage(content=_assignment, name="supervisor"),
+        _CP5HumanMessage(content=_context, name="runtime_context"),
+    ]
+    _registry = get_global_df_registry()
+    _registered_ids = set(_registry.ids())
+    _available_ids = {str(df_id) for df_id in (state.get("available_df_ids") or [])}
+    _valid_df_ids = _registered_ids.intersection(_available_ids)
+    _tool_descriptions = "\n".join(f"{tool.name}: {tool.description}" for tool in analyst_tools)
+    _invoke_input = {
+        "messages": _invoke_messages,
+        "user_prompt": user_prompt,
+        "tool_descriptions": _tool_descriptions,
+        "available_df_ids": list(state.get("available_df_ids") or []),
+        "memories": _memories,
+        "dataset_description": (
+            getattr(cleaning_metadata, "data_description_after_cleaning", None)
+            or state.get("cleaned_dataset_description")
+            or getattr(state.get("initial_description"), "dataset_description", None)
+        ),
+        "cleaned_dataset_description": (
+            getattr(cleaning_metadata, "data_description_after_cleaning", None)
+            or state.get("cleaned_dataset_description")
+        ),
+        "cleaning_metadata": cleaning_metadata,
+        "data_sample": getattr(state.get("initial_description"), "data_sample", None),
+        "next_agent_prompt": state.get("next_agent_prompt"),
+        "analysis_config": state.get("analysis_config", default_an_config),
+        "analysis_insights": state.get("analysis_insights"),
+        "viz_specs": state.get("viz_specs", []),
+        "viz_tasks": state.get("viz_tasks", []),
+        "viz_grade": state.get("viz_grade"),
+        "viz_feedback": state.get("viz_feedback"),
+        "viz_eval_result": state.get("viz_eval_result"),
+        "viz_revise_count": state.get("viz_revise_count", 0),
+        "visualization_results": state.get("visualization_results"),
+        "viz_results": state.get("viz_results", []),
+        "viz_paths": state.get("viz_paths", []),
+        "run_id": state.get("run_id"),
+        "artifacts_path": state.get("artifacts_path")
+        or (state.get("_config", {}).get("artifacts_dir") if isinstance(state.get("_config"), dict) else None)
+        or str((WORKING_DIRECTORY / "artifacts").resolve()),
+        "logs_path": state.get("logs_path")
+        or (state.get("_config", {}).get("logs_dir") if isinstance(state.get("_config"), dict) else None)
+        or str((WORKING_DIRECTORY / "logs").resolve()),
+        "next_agent_metadata": state.get("next_agent_metadata"),
+    }
+    result = _safe_analyst_invoke(analyst_agent, _invoke_input, config=state.get("_config"))
+    if not isinstance(result, dict):
+        raise ValueError("analyst integrity: agent returned no native response state")
+    insights = result.get("structured_response")
+    if not isinstance(insights, AnalysisInsights):
+        raise ValueError("analyst integrity: response is not a native AnalysisInsights instance")
+    if not insights.finished_this_task:
+        raise ValueError("analyst integrity: AnalysisInsights did not finish the assigned task")
+    result_messages = result.get("messages")
+    if not isinstance(result_messages, list) or not result_messages:
+        raise ValueError("analyst integrity: native AnalysisInsights completion has no messages")
+
+    specs = insights.recommended_visualizations
+    if not isinstance(specs, list) or (_is_revision and not specs):
+        raise ValueError("analyst integrity: AnalysisInsights contains no visualization specifications")
+    seen_ids = set()
+    for spec in specs:
+        if not isinstance(spec, VizSpec):
+            raise ValueError("analyst integrity: visualization specification is not a native VizSpec")
+        required_fields = {
+            "title": spec.title,
+            "viz_type": spec.viz_type,
+            "df_id": spec.df_id,
+            "viz_instructions": spec.viz_instructions,
+        }
+        if any(not isinstance(value, str) or not value.strip() for value in required_fields.values()):
+            raise ValueError("analyst integrity: visualization specification is incomplete")
+        if spec.df_id not in _valid_df_ids:
+            raise ValueError(f"analyst integrity: visualization references unregistered DataFrame ID {spec.df_id!r}")
+        if _is_revision and (not isinstance(spec.viz_id, str) or not spec.viz_id.strip()):
+            raise ValueError("analyst integrity: revised visualization specification has no ID")
+        if not spec.viz_id:
+            spec.viz_id = _cp5_uuid.uuid4().hex
+        if spec.viz_id in seen_ids:
+            raise ValueError(f"analyst integrity: duplicate visualization ID {spec.viz_id!r}")
+        seen_ids.add(spec.viz_id)
+
+    viz_tasks = [spec.viz_instructions for spec in specs]
+    memory_text = (
+        "Analysis produced the following insights:\n"
+        f"{insights.anomaly_insights}\n{insights.correlation_insights}\n"
+        f"Summary: {insights.summary}\nRecommended visualizations:\n"
+    )
+    for spec in specs:
+        memory_text += f"{spec.title}: {spec.description or ''}\nInstructions: {spec.viz_instructions}\n"
+    memory_text += "Recommended next steps:\n" + "\n".join(insights.recommended_next_steps or [])
+    update_memory_with_kind(state, state["_config"], "analysis", in_memory_store or get_store(), text=memory_text)
+
+    update = {
+        "messages": result_messages,
+        "analysis_insights": insights,
+        "analyst_complete": True,
+        "viz_tasks": viz_tasks,
+        "viz_specs": specs,
+        "last_agent_message": result_messages[-1],
+        "last_agent_expects_reply": insights.expect_reply,
+        "last_agent_reply_msg": insights.reply_msg_to_supervisor,
+        "last_agent_finished_this_task": insights.finished_this_task,
+        "final_turn_msgs_list": [result_messages[-1]],
+        "last_created_obj": "analysis_insights",
+        "last_agent_id": "analyst",
+        "current_turn_agent_id": "supervisor",
+        "emergency_reroute": None,
+    }
+    if _supervisor_messages_update is not None:
+        from langgraph.types import Overwrite as _CP5Overwrite
+
+        update["supervisor_to_agent_msgs"] = _CP5Overwrite(_supervisor_messages_update)
+    return update
+'''
+            node = next(
+                (
+                    item
+                    for item in ast.parse(source).body
+                    if isinstance(item, ast.FunctionDef) and item.name == "analyst_node"
+                ),
+                None,
+            )
+            if node is None:
+                raise RequiredPatchError("CP5 analyst revision: expected one analyst_node")
+            if sum(
+                isinstance(item, ast.FunctionDef) and item.name == "analyst_node"
+                for item in ast.parse(source).body
+            ) != 1:
+                raise RequiredPatchError("CP5 analyst revision: analyst_node is ambiguous")
+            lines = source.splitlines(keepends=True)
+            source = (
+                "".join(lines[: node.lineno - 1])
+                + node_block
+                + "\n"
+                + "".join(lines[node.end_lineno :])
+            )
+
+    else:
+        raise RequiredPatchError(f"CP5 analyst revision: unexpected cell {cell_idx}")
+
+    ast.parse(source)
+    return source
+
+
 def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
     """Repair native completion at notebook boundaries without changing core contracts."""
 
@@ -1070,7 +1715,7 @@ def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
                     f"{indent}    raise\n"
                 )
                 text = text[: match.end()] + guard + text[match.end() :]
-                if role in {"data_cleaner", "visualization"}:
+                if role in {"data_cleaner", "visualization", "analyst"}:
                     text = required(
                         text,
                         "    _w2_msgs = [m for m in _w2_msgs if not isinstance(m, _W2_SM)]\n",
@@ -1178,6 +1823,7 @@ def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
         edit_function("viz_worker", worker_completion)
     else:
         raise RequiredPatchError(f"CP5 native completion: unexpected cell {cell_idx}")
+    source = _apply_cp5_analyst_revision_patch(source, cell_idx=cell_idx)
     ast.parse(source)
     return source
 

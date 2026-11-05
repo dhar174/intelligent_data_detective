@@ -630,7 +630,9 @@ print({PROBE_PREFIX!r} + json.dumps({{
         assert probe_res["state_fields"] == 70
         assert probe_res["emergency_goto"] == "analyst"
 
-    @pytest.mark.parametrize("separate_main", [False, True], ids=["shared_main", "separate_main"])
+    @pytest.mark.parametrize(
+        "separate_main", [False, True], ids=["shared_main", "separate_main"]
+    )
     def test_cell32_scatter_and_box_pngs_reach_cell57_viz_join(
         self, tmp_path: Path, separate_main: bool
     ):
@@ -1693,6 +1695,108 @@ print({PROBE_PREFIX!r} + json.dumps({{
         assert res["model_goto"] == "analyst"
         assert res["shortcut_goto"] == "data_cleaner"
         assert res["cap_goto"] == "FINISH"
+
+    def test_generated_analyst_revision_context_in_real_kernel(self, tmp_path: Path):
+        """Run the generated analyst node with controlled models in a real ipykernel."""
+        probe_code = f"""
+import json
+import os
+from pathlib import Path
+
+from idd_state import VizFeedback
+from tests.unit.test_native_completion import (
+    ControlledChatModel,
+    FLAGS,
+    analysis_insights,
+    analyst_state,
+    load_analyst,
+)
+
+assert "ZMQInteractiveShell" in type(get_ipython()).__name__
+assert os.environ.get("OPENAI_API_KEY") is None
+assert os.environ.get("TAVILY_API_KEY") is None
+
+run_dir = Path({str(tmp_path)!r})
+namespace = load_analyst(run_dir)
+assert namespace["analyst_node"].__code__.co_filename == "<generated Cell 57>"
+assert namespace["create_analyst_agent"].__code__.co_filename == "<generated Cell 44>"
+prior = analysis_insights()
+redo_id = prior.recommended_visualizations[0].viz_id
+feedback = VizFeedback(
+    **FLAGS,
+    grade="revise",
+    feedback="KERNEL_FEEDBACK_MARKER: correct the regional axis.",
+    redo_list=[redo_id],
+)
+state = analyst_state(
+    run_dir,
+    supervisor_instruction="KERNEL_REVISION_DIRECTIVE: update every requested specification.",
+    viz_feedback=feedback.feedback,
+    viz_eval_result=feedback,
+    prior_insights=prior,
+)
+state.update(
+    user_prompt="KERNEL_USER_MARKER: analyze controlled retail revenue.",
+    next_agent_prompt="KERNEL_REVISION_DIRECTIVE: update every requested specification.",
+    viz_grade="revise",
+    viz_feedback=feedback.feedback,
+    viz_eval_result=feedback,
+)
+
+response = analysis_insights()
+model = ControlledChatModel(
+    response_name="AnalysisInsights",
+    payload=response.model_dump(),
+    required_context=[
+        "KERNEL_FEEDBACK_MARKER",
+        "KERNEL_REVISION_DIRECTIVE",
+        redo_id,
+    ],
+)
+namespace["analyst_llm"] = model
+namespace["analyst_agent"] = namespace["create_analyst_agent"](
+    state["initial_description"], state["available_df_ids"]
+)
+update = namespace["analyst_node"](state)
+
+assert type(update["analysis_insights"]).__name__ == "AnalysisInsights"
+assert update["analyst_complete"] is True
+assert update["last_agent_id"] == "analyst"
+assert len(update["viz_specs"]) == len(response.recommended_visualizations) == 2
+assert len(update["viz_tasks"]) == 2
+assert len(model._requests) == 1
+print(
+    {PROBE_PREFIX!r}
+    + json.dumps(
+        {{
+            "status": "ok",
+            "summary": update["analysis_insights"].summary,
+            "viz_ids": [spec.viz_id for spec in update["viz_specs"]],
+            "request_count": len(model._requests),
+        }}
+    )
+)
+"""
+        _, probes, streams = execute_cells_in_real_kernel(
+            [1, 4, ("generated_analyst_revision", probe_code)],
+            work_dir=tmp_path / "kernel_cwd",
+            env_overrides={
+                "OPENAI_API_KEY": None,
+                "ANTHROPIC_API_KEY": None,
+                "AZURE_OPENAI_API_KEY": None,
+                "GOOGLE_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "LANGSMITH_API_KEY": None,
+                "TAVILY_API_KEY": None,
+                "IDD_ALLOW_RECOVERY": "0",
+                "MPLBACKEND": "Agg",
+            },
+        )
+        result = probes.get("generated_analyst_revision")
+        assert result is not None, f"Missing analyst probe output. Streams: {streams}"
+        assert result["status"] == "ok"
+        assert result["request_count"] == 1
+        assert len(result["viz_ids"]) == 2
 
 
 # ===========================================================================

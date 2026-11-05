@@ -5,8 +5,11 @@ No notebook model configuration, credential loader or live runner is executed.
 """
 
 import ast
+import base64
 from contextlib import contextmanager
 from datetime import datetime
+import glob
+import hashlib
 import json
 import logging
 import os
@@ -20,7 +23,13 @@ import typing
 import uuid
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentState, before_model
+from langchain.agents.middleware import (
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+    before_model,
+    wrap_model_call,
+)
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -40,12 +49,13 @@ from langgraph.errors import GraphRecursionError
 from langgraph.runtime import Runtime
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
+from PIL import Image, ImageDraw
 from pydantic import Field, PrivateAttr, ValidationError
 import pytest
 
 import idd_core
 import idd_state
-from idd_registry import get_global_df_registry
+from idd_registry import DataFrameRegistry, get_global_df_registry
 from tests.unit.test_viz_join import FLAGS, figures, notebook
 
 WRAPPERS = [
@@ -67,6 +77,13 @@ def offline(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", denied)
     monkeypatch.setattr(socket, "create_connection", denied)
     monkeypatch.setenv("IDD_ALLOW_RECOVERY", "0")
+    for name in (
+        "OPENAI_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "TAVILY_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def execute_definitions(ns, cell, names=None):
@@ -93,11 +110,23 @@ def execute_definitions(ns, cell, names=None):
 def load_native(base, *, middleware=False):
     ns = {**vars(typing), **vars(idd_core), **vars(idd_state)}
     # Explicit imports required by the unchanged generated function bodies.
-    ns.update(datetime=datetime, json=json, os=os, re=re, shutil=shutil, uuid=uuid)
+    ns.update(
+        datetime=datetime,
+        glob=glob,
+        json=json,
+        os=os,
+        re=re,
+        shutil=shutil,
+        uuid=uuid,
+    )
+    ns.update(base64=base64, hashlib=hashlib)
     for value in (
         create_agent,
         AgentState,
+        ModelRequest,
+        ModelResponse,
         before_model,
+        wrap_model_call,
         ToolStrategy,
         AIMessage,
         BaseMessage,
@@ -129,12 +158,14 @@ def load_native(base, *, middleware=False):
         USE_STRICT_JSON_SCHEMA_FINAL_HOP=False,
         data_cleaning_tools=[],
         visualization_tools=[],
+        _cp5_wrap_model_call=wrap_model_call,
     )
     execute_definitions(
         ns,
         25,
         {
             "DEFAULT_TOOLING_GUIDELINES",
+            "analyst_prompt_template_main",
             "data_cleaner_prompt_template",
             "visualization_prompt_template",
             "viz_evaluator_prompt_template",
@@ -175,18 +206,27 @@ def load_native(base, *, middleware=False):
             messages=iter([AIMessage(content="Fixture context")] * 200)
         )
         ns.update(
-            summary_llm=summary, quick_summary_llm=summary, complex_summary_llm=summary
+            summary_llm=summary,
+            quick_summary_llm=summary,
+            complex_summary_llm=summary,
+            critical_complex_summary_llm=summary,
         )
         execute_definitions(
             ns,
             44,
-            {"prehook", "prehook_quick", "prehook_complex"},
+            {
+                "prehook",
+                "prehook_quick",
+                "prehook_complex",
+                "prehook_critical_complex",
+            },
         )
     execute_definitions(
         ns,
         44,
         {
             "_make_unknown_tool_guard",
+            "create_analyst_agent",
             "create_data_cleaner_agent",
             "create_visualization_agent",
             "create_viz_evaluator_agent",
@@ -216,6 +256,51 @@ def load_native(base, *, middleware=False):
     return ns
 
 
+def load_analyst(base):
+    """Load the real generated analyst factory, middleware, and node offline."""
+    ns = load_native(base, middleware=True)
+    ns["default_an_config"] = idd_state.default_an_config
+    registry = DataFrameRegistry(data_dir=base / "analyst-registry")
+    df_id = "retail-fixture"
+    dataframe = ns["pd"].DataFrame(
+        {
+            "region": ["North", "South", "East", "West"],
+            "revenue": [120.0, 95.0, 110.0, 102.0],
+            "order_value": [50.0, 42.0, 47.0, 45.0],
+        }
+    )
+    assert registry.register_dataframe(df=dataframe, df_id=df_id) == df_id
+    assert df_id in registry.registry
+    ns.update(
+        analyst_registry=registry,
+        analyst_df_id=df_id,
+        get_global_df_registry=lambda: registry,
+        global_df_registry=registry,
+    )
+    for cell, base_names in (
+        (44, {"create_analyst_agent", "prehook_critical_complex"}),
+        (57, {"_safe_analyst_invoke", "analyst_node"}),
+    ):
+        source = "".join(notebook()["cells"][cell]["source"])
+        names = set(base_names)
+        for node in ast.parse(source).body:
+            targets = []
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name.startswith("_cp5_analyst"):
+                    names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                targets = [
+                    target for target in node.targets if isinstance(target, ast.Name)
+                ]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                targets = [node.target]
+            names.update(
+                target.id for target in targets if target.id.startswith("_cp5_analyst")
+            )
+        execute_definitions(ns, cell, names)
+    return ns
+
+
 class ControlledChatModel(BaseChatModel):
     """Real create_agent/ToolStrategy execution, scripted model boundary only."""
 
@@ -223,8 +308,15 @@ class ControlledChatModel(BaseChatModel):
     payload: dict
     follow_instructions: bool = False
     task_payloads: dict[str, dict] = Field(default_factory=dict)
+    required_context: list[str] = Field(default_factory=list)
+    scripted_responses: list[dict] = Field(default_factory=list)
+    prose_on_calls: list[int] = Field(default_factory=list)
+    prose_response: str = "The requested analysis is complete."
     _requests: list = PrivateAttr(default_factory=list)
     _bindings: list = PrivateAttr(default_factory=list)
+    _binding_kwargs: list = PrivateAttr(default_factory=list)
+    _script_index: int = PrivateAttr(default=0)
+    _emitted: list = PrivateAttr(default_factory=list)
 
     @property
     def _llm_type(self):
@@ -232,12 +324,24 @@ class ControlledChatModel(BaseChatModel):
 
     def bind_tools(self, tools, **kwargs):
         self._bindings.append(tools)
+        self._binding_kwargs.append(dict(kwargs))
         return self
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         self._requests.append(messages)
         name = self.response_name
         payload = self.payload
+        if self.required_context:
+            contexts = [m for m in messages if m.name == "runtime_context"]
+            assert (
+                contexts
+            ), "Native analyst must receive a named runtime_context message"
+            context = str(contexts[-1].content)
+            for expected in self.required_context:
+                encoded = json.dumps(expected, ensure_ascii=False)[1:-1]
+                assert (
+                    expected in context or encoded in context
+                ), f"Missing assigned runtime context: {expected}"
         if self.task_payloads:
             # Inner-agent history may include earlier sibling tasks. Follow the
             # newest explicit runtime task, as the production instructions require.
@@ -252,10 +356,34 @@ class ControlledChatModel(BaseChatModel):
             assert all(
                 v["visualization_id"] in context for v in payload["visualizations"]
             ), "The native model must receive the assigned figure IDs"
+        if len(self._requests) in self.prose_on_calls:
+            self._emitted.append(None)
+            return ChatResult(
+                generations=[
+                    ChatGeneration(message=AIMessage(content=self.prose_response))
+                ]
+            )
+        if self.scripted_responses and self._script_index < len(
+            self.scripted_responses
+        ):
+            scripted = self.scripted_responses[self._script_index]
+            self._script_index += 1
+            if "content" in scripted:
+                self._emitted.append(None)
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(content=str(scripted["content"]))
+                        )
+                    ]
+                )
+            name = scripted["name"]
+            payload = scripted.get("args", {})
         if self.follow_instructions and any(
             "call the `respond` tool" in str(m.content) for m in messages
         ):
             name = "respond"
+        self._emitted.append(name)
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -289,6 +417,138 @@ def initial_description():
         data_sample="region,revenue\nNorth,120",
         notes="No issues",
     )
+
+
+def analysis_insights():
+    return idd_state.AnalysisInsights(
+        **FLAGS,
+        summary="North region revenue leads the controlled retail fixture.",
+        correlation_insights="Revenue increases with order value in the sample.",
+        anomaly_insights="No outlier is supported by this small controlled sample.",
+        recommended_visualizations=[
+            idd_state.VizSpec(
+                **FLAGS,
+                title="Revenue by region",
+                viz_type="bar",
+                df_id="retail-fixture",
+                viz_instructions="Plot total revenue by region.",
+                viz_id="retail-region-revenue",
+                columns=["region", "revenue"],
+                x="region",
+                y="revenue",
+                hue=None,
+                bins=None,
+                agg="sum",
+                query=None,
+                description="Total revenue for each region.",
+                limit=None,
+                style="whitegrid",
+            ),
+            idd_state.VizSpec(
+                **FLAGS,
+                title="Revenue versus order value",
+                viz_type="scatter",
+                df_id="retail-fixture",
+                viz_instructions=(
+                    "Plot order value against revenue with a fitted trend line."
+                ),
+                viz_id="retail-revenue-order-scatter",
+                columns=["order_value", "revenue"],
+                x="order_value",
+                y="revenue",
+                hue=None,
+                bins=None,
+                agg=None,
+                query=None,
+                description="Relationship between order value and revenue.",
+                limit=None,
+                style="whitegrid",
+            ),
+        ],
+        recommended_next_steps=["Check regional revenue after the revised chart."],
+    )
+
+
+def analyst_state(
+    base,
+    *,
+    supervisor_instruction=None,
+    viz_feedback=None,
+    viz_eval_result=None,
+    figures=None,
+    prior_insights=None,
+    history=None,
+):
+    state = worker_state(base)
+    instruction = supervisor_instruction or (
+        "Analyze the cleaned retail fixture and report evidence-backed findings."
+    )
+    state.update(
+        user_prompt="Analyze revenue by region and order value.",
+        messages=history
+        or [
+            HumanMessage(content="Analyze revenue by region and order value."),
+            AIMessage(content=instruction, name="supervisor"),
+        ],
+        final_turn_msgs_list=[AIMessage(content=instruction, name="supervisor")],
+        next_agent_prompt=instruction,
+        analysis_config=idd_state.default_an_config,
+        viz_feedback=(
+            viz_feedback.feedback
+            if isinstance(viz_feedback, idd_state.VizFeedback)
+            else viz_feedback
+        ),
+        viz_grade=(
+            viz_eval_result.grade
+            if viz_eval_result is not None
+            else getattr(viz_feedback, "grade", None)
+        ),
+        viz_eval_result=viz_eval_result
+        or (viz_feedback if isinstance(viz_feedback, idd_state.VizFeedback) else None),
+        visualization_results=(
+            idd_state.VisualizationResults(**FLAGS, visualizations=figures)
+            if figures is not None
+            else None
+        ),
+        viz_results=[item.model_dump() for item in figures or []],
+        viz_paths=[item.path for item in figures or []],
+        _count_=0,
+    )
+    if prior_insights is not None:
+        state["analysis_insights"] = prior_insights
+        state["viz_specs"] = prior_insights.recommended_visualizations
+        state["analyst_complete"] = prior_insights.finished_this_task
+    return state
+
+
+def analyst_figures(base):
+    """Create exactly two valid PNGs with canonical figure metadata."""
+    directory = base / "analyst-visualizations"
+    directory.mkdir(parents=True, exist_ok=True)
+    items = []
+    for index, (title, viz_type) in enumerate(
+        [
+            ("Regional revenue by region", "bar"),
+            ("Revenue versus order value", "scatter"),
+        ]
+    ):
+        path = directory / f"analyst_fixture_{index}.png"
+        image = Image.new("RGB", (240, 160), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20, 25 + index * 10, 180, 135), fill=(40, 90, 160))
+        image.save(path, format="PNG")
+        items.append(
+            idd_state.DataVisualization(
+                **FLAGS,
+                path=str(path),
+                visualization_id=f"analyst-figure-{index}",
+                visualization_type=viz_type,
+                visualization_description=f"Controlled valid {viz_type} PNG fixture.",
+                visualization_style="whitegrid",
+                visualization_title=title,
+            )
+        )
+    return items
 
 
 def worker_state(base):
