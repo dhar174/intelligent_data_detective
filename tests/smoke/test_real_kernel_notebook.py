@@ -630,6 +630,103 @@ print({PROBE_PREFIX!r} + json.dumps({{
         assert probe_res["state_fields"] == 70
         assert probe_res["emergency_goto"] == "analyst"
 
+    def test_cell32_scatter_and_box_pngs_reach_cell57_viz_join(self, tmp_path: Path):
+        probe_code = """
+import hashlib
+import socket
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
+from PIL import Image, ImageChops
+from idd_registry import override_global_registry
+
+run_dir = WORKING_DIRECTORY / "plot_run"
+figures_dir = run_dir / "visualizations"
+RUNTIME = SimpleNamespace(run_dir=run_dir, artifacts_dir=run_dir, viz_dir=figures_dir)
+in_memory_store = InMemoryStore()
+registry = DataFrameRegistry(data_dir=WORKING_DIRECTORY / "plot_registry")
+df_id = registry.register_dataframe(pd.DataFrame({
+    "gross": [100, 140, 180, 230, 270, 310],
+    "net": [90, 100, 150, 195, 225, 270],
+    "cost": [60, 70, 110, 145, 180, 200],
+    "segment": ["retail", "wholesale"] * 3,
+}), "retail_plot_fixture")
+
+def forbid_network(*args, **kwargs):
+    raise AssertionError("Network access is forbidden in the plotting regression")
+
+cases = [
+    ("scatter_default", create_scatter_plot, dict(x="gross", y="net", hue="segment")),
+    ("scatter_override", create_scatter_plot,
+     dict(x="gross", y=["net", "cost"], style="segment", marker="o")),
+    ("box_default", create_box_plot, dict(values="net", group="segment")),
+    ("box_percentiles", create_box_plot,
+     dict(values="net", group="segment", whis=[5, 95])),
+]
+results = []
+failures = {}
+assert _HAS_SNS, "Exercise the Seaborn paths from the live failure"
+with patch.object(socket.socket, "connect", forbid_network), \\
+     patch.object(socket, "create_connection", forbid_network), \\
+     override_global_registry(registry):
+    for case, plot, args in cases:
+        message = plot.invoke({
+            "type": "tool_call", "id": case, "name": plot.name,
+            "args": {"df_id": df_id, **args},
+        })
+        artifact = message.artifact or {}
+        if "image_path" not in artifact:
+            failures[case] = message.content
+            continue
+        path = PathlibPath(artifact["image_path"])
+        assert path.parent == figures_dir
+        with Image.open(path) as image:
+            assert image.format == "PNG"
+            rgb = image.convert("RGB")  # Decode the complete saved image.
+            background = Image.new("RGB", rgb.size, rgb.getpixel((0, 0)))
+            assert ImageChops.difference(rgb, background).getbbox()
+        results.append(DataVisualization(
+            reply_msg_to_supervisor="", finished_this_task=True, expect_reply=False,
+            path=str(path), visualization_id=case, visualization_type=artifact["plot_type"],
+            visualization_title=case, visualization_style="seaborn",
+            visualization_description="Controlled retail observations",
+        ))
+
+    # Join writes only to the test state. The production memory backend is outside this probe.
+    with patch.dict(globals(), {"update_memory_with_kind": lambda *a, **kw: None}):
+        empty_state = {"_config": {}, "viz_tasks": [object()]}
+        with pytest.raises(ValueError, match="expected 1 figures, found 0"):
+            viz_join(empty_state)
+        with pytest.raises(ValueError, match="figure path is missing or invalid"):
+            viz_join({**empty_state, "viz_paths": [str(figures_dir / "absent.png")]})
+
+        assert not failures, failures
+        assert len({hashlib.sha256(PathlibPath(v.path).read_bytes()).digest()
+                    for v in results}) == len(cases)
+        state = {
+            "_config": {}, "viz_tasks": [object() for _ in cases],
+            "viz_results": [v.model_dump() for v in results],
+            "viz_paths": [v.path for v in results],
+        }
+        joined = viz_join(state)
+        assert joined["visualization_complete"] is True
+        assert joined["visualization_results"].visualizations == results
+        path_only = viz_join({**state, "viz_results": []})
+        assert [v.path for v in path_only["visualization_results"].visualizations] == state["viz_paths"]
+
+        # Exercise the same empty path the scatter worker returned in the failed run.
+        state["viz_results"][0]["path"] = ""
+        with pytest.raises(ValueError, match="missing visualization metadata"):
+            viz_join(state)
+"""
+        execute_cells_in_real_kernel(
+            [1, 4, 7, 10, 16, 19, 22, 28, 31, 32, 46, 57, ("plot_join", probe_code)],
+            work_dir=tmp_path / "kernel_cwd",
+            env_overrides={"OPENAI_API_KEY": None, "MPLBACKEND": "Agg"},
+        )
+
     @pytest.mark.parametrize(
         "sqlite_available", [True, False], ids=["sqlite_present", "sqlite_absent"]
     )
