@@ -15926,6 +15926,59 @@ def main():
         raise RequiredPatchError(
             "CP4-CELL32-SCOPED-REGISTRY: residual global_df_registry. attribute access remains in Cell 32"
         )
+
+    # Let Seaborn select its default marker, including when style maps markers.
+    plot_patch = "CP5-PLOT-PNG"
+    src32 = replace_required(
+        src32,
+        "                    marker=marker,",
+        '                    **({"marker": marker} if marker is not None else {}),',
+        patch_id=plot_patch,
+        count=2,
+    )
+    src32 = replace_required(
+        src32,
+        "        if isinstance(whis, ScalarNum):",
+        "        if isinstance(whis, (int, float)):",
+        patch_id=plot_patch,
+    )
+
+    # Save these plots alongside the other current-run visualization artifacts.
+    old_save_path = '''        fig_save_dir = getattr(globals().get("RUNTIME", None), "figures_dir", WORKING_DIRECTORY / "figures")
+        PathlibPath(fig_save_dir).mkdir(parents=True, exist_ok=True)
+
+        safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+        fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"
+        fig_path = PathlibPath(fig_save_dir) / fname
+'''
+    for tool_name, columns, plot_type in (
+        ("create_scatter_plot", "[x_name, *y_numeric]", "scatter"),
+        ("create_box_plot", "cols", "box"),
+    ):
+        functions = [
+            node for node in ast.parse(src32).body
+            if isinstance(node, ast.FunctionDef) and node.name == tool_name
+        ]
+        if len(functions) != 1:
+            raise RequiredPatchError(f"{plot_patch}: expected one {tool_name}")
+        tool_source = ast.get_source_segment(src32, functions[0])
+        new_save_path = f'''        safe_cols = "_".join(
+            str(c).replace(os.sep, "_").replace(os.altsep or os.sep, "_") for c in {columns}
+        )[:80]
+        fname = f"{{df_id}}__{plot_type}__{{safe_cols}}__{{uuid.uuid4().hex[:8]}}.png"
+        fig_path = _resolve_artifact_path(
+            fname,
+            config={{"configurable": {{"runtime": globals().get("RUNTIME")}}}},
+            subdir="visualizations",
+        )
+'''
+        src32 = replace_required(
+            src32,
+            tool_source,
+            replace_required(tool_source, old_save_path, new_save_path, patch_id=plot_patch),
+            patch_id=plot_patch,
+        )
+
     c32["source"] = src32
     c32["outputs"] = []
     c32["execution_count"] = None
