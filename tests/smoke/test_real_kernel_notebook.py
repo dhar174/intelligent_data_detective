@@ -687,7 +687,7 @@ with patch.object(socket.socket, "connect", forbid_network), \\
             failures[case] = message.content
             continue
         path = PathlibPath(artifact["image_path"])
-        assert path.parent == figures_dir, (case, str(path), str(figures_dir))
+        assert path.parent.resolve() == figures_dir.resolve(), (case, str(path), str(figures_dir))
         with Image.open(path) as image:
             assert image.format == "PNG"
             rgb = image.convert("RGB")  # Decode the complete saved image.
