@@ -15966,7 +15966,11 @@ def main():
             str(c).replace(os.sep, "_").replace(os.altsep or os.sep, "_") for c in {columns}
         )[:80]
         fname = f"{{df_id}}__{plot_type}__{{safe_cols}}__{{uuid.uuid4().hex[:8]}}.png"
-        fig_path = _resolve_artifact_path(fname, subdir="visualizations")
+        fig_path = _resolve_artifact_path(
+            fname,
+            config={{"configurable": {{"runtime": globals().get("RUNTIME")}}}},
+            subdir="visualizations",
+        )
 '''
         src32 = replace_required(
             src32,

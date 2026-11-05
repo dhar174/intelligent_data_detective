@@ -630,11 +630,15 @@ print({PROBE_PREFIX!r} + json.dumps({{
         assert probe_res["state_fields"] == 70
         assert probe_res["emergency_goto"] == "analyst"
 
-    def test_cell32_scatter_and_box_pngs_reach_cell57_viz_join(self, tmp_path: Path):
-        probe_code = """
+    @pytest.mark.parametrize("separate_main", [False, True], ids=["shared_main", "separate_main"])
+    def test_cell32_scatter_and_box_pngs_reach_cell57_viz_join(
+        self, tmp_path: Path, separate_main: bool
+    ):
+        probe_code = f"separate_main = {separate_main!r}\n" + """
 import hashlib
 import socket
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -672,16 +676,18 @@ with patch.object(socket.socket, "connect", forbid_network), \\
      patch.object(socket, "create_connection", forbid_network), \\
      override_global_registry(registry):
     for case, plot, args in cases:
-        message = plot.invoke({
-            "type": "tool_call", "id": case, "name": plot.name,
-            "args": {"df_id": df_id, **args},
-        })
+        # Some kernel versions keep the user namespace separate from __main__.
+        with patch.dict(sys.modules, {"__main__": ModuleType("__main__")} if separate_main else {}):
+            message = plot.invoke({
+                "type": "tool_call", "id": case, "name": plot.name,
+                "args": {"df_id": df_id, **args},
+            })
         artifact = message.artifact or {}
         if "image_path" not in artifact:
             failures[case] = message.content
             continue
         path = PathlibPath(artifact["image_path"])
-        assert path.parent == figures_dir
+        assert path.parent == figures_dir, (case, str(path), str(figures_dir))
         with Image.open(path) as image:
             assert image.format == "PNG"
             rgb = image.convert("RGB")  # Decode the complete saved image.
