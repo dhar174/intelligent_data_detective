@@ -3,12 +3,13 @@
 import socket
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from idd_state import VizFeedback
 from tests.unit.test_native_completion import (
     ControlledChatModel,
     FLAGS,
+    _HistorySummarySpy,
     evaluator_state,
     load_native,
 )
@@ -49,8 +50,18 @@ def invoke(base, *, grade="acceptable", finished=True, revision=0):
     return ns, state, model, response
 
 
-def test_actual_model_receives_fresh_context(tmp_path):
+@pytest.mark.parametrize("pressure", [False, True], ids=["normal", "history-pressure"])
+def test_actual_model_receives_fresh_context(tmp_path, pressure):
     ns, state, model, response = invoke(tmp_path)
+    if pressure:
+        summary = _HistorySummarySpy()
+        ns["prehook"] = ns["make_hosted_history_middleware"](
+            summary, model_budget_tokens=16_000, max_summary_tokens=32
+        )
+        ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+        state["messages"].insert(
+            0, AIMessage(id="stale-eval", content="Earlier evaluator history " * 4000)
+        )
     out = ns["viz_evaluator_node"](state)
     content = "\n".join(str(m.content) for m in model._requests[0])
     for value in (
@@ -63,6 +74,9 @@ def test_actual_model_receives_fresh_context(tmp_path):
         assert value in content
     assert "{visualization_results}" not in content
     assert out["viz_eval_result"] == response
+    if pressure:
+        assert summary.requests
+        assert all(m.id != "stale-eval" for m in model._requests[0])
 
 
 def test_revision_does_not_mutate_input_inventory(tmp_path):

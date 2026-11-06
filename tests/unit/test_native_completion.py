@@ -1024,6 +1024,228 @@ def test_cleaner_memory_propagates_unexpected_store_exception(tmp_path, monkeypa
     assert state["cleaning_metadata"] is None
 
 
+class _HistorySummarySpy:
+    def __init__(self, response="Older observations", failure=None):
+        self.requests = []
+        self.response = response
+        self.failure = failure
+
+    def bind(self, *, tools, tool_choice, max_tokens):
+        assert tools == [] and tool_choice == "none" and max_tokens == 32
+        return self
+
+    def invoke(self, messages):
+        self.requests.append(messages)
+        if self.failure:
+            raise self.failure
+        return AIMessage(content=self.response)
+
+
+def _hosted_cleaner_history(tmp_path, summary, *, budget=300, calls=()):
+    ns = load_native(tmp_path, middleware=True)
+    ns.update(MAX_CONTEXT=160, CONTEXT_HEADROOM=20)
+    ns["prehook_quick"] = ns["make_hosted_history_middleware"](
+        summary, model_budget_tokens=budget, max_summary_tokens=32
+    )
+    model = ControlledChatModel(
+        response_name="CleaningMetadata",
+        payload=cleaner_result().model_dump(),
+        scripted_responses=list(calls),
+    )
+    ns["data_cleaner_llm"] = model
+    agent = ns["create_data_cleaner_agent"](initial_description(), ["retail-fixture"])
+    return ns, model, agent
+
+
+def _history_exchange(prefix, *results):
+    ids = [f"{prefix}-{i}" for i in range(len(results))]
+    return [
+        AIMessage(
+            id=prefix,
+            content="",
+            tool_calls=[
+                {"name": "search_memory", "args": {"query": "retail"}, "id": call_id}
+                for call_id in ids
+            ],
+        ),
+        *[
+            ToolMessage(id=call_id, tool_call_id=call_id, content=content)
+            for call_id, content in zip(ids, results)
+        ],
+    ]
+
+
+def test_hosted_history_under_budget_passes_messages_without_summarizing(tmp_path):
+    summary = _HistorySummarySpy()
+    _, model, agent = _hosted_cleaner_history(tmp_path, summary)
+    messages = [
+        HumanMessage(id="user", content="Clean this data"),
+        *_history_exchange("parallel", "First result", "Second result"),
+    ]
+    result = agent.invoke(
+        {"messages": messages}, config={"configurable": {"thread_id": "under-budget"}}
+    )
+
+    assert result["structured_response"] == cleaner_result()
+    system_prompt, *effective = model._requests[0]
+    assert isinstance(system_prompt, SystemMessage)
+    assert effective == messages
+    assert summary.requests == []
+
+
+def test_hosted_history_default_cleaner_hook_trims_before_model_call(tmp_path):
+    ns, model, _ = _cleaner_memory_fixture(tmp_path)
+    agent = ns["data_cleaner_agent"]
+    messages = [
+        AIMessage(id="stale", content="Earlier observation " * 40_000),
+        HumanMessage(id="current", content="Clean this data"),
+    ]
+    assert ns["count_tokens_approximately"](messages) > 180_000
+    result = agent.invoke(
+        {"messages": messages},
+        config={"configurable": {"thread_id": "default-budget"}},
+    )
+
+    assert result["structured_response"] == cleaner_result()
+    assert all(m.id != "stale" for m in model._requests[0])
+    assert any(m.name == "history_summary" for m in model._requests[0])
+
+
+def test_hosted_history_reduces_requests_and_keeps_checkpointed_parallel_pairs(
+    tmp_path,
+):
+    summary = _HistorySummarySpy()
+    ns, model, agent = _hosted_cleaner_history(tmp_path, summary)
+    config = {"configurable": {"thread_id": "reused-history"}}
+    first = HumanMessage(id="old-user", content="Earlier assignment")
+    agent.invoke({"messages": [first]}, config=config)
+    messages = [
+        *_history_exchange("old-tool", "TOOL PAYLOAD " * 300, "second old result"),
+        AIMessage(
+            id="old-observations",
+            content=[
+                {"type": "reasoning", "text": "PRIVATE REASONING BLOCK"},
+                {"type": "text", "text": "Earlier observation " * 160},
+            ],
+        ),
+        HumanMessage(
+            id="current-context", name="runtime_context", content="Clean context"
+        ),
+        HumanMessage(id="current-user", content="Current user request"),
+        AIMessage(
+            id="current-supervisor", name="supervisor", content="Current assignment"
+        ),
+        *_history_exchange("latest-tool", "Latest first", "Latest second"),
+    ]
+    result = agent.invoke({"messages": messages}, config=config)
+
+    assert result["structured_response"] == cleaner_result()
+    _, *effective = model._requests[1]
+    assert ns["count_tokens_approximately"](effective) <= 300
+    assert effective[0].name == "history_summary"
+    assert effective[1:] == messages[4:]
+    assert len(summary.requests) == 1
+    prompt = summary.requests[0]
+    assert ns["count_tokens_approximately"](prompt) <= 160 - 20 - 32
+    assert "Earlier observation" in prompt[-1].content
+    assert "TOOL PAYLOAD" not in prompt[-1].content
+    assert "PRIVATE REASONING BLOCK" not in prompt[-1].content
+    checkpoint = agent.get_state(config).values
+    assert first in checkpoint["messages"]
+    assert all(message in checkpoint["messages"] for message in messages)
+    assert all(m.name != "history_summary" for m in checkpoint["messages"])
+    assert "llm_input_messages" not in checkpoint
+
+
+@pytest.mark.parametrize(
+    ("messages", "error"),
+    [
+        (
+            _history_exchange("latest", "protected result " * 200),
+            "protected tool exchange",
+        ),
+        (
+            _history_exchange("missing", "first result " * 200, "missing result")[:-1],
+            "incomplete tool exchange",
+        ),
+        ([ToolMessage(tool_call_id="orphan", content="orphan " * 200)], "orphaned"),
+    ],
+)
+def test_hosted_history_rejects_unsafe_pressured_requests(tmp_path, messages, error):
+    summary = _HistorySummarySpy()
+    _, model, agent = _hosted_cleaner_history(tmp_path, summary)
+    with pytest.raises(ValueError, match=error):
+        agent.invoke(
+            {"messages": messages}, config={"configurable": {"thread_id": "unsafe"}}
+        )
+
+    assert summary.requests == []
+    assert model._requests == []
+
+
+def test_hosted_history_omits_an_oversized_summary(tmp_path):
+    summary = _HistorySummarySpy(response="Oversized summary " * 200)
+    _, model, agent = _hosted_cleaner_history(tmp_path, summary)
+    latest = HumanMessage(content="Current assignment")
+    result = agent.invoke(
+        {"messages": [AIMessage(content="Earlier observation " * 200), latest]},
+        config={"configurable": {"thread_id": "oversized-summary"}},
+    )
+
+    assert result["structured_response"] == cleaner_result()
+    assert len(summary.requests) == 1
+    assert model._requests[0][1:] == [latest]
+
+
+def test_hosted_history_propagates_summary_failure_before_model_call(tmp_path):
+    failure = RuntimeError("Scripted summary failure")
+    summary = _HistorySummarySpy(failure=failure)
+    _, model, agent = _hosted_cleaner_history(tmp_path, summary)
+    with pytest.raises(RuntimeError, match="Scripted summary failure") as caught:
+        agent.invoke(
+            {
+                "messages": [
+                    AIMessage(content="Earlier observation " * 200),
+                    HumanMessage(content="Clean"),
+                ]
+            },
+            config={"configurable": {"thread_id": "summary-error"}},
+        )
+
+    assert caught.value is failure
+    assert model._requests == []
+
+
+def test_hosted_history_keeps_the_cleaner_id_correction_under_pressure(tmp_path):
+    summary = _HistorySummarySpy()
+    _, model, agent = _hosted_cleaner_history(
+        tmp_path,
+        summary,
+        calls=(
+            _memory_call(action="update", content="Revised"),
+            _memory_call(action="update", content="Revised", id=_CLEANING_MEMORY_ID),
+        ),
+    )
+    result = agent.invoke(
+        {
+            "messages": [
+                AIMessage(id="stale", content="Earlier observation " * 200),
+                HumanMessage(
+                    name="runtime_context", content="Clean with current memory"
+                ),
+            ]
+        },
+        config={"configurable": {"thread_id": "correction-with-trim"}},
+    )
+
+    assert result["structured_response"] == cleaner_result()
+    assert model._emitted == ["manage_memory", "manage_memory", "CleaningMetadata"]
+    assert [m.tool_call_id for m in _memory_errors(model._requests[1])] == [
+        "controlled-call-1"
+    ]
+    assert all(not any(m.id == "stale" for m in request) for request in model._requests)
+
+
 @pytest.mark.parametrize("role", ["data_cleaner", "visualization"])
 def test_real_agent_nonterminating_tool_fails_strictly(tmp_path, role):
     ns = load_native(tmp_path, middleware=True)
