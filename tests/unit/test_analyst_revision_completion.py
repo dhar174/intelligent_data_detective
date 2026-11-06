@@ -17,6 +17,7 @@ import tests.unit.test_native_completion as native_completion
 from tests.unit.test_native_completion import (
     ControlledChatModel,
     FLAGS,
+    _HistorySummarySpy,
     analyst_figures,
     analysis_insights,
     analyst_state,
@@ -93,8 +94,9 @@ def test_analyst_initial_completion_uses_native_schema_without_respond(tmp_path)
     assert "call the `respond` tool" not in request_text
 
 
+@pytest.mark.parametrize("pressure", [False, True], ids=["normal", "history-pressure"])
 def test_analyst_revision_receives_real_feedback_png_inventory_and_supervisor_instruction(
-    tmp_path,
+    tmp_path, pressure
 ):
     ns = load_analyst(tmp_path)
     expected = analysis_insights()
@@ -123,6 +125,14 @@ def test_analyst_revision_receives_real_feedback_png_inventory_and_supervisor_in
         figures=existing_figures,
         prior_insights=analysis_insights(),
     )
+    if pressure:
+        summary = _HistorySummarySpy()
+        ns["prehook_critical_complex"] = ns["make_hosted_history_middleware"](
+            summary, model_budget_tokens=16_000, max_summary_tokens=32
+        )
+        state["messages"].insert(
+            0, AIMessage(id="stale-analyst", content="Earlier analyst history " * 4000)
+        )
     memory_note = (
         "Earlier evidence note: North revenue was highest in the clean sample."
     )
@@ -167,6 +177,9 @@ def test_analyst_revision_receives_real_feedback_png_inventory_and_supervisor_in
     assert feedback.redo_list[0] in context and feedback.redo_list[1] in context
     assert all(_contains_context_value(context, item.path) for item in existing_figures)
     assert all(item.visualization_title in context for item in existing_figures)
+    if pressure:
+        assert summary.requests
+        assert all(m.id != "stale-analyst" for m in request)
 
 
 def test_analyst_native_unfinished_output_fails_with_integrity_error(tmp_path):
