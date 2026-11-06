@@ -1,0 +1,353 @@
+{
+  "source": "Archived console.log (hash-only extraction; raw file unchanged)",
+  "revision_start_header_line": 977,
+  "method": "Tool-name headers after the first analyst header following VizFeedback; fingerprint is SHA-256 of LF-normalized trimmed text until the next message header; stop before the streaming-error marker if it precedes another header",
+  "limits": [
+    "Header lines and display steps are not invocation IDs or per-invocation graph-step counts",
+    "Fingerprints identify identical rendered result blocks, not proof of identical tool arguments",
+    "The earliest duplicate is an observable repetition, not proof that the model could never terminate"
+  ],
+  "first_repeated_display_result": {
+    "header_line": 1043,
+    "tool_name": "get_visualization",
+    "display_step": 41,
+    "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+    "display_result_characters": 647,
+    "same_display_result_as_header_line": 1015
+  },
+  "events": [
+    {
+      "header_line": 989,
+      "tool_name": "list_visualizations",
+      "display_step": 29,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": null,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1015,
+      "tool_name": "get_visualization",
+      "display_step": 33,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": null
+    },
+    {
+      "header_line": 1030,
+      "tool_name": "get_visualization",
+      "display_step": 37,
+      "display_result_sha256": "c315156bdd723c9af61fad1fe664a2763a9715628086c9ae1deb202877f0a89b",
+      "display_result_characters": 632,
+      "same_display_result_as_header_line": null
+    },
+    {
+      "header_line": 1043,
+      "tool_name": "get_visualization",
+      "display_step": 41,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1058,
+      "tool_name": "get_visualization",
+      "display_step": 45,
+      "display_result_sha256": "c315156bdd723c9af61fad1fe664a2763a9715628086c9ae1deb202877f0a89b",
+      "display_result_characters": 632,
+      "same_display_result_as_header_line": 1030
+    },
+    {
+      "header_line": 1071,
+      "tool_name": "get_visualization",
+      "display_step": 49,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1084,
+      "tool_name": "get_visualization",
+      "display_step": 53,
+      "display_result_sha256": "c315156bdd723c9af61fad1fe664a2763a9715628086c9ae1deb202877f0a89b",
+      "display_result_characters": 632,
+      "same_display_result_as_header_line": 1030
+    },
+    {
+      "header_line": 1097,
+      "tool_name": "get_visualization",
+      "display_step": 57,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1118,
+      "tool_name": "get_visualization",
+      "display_step": 61,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1132,
+      "tool_name": "get_visualization",
+      "display_step": 65,
+      "display_result_sha256": "c315156bdd723c9af61fad1fe664a2763a9715628086c9ae1deb202877f0a89b",
+      "display_result_characters": 632,
+      "same_display_result_as_header_line": 1030
+    },
+    {
+      "header_line": 1144,
+      "tool_name": "get_visualization",
+      "display_step": 69,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1164,
+      "tool_name": "get_visualization",
+      "display_step": 73,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1177,
+      "tool_name": "get_visualization",
+      "display_step": 77,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1191,
+      "tool_name": "get_visualization",
+      "display_step": 81,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1205,
+      "tool_name": "get_visualization",
+      "display_step": 85,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1218,
+      "tool_name": "get_visualization",
+      "display_step": 89,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1231,
+      "tool_name": "get_visualization",
+      "display_step": 93,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1244,
+      "tool_name": "get_visualization",
+      "display_step": 97,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1257,
+      "tool_name": "get_visualization",
+      "display_step": 101,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1270,
+      "tool_name": "list_visualizations",
+      "display_step": 105,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1290,
+      "tool_name": "get_visualization",
+      "display_step": 109,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1303,
+      "tool_name": "get_visualization",
+      "display_step": 113,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1316,
+      "tool_name": "get_column_names",
+      "display_step": 117,
+      "display_result_sha256": "72baaac91d26bdb99541b9e540ea3cf43d5ef3a8f82fa66d90aa600f3f9b4a6d",
+      "display_result_characters": 253,
+      "same_display_result_as_header_line": null
+    },
+    {
+      "header_line": 1325,
+      "tool_name": "get_visualization",
+      "display_step": 121,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1339,
+      "tool_name": "get_visualization",
+      "display_step": 125,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1352,
+      "tool_name": "get_visualization",
+      "display_step": 129,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1366,
+      "tool_name": "list_visualizations",
+      "display_step": 133,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1386,
+      "tool_name": "get_visualization",
+      "display_step": 137,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1401,
+      "tool_name": "get_visualization",
+      "display_step": 141,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1414,
+      "tool_name": "list_visualizations",
+      "display_step": 145,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1433,
+      "tool_name": "list_visualizations",
+      "display_step": 149,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1453,
+      "tool_name": "list_visualizations",
+      "display_step": 153,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1479,
+      "tool_name": "list_visualizations",
+      "display_step": 157,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1500,
+      "tool_name": "get_visualization",
+      "display_step": 161,
+      "display_result_sha256": "9560a7e3539c3938994dc73ab23f82d6f96541d8172b10a247016380b5d327c8",
+      "display_result_characters": 647,
+      "same_display_result_as_header_line": 1015
+    },
+    {
+      "header_line": 1514,
+      "tool_name": "list_visualizations",
+      "display_step": 165,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1533,
+      "tool_name": "list_visualizations",
+      "display_step": 169,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1552,
+      "tool_name": "list_visualizations",
+      "display_step": 173,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1577,
+      "tool_name": "list_visualizations",
+      "display_step": 177,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1596,
+      "tool_name": "list_visualizations",
+      "display_step": 181,
+      "display_result_sha256": "c96b0927dfadb1e46ad4edc6cac398ee7ee9caa15a4945d957091a7ee18fa1aa",
+      "display_result_characters": 1252,
+      "same_display_result_as_header_line": 989,
+      "inventory_count": 2
+    },
+    {
+      "header_line": 1616,
+      "tool_name": "list_visualizations",
+      "display_step": 185,
+      "display_result_sha256": "0811ae2939d783674deaa1dbaf206744aec0f71472f7b6c7e43147e5e24cd202",
+      "display_result_characters": 1168,
+      "same_display_result_as_header_line": null,
+      "inventory_count": 2
+    }
+  ]
+}
