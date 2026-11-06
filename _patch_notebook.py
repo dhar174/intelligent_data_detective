@@ -1660,11 +1660,76 @@ def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
         )
     elif cell_idx == 44:
 
-        def cleaner_prompt(text):
-            return required(
+        def cleaner_factory(text):
+            text = required(
                 text,
                 "Use the runtime SystemMessage for the dataset description",
                 "Use the runtime context message for the dataset description",
+            )
+            text = required(
+                text,
+                "    tool_descriptions = ",
+                """    # CP5 cleaner memory contract: retain the LangMem schema and implementation.
+    from langchain.agents.middleware import wrap_tool_call
+    from pydantic import ValidationError
+
+    memory_id_rules = (
+        "Omit id for create. For update or delete, first use search_memory "
+        "to find the existing memory ID, then pass it as id."
+    )
+    _w14c_data_cleaner_tools = [
+        t.model_copy(update={"description": f"{t.description} {memory_id_rules}"})
+        if t.name == "manage_memory" else t
+        for t in _w14c_data_cleaner_tools
+    ]
+    memory_id_error = "idd_cleaner_memory_id_contract"
+
+    @wrap_tool_call
+    def guard_cleaner_memory_id(request, handler):
+        call = request.tool_call
+        if call["name"] != "manage_memory" or request.tool is None:
+            return handler(request)
+
+        args = call["args"]
+        action = args.get("action", "create")
+        memory_id = args.get("id")
+        if not (
+            (action == "create" and memory_id is not None)
+            or (action in ("update", "delete") and memory_id is None)
+        ):
+            return handler(request)
+        try:
+            request.tool.args_schema.model_validate(args)
+        except ValidationError:
+            return handler(request)  # Leave other malformed inputs to native validation.
+
+        for message in reversed(request.state["messages"]):
+            if isinstance(message, HumanMessage) and message.name == "runtime_context":
+                break
+            if (
+                isinstance(message, ToolMessage)
+                and message.name == "manage_memory"
+                and message.status == "error"
+                and message.artifact == memory_id_error
+            ):
+                raise ValueError(
+                    "Cleaner manage_memory violated the ID contract after a correction round. "
+                    + memory_id_rules
+                )
+        return ToolMessage(
+            content=f"manage_memory {action} rejected. {memory_id_rules}",
+            name=call["name"],
+            tool_call_id=call["id"],
+            status="error",
+            artifact=memory_id_error,
+        )
+
+    tool_descriptions = """,
+            )
+            return required(
+                text,
+                'middleware =[_prehook, _make_unknown_tool_guard("data_cleaner",',
+                'middleware =[_prehook, guard_cleaner_memory_id, _make_unknown_tool_guard("data_cleaner",',
             )
 
         def visualization_prompt(text):
@@ -1686,7 +1751,7 @@ def apply_cp5_native_completion_patch(source: str, *, cell_idx: int) -> str:
                 + text[end:]
             )
 
-        edit_function("create_data_cleaner_agent", cleaner_prompt)
+        edit_function("create_data_cleaner_agent", cleaner_factory)
         edit_function("create_visualization_agent", visualization_prompt)
     elif cell_idx == 57:
         wrappers = {

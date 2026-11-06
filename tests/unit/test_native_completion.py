@@ -809,6 +809,221 @@ def test_cleaner_node_uses_the_actual_native_response_tool(tmp_path):
     assert "call the `respond` tool" not in content
 
 
+_CLEANING_MEMORY = ("memories", "cleaning")
+_CLEANING_MEMORY_ID = "00000000-0000-0000-0000-000000000001"
+
+
+def _cleaner_memory_fixture(tmp_path, *calls):
+    ns = load_native(tmp_path, middleware=True)
+    model = ControlledChatModel(
+        response_name="CleaningMetadata",
+        payload=cleaner_result().model_dump(),
+        scripted_responses=list(calls),
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    return ns, model, state
+
+
+def _memory_call(**args):
+    return {"name": "manage_memory", "args": args}
+
+
+def _memory_errors(request):
+    return [
+        m
+        for m in request
+        if isinstance(m, ToolMessage)
+        and m.name == "manage_memory"
+        and m.status == "error"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("args", "guidance"),
+    [
+        ({"action": "update", "content": "Revised"}, "search_memory"),
+        ({"action": "delete", "id": None}, "search_memory"),
+        ({"action": "create", "id": _CLEANING_MEMORY_ID}, "Omit id for create"),
+    ],
+)
+def test_cleaner_memory_id_rejection_is_paired_and_leaves_store_untouched(
+    tmp_path, args, guidance
+):
+    ns, model, state = _cleaner_memory_fixture(tmp_path, _memory_call(**args))
+    store = ns["in_memory_store"]
+    store.put(_CLEANING_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+
+    result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert model._emitted == ["manage_memory", "CleaningMetadata"]
+    (error,) = _memory_errors(model._requests[1])
+    assert error.tool_call_id == "controlled-call-1"
+    assert guidance in error.content
+    assert [(m.key, m.value) for m in store.search(_CLEANING_MEMORY)] == [
+        (_CLEANING_MEMORY_ID, {"content": "Original"})
+    ]
+    bound_tool = next(
+        tool
+        for tool in model._bindings[0]
+        if getattr(tool, "name", None) == "manage_memory"
+    )
+    original = next(
+        tool for tool in ns["data_cleaning_tools"] if tool.name == bound_tool.name
+    )
+    assert "search_memory" in bound_tool.description
+    assert "Omit id for create" in bound_tool.description
+    assert bound_tool.args_schema is original.args_schema
+    assert bound_tool.description != original.description
+
+
+def test_cleaner_memory_can_correct_id_and_complete(tmp_path):
+    ns, model, state = _cleaner_memory_fixture(
+        tmp_path,
+        _memory_call(action="update", content="Revised"),
+        _memory_call(action="update", content="Revised", id=_CLEANING_MEMORY_ID),
+    )
+    store = ns["in_memory_store"]
+    store.put(_CLEANING_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+
+    result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert model._emitted == ["manage_memory", "manage_memory", "CleaningMetadata"]
+    assert len(_memory_errors(model._requests[1])) == 1
+    assert store.get(_CLEANING_MEMORY, _CLEANING_MEMORY_ID).value == {
+        "content": "Revised"
+    }
+
+
+def test_cleaner_memory_parallel_rejections_count_as_one_round(tmp_path, monkeypatch):
+    generate = ControlledChatModel._generate
+
+    def generate_parallel(model, *args, **kwargs):
+        result = generate(model, *args, **kwargs)
+        if len(model._requests) == 1:
+            result.generations[0].message.tool_calls.append(
+                {
+                    "name": "manage_memory",
+                    "args": {"action": "update"},
+                    "id": "parallel-call",
+                    "type": "tool_call",
+                }
+            )
+        return result
+
+    monkeypatch.setattr(ControlledChatModel, "_generate", generate_parallel)
+    ns, model, state = _cleaner_memory_fixture(tmp_path, _memory_call(action="delete"))
+
+    result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert {m.tool_call_id for m in _memory_errors(model._requests[1])} == {
+        "controlled-call-1",
+        "parallel-call",
+    }
+    assert not ns["in_memory_store"].search(_CLEANING_MEMORY)
+
+
+def test_cleaner_memory_repeated_contract_error_stops_assignment(tmp_path):
+    ns, model, state = _cleaner_memory_fixture(
+        tmp_path, _memory_call(action="delete"), _memory_call(action="update")
+    )
+
+    with pytest.raises(ValueError, match="manage_memory.*after.*correction"):
+        ns["data_cleaner_node"](state)
+
+    assert model._emitted == ["manage_memory", "manage_memory"]
+    assert len(_memory_errors(model._requests[1])) == 1
+    assert state["cleaning_metadata"] is None
+    assert not ns["in_memory_store"].search(_CLEANING_MEMORY)
+
+
+def test_cleaner_memory_correction_resets_for_next_assignment_on_same_thread(tmp_path):
+    completion = {"name": "CleaningMetadata", "args": cleaner_result().model_dump()}
+    ns, model, state = _cleaner_memory_fixture(
+        tmp_path,
+        _memory_call(action="delete"),
+        completion,
+        _memory_call(action="delete"),
+    )
+
+    first = ns["data_cleaner_node"](state)
+    second_state = worker_state(tmp_path)
+    second_state.update(cleaning_metadata=None, user_prompt="Clean a second assignment")
+    assert state["_config"] == second_state["_config"]
+    second = ns["data_cleaner_node"](second_state)
+
+    assert first["cleaning_metadata"] == second["cleaning_metadata"] == cleaner_result()
+    assert [m.tool_call_id for m in _memory_errors(model._requests[2])] == [
+        "controlled-call-1"
+    ]
+    assert [m.tool_call_id for m in _memory_errors(model._requests[3])] == [
+        "controlled-call-1",
+        "controlled-call-3",
+    ]
+
+
+@pytest.mark.parametrize("action", ["create", "update", "delete"])
+def test_cleaner_memory_valid_operations_use_real_store(tmp_path, action):
+    args = {"content": "Revised"}
+    if action != "create":
+        args.update(action=action, id=_CLEANING_MEMORY_ID)
+    ns, model, state = _cleaner_memory_fixture(tmp_path, _memory_call(**args))
+    store = ns["in_memory_store"]
+    if action != "create":
+        store.put(_CLEANING_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+
+    result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert model._emitted == ["manage_memory", "CleaningMetadata"]
+    assert not _memory_errors(model._requests[1])
+    items = store.search(_CLEANING_MEMORY)
+    assert [m.value for m in items] == (
+        [] if action == "delete" else [{"content": "Revised"}]
+    )
+    if action == "update":
+        assert items[0].key == _CLEANING_MEMORY_ID
+
+
+def test_cleaner_memory_keeps_native_validation_for_malformed_uuid(tmp_path):
+    ns, model, state = _cleaner_memory_fixture(
+        tmp_path, _memory_call(action="create", id="malformed")
+    )
+
+    result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == cleaner_result()
+    (error,) = _memory_errors(model._requests[1])
+    assert error.tool_call_id == "controlled-call-1"
+    assert "uuid" in error.content.lower()
+    assert not ns["in_memory_store"].search(_CLEANING_MEMORY)
+
+
+def test_cleaner_memory_propagates_unexpected_store_exception(tmp_path, monkeypatch):
+    ns, model, state = _cleaner_memory_fixture(
+        tmp_path, _memory_call(content="Revised")
+    )
+    failure = ValueError("Unexpected store failure")
+
+    def fail_put(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(type(ns["in_memory_store"]), "put", fail_put)
+    with pytest.raises(ValueError, match="Unexpected store failure") as error:
+        ns["data_cleaner_node"](state)
+
+    assert error.value is failure
+    assert model._emitted == ["manage_memory"]
+    assert state["cleaning_metadata"] is None
+
+
 @pytest.mark.parametrize("role", ["data_cleaner", "visualization"])
 def test_real_agent_nonterminating_tool_fails_strictly(tmp_path, role):
     ns = load_native(tmp_path, middleware=True)
