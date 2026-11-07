@@ -1,6 +1,7 @@
 """Offline regressions for the generated native evaluator."""
 
 import socket
+from copy import deepcopy
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -404,3 +405,102 @@ def test_missing_figures_cannot_be_recovered_into_approval(tmp_path, monkeypatch
     monkeypatch.setenv("IDD_ALLOW_RECOVERY", "1")
     with pytest.raises(ValueError, match="(?i)metadata"):
         ns["viz_evaluator_node"](state)
+
+
+@pytest.mark.parametrize("pressure", [False, True])
+def test_revision_assignment_is_background_not_current_evaluator_task(
+    tmp_path, pressure
+):
+    ns, state, model, _ = invoke(tmp_path, grade="revise", revision=1)
+    stale = "Revise the visualization plan. Produce complete revised specifications."
+    state["next_agent_prompt"] = stale
+    state["viz_feedback"] = "OLD FINDING: missing bucket counts"
+    state["messages"].append(AIMessage(content=stale, name="supervisor"))
+    if pressure:
+        summary = _HistorySummarySpy()
+        ns["prehook"] = ns["make_hosted_history_middleware"](
+            summary, model_budget_tokens=16_000, max_summary_tokens=32
+        )
+        ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+        state["messages"].insert(0, AIMessage(content="old history " * 8000))
+    # Checkpointed messages already have IDs; avoid add_messages assigning IDs
+    # in place to fresh, unidentified fixture messages.
+    for index, message in enumerate(state["messages"]):
+        message.id = f"checkpoint-history-{index}"
+    before = deepcopy(state["messages"])
+    out = ns["viz_evaluator_node"](state)
+    assignment = [m for m in model._requests[-1] if isinstance(m, HumanMessage)][-1]
+    assert assignment.name == "evaluation_assignment"
+    assert str(assignment.content).startswith("Your current assignment is to evaluate")
+    assert "Background assignment (not your current task)" in assignment.content
+    assert stale in assignment.content
+    assert "OLD FINDING" in assignment.content
+    assert "finished_this_task=True" in assignment.content
+    assert "grade='revise'" in assignment.content
+    assert state["messages"] == before
+    assert state["next_agent_prompt"] == stale
+    assert out["next"] == "analyst" and out["viz_revise_count"] == 2
+    if pressure:
+        assert summary.requests
+        assert all(m.id != "checkpoint-history-0" for m in model._requests[-1])
+
+
+def test_assignment_following_model_completes_review_not_plot_creation(tmp_path):
+    class AssignmentModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            current = [m for m in messages if isinstance(m, HumanMessage)][-1]
+            self.payload["finished_this_task"] = str(current.content).startswith(
+                "Your current assignment is to evaluate"
+            )
+            return super()._generate(messages, **kwargs)
+
+    ns, state, _, response = invoke(tmp_path, grade="revise", revision=1)
+    state["next_agent_prompt"] = (
+        "Revise the visualization plan and rerun the two plots."
+    )
+    model = AssignmentModel(response_name="VizFeedback", payload=response.model_dump())
+    ns["viz_evaluator_llm"] = model
+    ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+    out = ns["viz_evaluator_node"](state)
+    assert out["viz_eval_result"].finished_this_task
+    assert out["viz_grade"] == "revise" and out["next"] == "analyst"
+    assert model._emitted == ["VizFeedback"]
+
+
+def test_reused_evaluator_thread_receives_current_review_after_revision(tmp_path):
+    ns, state, model, response = invoke(tmp_path, grade="revise")
+    state["_config"] = {"configurable": {"thread_id": "same-evaluator-thread"}}
+    state["next_agent_prompt"] = "INITIAL PLOT ASSIGNMENT"
+    first = ns["viz_evaluator_node"](state)
+    state.update(
+        viz_revise_count=first["viz_revise_count"], viz_feedback=first["viz_feedback"]
+    )
+    state["next_agent_prompt"] = "REVISED PLOT ASSIGNMENT"
+    model.payload = {
+        **response.model_dump(),
+        "grade": "acceptable",
+        "redo_list": [],
+        "feedback": "Revised plots checked",
+    }
+    second = ns["viz_evaluator_node"](state)
+    task = [m for m in model._requests[-1] if isinstance(m, HumanMessage)][-1]
+    assert task.name == "evaluation_assignment"
+    assert "REVISED PLOT ASSIGNMENT" in task.content
+    assert "INITIAL PLOT ASSIGNMENT" not in task.content
+    assert second["next"] == "report_orchestrator"
+    assert second["viz_grade"] == "acceptable"
+    assert model._emitted == ["VizFeedback", "VizFeedback"]
+
+
+@pytest.mark.parametrize("grade", ["revise", "acceptable"])
+@pytest.mark.parametrize("recovery", ["0", "1"])
+def test_assignment_repair_never_coerces_unfinished_feedback(
+    tmp_path, monkeypatch, grade, recovery
+):
+    ns, state, model, _ = invoke(tmp_path, grade=grade, finished=False, revision=1)
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", recovery)
+    state["next_agent_prompt"] = "Revise the visualization plan"
+    with pytest.raises(ValueError, match="Unfinished native VizFeedback"):
+        ns["viz_evaluator_node"](state)
+    assert model.payload["finished_this_task"] is False
+    assert "viz_grade" not in state
