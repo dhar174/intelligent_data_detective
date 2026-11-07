@@ -14945,6 +14945,35 @@ def main():
                     )
                     _body = replace_required(_body, '"memories" : enhanced_retrieve_mem(state),  "visualization_results": results,', '"memories" : enhanced_retrieve_mem(state), "visualization_results": results, "viz_tasks": tasks, "viz_specs": specs,', patch_id='evaluator prompt inputs')
                     _body = _body.replace('\"cleaned_dataset_description\": state.get(\"cleaned_dataset_description\", None)', '\"cleaned_dataset_description\": state.get(\"cleaned_dataset_description\") or getattr(state.get(\"cleaning_metadata\"), \"data_description_after_cleaning\", None)', 1)
+                    # CP5-EVALUATOR-ASSIGNMENT: next_agent_prompt may still be
+                    # the analyst's revision task. Keep it as background, never
+                    # as the evaluator's current assignment (including reroutes).
+                    _body = replace_required(
+                        _body,
+                        '        final_msgs =  [*rendered, HumanMessage(content=default_instruction)]',
+                        '''        import json as _ve_assignment_json
+        default_instruction = (
+            "Your current assignment is to evaluate the current figures against the user request, "
+            "specifications and available evidence in the newest runtime context. "
+            "This evaluation assignment takes precedence over retained earlier assignments. "
+            "Do not generate plots or revise the visualization plan yourself; the supervisor routes "
+            "that work to the analyst and visualization workers. Use retrieval tools when needed. "
+            "Complete this review with the native VizFeedback tool. A completed review uses "
+            "finished_this_task=True for either grade='acceptable' or grade='revise'. "
+            "For revise, provide concrete feedback and a redo_list; completing the review does not "
+            "mean accepting the figures. Insufficient figure evidence can justify a completed "
+            "revise verdict with explicit limitations. If you genuinely cannot complete the review, "
+            "report finished_this_task=False; never invent evidence or approval. "
+            "Background assignment (not your current task) and prior evaluator feedback: "
+            + _ve_assignment_json.dumps({
+                'background_assignment': default_instruction,
+                'prior_evaluator_feedback': state.get('viz_feedback'),
+                'revision_count': int(state.get('viz_revise_count', 0) or 0),
+            }, default=str)
+        )
+        final_msgs = [*rendered, HumanMessage(content=default_instruction, name='evaluation_assignment')]''',
+                        patch_id='evaluator current review assignment',
+                    )
                     _start = _body.index('        # Quick rule:')
                     _end = _body.index('    except Exception as _w4_ve_exc:', _start)
                     _body = _body[:_start] + """        if len(results) < len(tasks) or any(not v.finished_this_task or not all(str(getattr(v, f) or '').strip() for f in ('path', 'visualization_id', 'visualization_title', 'visualization_type', 'visualization_description', 'visualization_style')) for v in results):
@@ -14958,7 +14987,7 @@ def main():
             'current_dataframe_id': state.get('current_dataframe_id'),
             'messages': [*(state.get('messages') or []), rendered[0],
                          *[m for m in rendered[1:] if m is not None and m not in (state.get('messages') or [])],
-                         HumanMessage(content=default_instruction)],
+                         HumanMessage(content=default_instruction, name='evaluation_assignment')],
         }, config=state.get('_config'))
         parsed = fb.get('structured_response') if isinstance(fb, dict) else None
         if isinstance(parsed, dict):
