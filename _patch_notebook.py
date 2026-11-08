@@ -2407,13 +2407,30 @@ def apply_cp5_cleaner_grounding_patch(cells):
         return handler(request.override(messages=messages))
 
     memory_id_rules = (''', patch_id="cleaner observed progress middleware")
+    body = replace_required(
+        body, '    @wrap_model_call\n    def cleaner_progress',
+        '''    # ToolNode executes a parallel batch concurrently. Cleaner tools copy
+    # then replace a registry frame, so serialize complete data-tool invocations
+    # (including reads/exports) rather than only the final registry write.
+    from threading import RLock
+    _cleaner_data_lock = RLock()
+
+    @wrap_tool_call
+    def serialize_cleaner_tools(request, handler):
+        if request.tool_call["name"] in {"manage_memory", "search_memory"}:
+            return handler(request)
+        with _cleaner_data_lock:
+            return handler(request)
+
+    @wrap_model_call
+    def cleaner_progress''', patch_id="cleaner atomic native data-tool calls")
     body = replace_required(body, '        "Boundaries: clean only the active dataset;',
         '        "The newest runtime context and assignment override retained earlier assignments.",\n'
         '        "Describe only observed tool work and actual current data. Exporting or writing memory does not clean data.",\n'
         '        "Do not perform unsupported or unnecessary transformations. Unresolved work must remain unfinished.",\n'
         '        "Boundaries: clean only the active dataset;', patch_id="cleaner grounded system contract")
     body = replace_required(body, 'middleware =[_prehook, guard_cleaner_memory_id,',
-        'middleware =[cleaner_progress, _prehook, guard_cleaner_memory_id,',
+        'middleware =[cleaner_progress, _prehook, serialize_cleaner_tools, guard_cleaner_memory_id,',
         patch_id="cleaner progress before shared request budgeting")
     source = source.replace(before, body, 1)
     cells[44]["source"] = source

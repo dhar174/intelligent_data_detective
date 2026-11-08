@@ -1872,3 +1872,161 @@ def test_viz_memory_correction_resets_for_new_assignment_on_same_thread(tmp_path
         "controlled-call-1",
         "controlled-call-3",
     ]
+
+
+class ParallelCleanerModel(ControlledChatModel):
+    parallel_calls: list = Field(default_factory=list)
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        if not self._requests:
+            self._requests.append(messages)
+            self._emitted.extend(call["name"] for call in self.parallel_calls)
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(content="", tool_calls=self.parallel_calls)
+                    )
+                ]
+            )
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("second", ["impute", "convert"])
+def test_cleaner_parallel_mutations_preserve_both_updates(
+    tmp_path, monkeypatch, second
+):
+    from threading import Barrier, BrokenBarrierError
+    import pandas as pd
+
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "parallel-registry")
+    registry.register_dataframe(
+        pd.DataFrame(
+            {
+                "discount_rate": [0.1, None, 0.3],
+                "satisfaction_score": [7.0, None, 9.0],
+                "order_date": [
+                    "2025-01-01 00:00:00",
+                    "2025-01-02 00:00:00",
+                    "2025-01-03 00:00:00",
+                ],
+            }
+        ),
+        "retail-fixture",
+    )
+    original = registry.get_dataframe("retail-fixture")
+    rendezvous = Barrier(2, timeout=1)
+    real_copy = pd.DataFrame.copy
+
+    def overlapping_copy(frame, *args, **kwargs):
+        copied = real_copy(frame, *args, **kwargs)
+        if frame is original:
+            # Force two baseline reads to overlap. A serialized invocation times
+            # out alone, then the next invocation reads the already updated frame.
+            try:
+                rendezvous.wait()
+            except BrokenBarrierError:
+                pass
+        return copied
+
+    monkeypatch.setattr(pd.DataFrame, "copy", overlapping_copy)
+    calls = [
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "discount_rate"},
+            "id": "parallel-discount",
+        },
+        {
+            "name": (
+                "fill_missing_median" if second == "impute" else "convert_data_types"
+            ),
+            "args": (
+                {"df_id": "retail-fixture", "column_name": "satisfaction_score"}
+                if second == "impute"
+                else {
+                    "df_id": "retail-fixture",
+                    "column_types": {"order_date": "datetime64[ns]"},
+                }
+            ),
+            "id": "parallel-second",
+        },
+    ]
+    model = ParallelCleanerModel(
+        response_name="CleaningMetadata",
+        payload=cleaner_result().model_dump(),
+        parallel_calls=calls,
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    frame = registry.get_dataframe("retail-fixture")
+    assert frame["discount_rate"].isna().sum() == 0
+    if second == "impute":
+        assert frame["satisfaction_score"].isna().sum() == 0
+    else:
+        assert pd.api.types.is_datetime64_any_dtype(frame["order_date"])
+        assert frame["order_date"].tolist() == list(
+            pd.date_range("2025-01-01", periods=3)
+        )
+    tool_results = [m for m in model._requests[-1] if isinstance(m, ToolMessage)]
+    assert {m.tool_call_id for m in tool_results} == {c["id"] for c in calls}
+    assert all(m.status == "success" for m in tool_results)
+    assert len(model._requests) == 2
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert result["data_cleaning_complete"] is True
+
+
+def test_cleaner_tool_serialization_releases_after_native_exception(tmp_path):
+    from langchain.tools import tool
+    import pandas as pd
+
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "exception-registry")
+    registry.register_dataframe(
+        pd.DataFrame({"value": [1.0, None, 3.0]}), "retail-fixture"
+    )
+
+    @tool
+    def cleaner_failure() -> str:
+        """Raise an unexpected native tool exception."""
+        raise RuntimeError("cleaner serialization canary")
+
+    ns["data_cleaning_tools"] = [*ns["data_cleaning_tools"], cleaner_failure]
+    model = ParallelCleanerModel(
+        response_name="CleaningMetadata",
+        payload=cleaner_result().model_dump(),
+        parallel_calls=[{"name": "cleaner_failure", "args": {}, "id": "failure-call"}],
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    with override_global_registry(registry), pytest.raises(
+        RuntimeError, match="serialization canary"
+    ):
+        ns["data_cleaner_node"](state)
+    assert state["cleaning_metadata"] is None
+    assert not state.get("data_cleaning_complete")
+    # Reuse the same factory/lock after the failing ToolNode worker has exited.
+    # A new native thread avoids carrying an unfinished tool exchange forward.
+    model._requests.clear()
+    model.parallel_calls = [
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+            "id": "corrected-call",
+        }
+    ]
+    state["_config"] = {"configurable": {"thread_id": "cleaner-after-exception"}}
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    assert registry.get_dataframe("retail-fixture")["value"].tolist() == [1.0, 2.0, 3.0]
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert result["data_cleaning_complete"] is True
