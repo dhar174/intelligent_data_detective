@@ -6,14 +6,16 @@ import json
 import io
 import textwrap
 import ast
+import base64
 from pathlib import Path
 import socket
+import re
 
 import pytest
 from langchain_core.messages import ToolMessage
 from langchain_openai.chat_models.base import _construct_responses_api_input
 
-from idd_state import VisualizationResults
+from idd_state import DataVisualization, VisualizationResults, VizSpec
 from tests.unit.test_native_completion import (
     ControlledChatModel,
     FLAGS,
@@ -83,6 +85,10 @@ PLOTS = [
     ("create_scatter_plot", {"x": "gross", "y": "net"}),
     ("create_box_plot", {"values": "net", "group": "group"}),
     ("create_violin_plot", {"values": "net", "group": "group"}),
+    (
+        "create_correlation_heatmap",
+        {"columns": ["gross", "net"], "figsize": [6.0, 4.0]},
+    ),
 ]
 
 
@@ -346,3 +352,210 @@ def test_real_runtime_rejects_existing_older_run_png(tmp_path):
     older = figures(tmp_path / "older-run")[0]
     with pytest.raises(ValueError, match="outside the current run"):
         ns["_cp5_validated_figure_path"](older.path, {})
+
+
+HEATMAP_SELECTIONS = [
+    (["net", "gross"], "none", ["net", "gross"]),
+    ([1, 0], "none", ["net", "gross"]),
+    (None, "none", ["gross", "net"]),
+    ("all", "none", ["gross", "net"]),
+    (["net", "gross"], "alphabetical", ["gross", "net"]),
+]
+
+
+@pytest.mark.parametrize("columns,order,expected", HEATMAP_SELECTIONS)
+@pytest.mark.parametrize("seaborn", [False, True])
+@pytest.mark.parametrize("return_bytes", [False, True])
+def test_heatmap_saves_actual_matrix_columns_and_payload(
+    tmp_path, monkeypatch, columns, order, expected, seaborn, return_bytes
+):
+    import numpy as np
+    from matplotlib.axes import Axes
+    from PIL import Image
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    ns["_HAS_SNS"] = seaborn
+    assert "cols" not in ns
+    assert not hasattr(ns["RUNTIME"], "run_dir")
+    observed = []
+    if seaborn:
+        original = ns["sns"].heatmap
+
+        def capture(matrix, **kwargs):
+            observed.append(matrix.to_numpy(copy=True))
+            return original(matrix, **kwargs)
+
+        monkeypatch.setattr(ns["sns"], "heatmap", capture)
+    else:
+        original = Axes.imshow
+
+        def capture(axis, matrix, *args, **kwargs):
+            observed.append(np.array(matrix, copy=True))
+            return original(axis, matrix, *args, **kwargs)
+
+        monkeypatch.setattr(Axes, "imshow", capture)
+    result = ns["create_correlation_heatmap"].invoke(
+        {
+            "type": "tool_call",
+            "id": "heatmap-matrix",
+            "name": "create_correlation_heatmap",
+            "args": {
+                "df_id": "retail-fixture",
+                "columns": columns,
+                "order": order,
+                "return_bytes": return_bytes,
+                "figsize": [6.0, 4.0],
+            },
+        }
+    )
+    assert not str(result.content).startswith("Failed"), result.content
+    artifact = result.artifact
+    path = Path(artifact["image_path"])
+    assert path.parent == ns["RUNTIME"].viz_dir
+    assert re.fullmatch(
+        rf"retail-fixture__correlation_heatmap__{'_'.join(expected)}__[0-9a-f]{{8}}\.png",
+        path.name,
+    )
+    assert artifact["columns"] == expected and artifact["n_cols"] == len(expected)
+    assert artifact["plot_type"] == "correlation_heatmap"
+    expected_matrix = (
+        ns["get_global_df_registry"]().get_dataframe("retail-fixture")[expected].corr()
+    )
+    assert len(observed) == 1
+    np.testing.assert_allclose(observed[0], expected_matrix.to_numpy())
+    with Image.open(path) as image:
+        assert image.format == "PNG" and min(image.size) > 0
+        image.verify()
+    encoded = (
+        artifact["image_bytes"]
+        if return_bytes
+        else base64.b64decode(artifact["image_base64"])
+    )
+    with Image.open(io.BytesIO(encoded)) as image:
+        assert image.format == "PNG"
+        image.verify()
+    wire = _construct_responses_api_input([result])
+    assert json.loads(wire[0]["output"])["image_path"] == str(path)
+    assert "image_bytes" not in str(wire) and "image_base64" not in str(wire)
+    assert not (tmp_path / "figures").exists()
+
+
+@pytest.mark.parametrize("failure", ["missing_df", "one_numeric", "empty", "save"])
+def test_heatmap_failures_never_advertise_success(tmp_path, monkeypatch, failure):
+    import pandas as pd
+    from matplotlib.figure import Figure
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    df_id = "retail-fixture"
+    if failure == "missing_df":
+        df_id = "not-registered"
+    elif failure == "one_numeric":
+        ns["get_global_df_registry"]().register_dataframe(
+            pd.DataFrame({"number": [1, 2], "text": ["a", "b"]}), df_id
+        )
+    elif failure == "empty":
+        ns["get_global_df_registry"]().register_dataframe(
+            pd.DataFrame({"a": [float("nan")], "b": [float("nan")]}), df_id
+        )
+    else:
+
+        def fail_save(*args, **kwargs):
+            raise OSError("controlled heatmap save failure")
+
+        monkeypatch.setattr(Figure, "savefig", fail_save)
+    result = ns["create_correlation_heatmap"].invoke(
+        {
+            "type": "tool_call",
+            "id": "heatmap-error",
+            "name": "create_correlation_heatmap",
+            "args": {"df_id": df_id, "figsize": [6.0, 4.0]},
+        }
+    )
+    assert "Correlation heatmap generated." not in str(result.content)
+    assert not result.artifact.get("image_path")
+    assert not list(ns["RUNTIME"].artifacts_dir.rglob("*.png"))
+    if failure == "save":
+        assert "controlled heatmap save failure" in str(result.content)
+
+
+def test_heatmap_native_worker_and_join_preserve_actual_path_and_id(
+    tmp_path, monkeypatch
+):
+    ns = plot_namespace(tmp_path, monkeypatch)
+    spec = VizSpec(
+        **FLAGS,
+        title="Retail correlation",
+        viz_type="auto",
+        df_id="retail-fixture",
+        viz_instructions="Create a correlation heatmap for gross and net.",
+        viz_id="assigned-heatmap-id",
+        columns=["gross", "net"],
+        x=None,
+        y=None,
+        hue=None,
+        bins=None,
+        agg=None,
+        query=None,
+        description="Numeric correlations",
+        limit=None,
+        style="whitegrid",
+    )
+
+    class HeatmapModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            outputs = [
+                m
+                for m in messages
+                if isinstance(m, ToolMessage) and m.name == "create_correlation_heatmap"
+            ]
+            if outputs:
+                visible = json.loads(str(outputs[-1].content))
+                item = DataVisualization(
+                    **FLAGS,
+                    path=visible["image_path"],
+                    visualization_id=spec.viz_id,
+                    visualization_type="correlation_heatmap",
+                    visualization_title=spec.title,
+                    visualization_description="Pearson correlation of registered gross and net columns.",
+                    visualization_style="coolwarm",
+                )
+                self.payload = VisualizationResults(
+                    **FLAGS, visualizations=[item]
+                ).model_dump()
+            return super()._generate(messages, **kwargs)
+
+    model = HeatmapModel(
+        response_name="VisualizationResults",
+        payload={},
+        scripted_responses=[
+            {
+                "name": "create_correlation_heatmap",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "columns": ["gross", "net"],
+                    "figsize": [6.0, 4.0],
+                },
+            }
+        ],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+    )
+    memory = []
+    ns["update_memory_with_kind"] = lambda *a, **k: memory.append(k)
+    out = ns["viz_worker"](state)
+    assert len(memory) == 1
+    joined = apply_join({**state, **out}, ns["viz_join"]({**state, **out}))
+    item = joined["visualization_results"].visualizations[0]
+    assert item.visualization_id == spec.viz_id
+    assert Path(item.path).parent == ns["RUNTIME"].viz_dir
+    assert len(model._requests) == 2
+    assert model._emitted == ["create_correlation_heatmap", "VisualizationResults"]
+    assert any(
+        f"Assigned visualization_id: {spec.viz_id}" in str(m.content)
+        for m in model._requests[0]
+    )
+    assert joined["visualization_complete"] is True

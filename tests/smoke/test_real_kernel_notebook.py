@@ -1709,6 +1709,8 @@ import json, socket
 from pathlib import Path
 import pytest
 from tests.unit.test_figure_provenance import (
+    test_heatmap_native_worker_and_join_preserve_actual_path_and_id,
+    test_heatmap_saves_actual_matrix_columns_and_payload,
     test_real_fallback_path_used_after_failed_custom_plot,
     test_real_runtime_owned_png_is_accepted,
     test_worker_rejects_false_asset_before_memory_or_publication,
@@ -1720,6 +1722,9 @@ positive.mkdir()
 negative.mkdir()
 joined = base / "real-runtime-join"
 joined.mkdir()
+heatmap, fallback = base / "heatmap-native", base / "heatmap-fallback"
+heatmap.mkdir()
+fallback.mkdir()
 def denied(*args, **kwargs):
     raise AssertionError("Network forbidden in figure provenance smoke")
 with pytest.MonkeyPatch.context() as mp:
@@ -1728,6 +1733,10 @@ with pytest.MonkeyPatch.context() as mp:
     test_real_fallback_path_used_after_failed_custom_plot(positive, mp)
     test_real_runtime_owned_png_is_accepted(joined, True, False)
     test_worker_rejects_false_asset_before_memory_or_publication(negative, "missing")
+    test_heatmap_native_worker_and_join_preserve_actual_path_and_id(heatmap, mp)
+    test_heatmap_saves_actual_matrix_columns_and_payload(
+        fallback, mp, ["net", "gross"], "alphabetical", ["gross", "net"], False, True
+    )
 print({PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """
         _, probes, _ = execute_cells_in_real_kernel(
