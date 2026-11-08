@@ -1722,6 +1722,13 @@ from tests.unit.test_native_completion import (
     test_cleaner_unfinished_native_output_never_publishes_completion,
     test_viz_memory_corrected_update_completes_natively,
 )
+from tests.unit.test_datetime_conversion import (
+    test_datetime_conversion_retains_values_with_supported_api,
+    test_datetime_coercion_policy_remains_native,
+    test_datetime_parse_failure_remains_an_error,
+    test_datetime_dry_run_does_not_replace_frame,
+    test_datetime_missing_dataframe_remains_failure,
+)
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
 base = Path({str(tmp_path)!r})
 positive, negative = base / "real-plot", base / "missing-asset"
@@ -1759,6 +1766,24 @@ with pytest.MonkeyPatch.context() as mp:
     test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(cleaner)
     test_cleaner_unfinished_native_output_never_publishes_completion(unfinished, False)
     test_viz_memory_corrected_update_completes_natively(viz_memory)
+    for current_api in (False, True):
+        for explicit_format in (False, True):
+            date_case = base / ("date-" + str(current_api) + "-" + str(explicit_format))
+            date_case.mkdir()
+            with pytest.MonkeyPatch.context() as date_mp:
+                test_datetime_conversion_retains_values_with_supported_api(
+                    date_case, date_mp, current_api, explicit_format
+                )
+    for date_test in (
+        test_datetime_coercion_policy_remains_native,
+        test_datetime_parse_failure_remains_an_error,
+        test_datetime_dry_run_does_not_replace_frame,
+        test_datetime_missing_dataframe_remains_failure,
+    ):
+        date_case = base / date_test.__name__
+        date_case.mkdir()
+        with pytest.MonkeyPatch.context() as date_mp:
+            date_test(date_case, date_mp)
 print("\\n" + {PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """
         _, probes, streams = execute_cells_in_real_kernel(
