@@ -121,6 +121,24 @@ a summary limit inconsistent with the existing spy's asserted 32-token contract;
 using that unchanged test contract corrected the fixture and the case passed.
 No production request or summary budget changed.
 
+At initial candidate `dff35c389fd05796ef1ef00b0215d66e6b60f2d3`, all three
+hosted runs passed and Antigravity approved the code conditionally, but the local
+full-kernel selection finished **57 passed / one failed**: the growing synthetic
+`native-rest` pytest batch exceeded its unchanged 120-second cell limit. Its log,
+JUnit, exit and 274 synthetic fixture files were copied and byte-verified without
+changing the original fixture. That failure remained a merge/live blocker.
+
+The test-only follow-up divides the native module into complementary `viz`,
+`not viz and cleaner`, and `not viz and not cleaner` cells. Independent collection
+verified **50 + 65 + 109 = 224 cases**, with no omissions or overlap. The unchanged
+join/report phase follows in the same attested kernel. Every cell still has the
+same 120-second limit; the production code, notebook bytes, cases and assertions
+are unchanged. This new HEAD requires fresh exact-HEAD review and hosted gates;
+earlier green runs are not promoted to it.
+The targeted four-cell proof rerun passed (one outer test, 242.12 seconds) with
+the original assertions for completed synthetic execution, `cp5_pass=False`,
+cell counts, execution counts and every phase marker intact.
+
 ## Verification receipts
 
 Two regenerations were byte-identical. Candidate notebook SHA-256:
