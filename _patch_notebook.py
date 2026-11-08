@@ -2237,6 +2237,63 @@ def _cp5_validated_figure_path(raw_path, state):
         cells[index]["execution_count"] = None
 
 
+def apply_cp5_repl_isolation_patch(cells):
+    """Give each serialized REPL call a fresh, coherent Python namespace."""
+    source = join_source(cells[32]["source"])
+    node = next(
+        n for n in ast.parse(source).body
+        if isinstance(n, ast.FunctionDef) and n.name == "python_repl_tool"
+    )
+    body = ast.get_source_segment(source, node)
+    body = replace_required(
+        body,
+        "    # Fresh locals for isolation\n    python_repl.locals = {}",
+        "    # One fresh namespace: nested Python scopes must see same-call assignments.\n"
+        "    python_repl.locals = python_repl.globals",
+        patch_id="CP5 REPL coherent lexical scope",
+    )
+    body = replace_required(
+        body,
+        "    # Decide the sandbox root once per call",
+        "    # Only authored/rebound DataFrames are eligible for auto-registration.\n"
+        "    _initial_bindings = dict(python_repl.globals)\n\n"
+        "    # Decide the sandbox root once per call",
+        patch_id="CP5 REPL initial bindings",
+    )
+    body = replace_required(
+        body,
+        "            # Check if it is a DataFrame",
+        "            if var_name in _initial_bindings and _initial_bindings[var_name] is var_val:\n"
+        "                continue\n\n"
+        "            # Check if it is a DataFrame",
+        patch_id="CP5 REPL exclude ambient bindings",
+    )
+    source = source.replace(ast.get_source_segment(source, node), body, 1)
+    # The lock surrounds cap_output too: stdout capture and the filesystem sandbox
+    # modify process-wide state. A per-call REPL alone cannot isolate those effects.
+    helper = '''import functools as _cp5_repl_functools
+import threading as _cp5_repl_threading
+
+_cp5_repl_lock = _cp5_repl_threading.RLock()
+
+
+def _cp5_serialize_repl(function):
+    @_cp5_repl_functools.wraps(function)
+    def serialized(*args, **kwargs):
+        with _cp5_repl_lock:
+            return function(*args, **kwargs)
+    return serialized
+
+
+'''
+    lines = source.splitlines(keepends=True)
+    lines.insert(node.decorator_list[1].lineno - 1, "@_cp5_serialize_repl\n")
+    lines.insert(node.decorator_list[0].lineno - 1, helper)
+    source = "".join(lines)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -17498,6 +17555,7 @@ def main():
     # notebook and every subsequent regeneration share the same final behavior.
     apply_cp5_report_grounding_patch(cells)
     apply_cp5_figure_provenance_patch(cells)
+    apply_cp5_repl_isolation_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
