@@ -2475,6 +2475,41 @@ def _cp5_cleaner_messages(state, description, task, emergency_messages=(), *, me
         ast.parse(join_source(cells[index]["source"]))
 
 
+def apply_cp5_visualization_memory_contract_patch(cells):
+    """Use the proven bounded native ID correction on visualization assignments."""
+    source = join_source(cells[44]["source"])
+    functions = {n.name: n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+    cleaner = ast.get_source_segment(source, functions["create_data_cleaner_agent"])
+    start = cleaner.index("    memory_id_rules = (")
+    end = cleaner.index("    tool_descriptions =", start)
+    # Derive the identical role-local policy rather than maintain a second template.
+    guard = cleaner[start:end].replace("_w14c_data_cleaner_tools", "_cp5_visualization_tools")
+    guard = guard.replace("guard_cleaner_memory_id", "guard_visualization_memory_id")
+    guard = guard.replace("idd_cleaner_memory_id_contract", "idd_visualization_memory_id_contract")
+    guard = guard.replace("Cleaner manage_memory", "Visualization manage_memory")
+    node = functions["create_visualization_agent"]
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before, "    checkpointer = InMemorySaver()\n",
+        "    checkpointer = InMemorySaver()\n"
+        "    from langchain.agents.middleware import wrap_tool_call\n"
+        "    from pydantic import ValidationError\n"
+        "    _cp5_visualization_tools = list(visualization_tools)\n" + guard,
+        patch_id="visualization bounded memory ID correction",
+    )
+    if body.count("for t in visualization_tools") != 2:
+        raise RequiredPatchError("Visualization memory contract tool catalog changed")
+    body = body.replace("for t in visualization_tools", "for t in _cp5_visualization_tools")
+    body = replace_required(body, "tools=visualization_tools,", "tools=_cp5_visualization_tools,",
+                            patch_id="visualization described native tools")
+    body = replace_required(body, "middleware =[prehook_complex, ",
+                            "middleware =[prehook_complex, guard_visualization_memory_id, ",
+                            patch_id="visualization ID guard wiring")
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[44]["source"] = source
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -8483,80 +8518,26 @@ def main():
     if not fixZ_patched:
         print("W  Fix Z: supervisor_node target not found")
 
-    # --- Fix AV: wrap manage_memory in visualization_tools to strip id on create ---
-    # The viz LLM sometimes calls manage_memory(action="create", id=<uuid>) but langmem
-    # raises ValueError if id is provided for a create operation. Wrap the tool to silently
-    # strip the id when action="create".
-    _FIX_AV_SENTINEL = "# Fix AV: manage_memory id-strip wrapper"
-    fixAV_patched = False
-    for idx, cell in enumerate(cells):
-        if cell.get("cell_type") != "code":
+    # CP5-VIZ-MEMORY: preserve LangMem's native enum/UUID validation.
+    _old_viz_memory = 'visualization_tools.append(create_manage_memory_tool(namespace=("memories","visualization"),store= in_memory_store))\n'
+    for _viz_memory_cell in cells:
+        if _viz_memory_cell.get("cell_type") != "code":
             continue
-        src = join_source(cell["source"])
-        if "visualization_tools.append(create_manage_memory_tool" not in src:
+        _viz_memory_source = join_source(_viz_memory_cell.get("source", []))
+        if _old_viz_memory not in _viz_memory_source:
             continue
-        if _FIX_AV_SENTINEL in src:
-            print(f"i  Cell idx {idx}: Fix AV already applied")
-            fixAV_patched = True
-            break
-        _OLD_AV = 'visualization_tools.append(create_manage_memory_tool(namespace=("memories","visualization"),store= in_memory_store))\n'
-        _NEW_AV = (
-            "# Fix AV: manage_memory id-strip wrapper\n"
+        _viz_memory_cell["source"] = replace_required(
+            _viz_memory_source, _old_viz_memory,
+            '# CP5-VIZ-MEMORY: native flat LangMem contract\n'
             '_viz_mm_raw = create_manage_memory_tool(namespace=("memories","visualization"), store=in_memory_store)\n'
-            'def _viz_manage_memory_safe(content=None, action="create", *, id=None):\n'
-            '    """Visualization memory tool wrapper: remaps invalid actions + strips id on create."""\n'
-            '    _VALID_ACTIONS = ("create", "update", "delete")\n'
-            "    if action not in _VALID_ACTIONS:\n"
-            '        action = "create" if action in ("remember", "save", "store") else "update"\n'
-            '    if action == "create":\n'
-            "        id = None\n"
-            "    return _viz_mm_raw.func(content=content, action=action, id=id)\n"
-            "try:\n"
-            "    _viz_mm_safe_tool = _viz_mm_raw.__class__.from_function(\n"
-            "        _viz_manage_memory_safe,\n"
-            "        name=_viz_mm_raw.name,\n"
-            "        description=_viz_mm_raw.description,\n"
-            "    )\n"
-            "except Exception:\n"
-            "    _viz_mm_safe_tool = _viz_mm_raw  # fallback to original\n"
-            "visualization_tools.append(_viz_mm_safe_tool)\n"
+            'visualization_tools.append(_viz_mm_raw)\n',
+            patch_id="visualization native memory tool",
         )
-        if _OLD_AV in src:
-            new_src = src.replace(_OLD_AV, _NEW_AV, 1)
-            cell["source"] = new_src
-            cell["outputs"] = []
-            cell["execution_count"] = None
-            print(
-                f"OK Cell idx {idx}: Fix AV applied — manage_memory wrapped for viz tools"
-            )
-            fixAV_patched = True
-        else:
-            # Fallback: just comment out the manage_memory tool append for viz
-            import re as _re_av
-
-            _av_pat = (
-                r"visualization_tools\.append\(create_manage_memory_tool\([^)]+\)\)"
-            )
-            if _re_av.search(_av_pat, src):
-                new_src = _re_av.sub(
-                    "# Fix AV: manage_memory removed from viz tools (causes ValueError with id on create)\n"
-                    "# visualization_tools.append(create_manage_memory_tool(...))  # removed",
-                    src,
-                )
-                cell["source"] = new_src
-                cell["outputs"] = []
-                cell["execution_count"] = None
-                print(
-                    f"OK Cell idx {idx}: Fix AV applied (fallback: removed manage_memory from viz tools)"
-                )
-                fixAV_patched = True
-            else:
-                print(f"W  Fix AV: manage_memory pattern not found in cell {idx}")
+        _viz_memory_cell["outputs"] = []
+        _viz_memory_cell["execution_count"] = None
         break
-    if not fixAV_patched:
-        print(
-            "W  Fix AV: visualization_tools.append(create_manage_memory_tool...) not found in any cell"
-        )
+    else:
+        raise RequiredPatchError("Visualization native memory tool registration is missing")
 
     # --- Fix AW: save_viz_for_state DataVisualization missing required supervisor fields ---
     # BaseNoExtrasModel defines reply_msg_to_supervisor/finished_this_task/expect_reply as required.
@@ -17738,6 +17719,7 @@ def main():
     apply_cp5_figure_provenance_patch(cells)
     apply_cp5_repl_isolation_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
+    apply_cp5_visualization_memory_contract_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
