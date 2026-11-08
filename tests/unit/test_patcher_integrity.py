@@ -44,7 +44,6 @@ from langchain_core.messages import (
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from validate_artifact_quality import check_embeds, check_pdf
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PATCHER = REPO_ROOT / "_patch_notebook.py"
 SOURCE_NOTEBOOK = REPO_ROOT / "IntelligentDataDetective_beta_v5.ipynb"
@@ -1193,9 +1192,8 @@ def _compile_file_writer_node(
         "FileResult": FileResult,
         "_normalize_meta": lambda x: x or {},
         "enhanced_retrieve_mem": lambda s: "memories",
-        "file_writer_prompt_template": ChatPromptTemplate.from_messages(
-            [("system", "file writer system")]
-        ),
+        "ChatPromptTemplate": ChatPromptTemplate,
+        "MessagesPlaceholder": MessagesPlaceholder,
         "DEFAULT_TOOLING_GUIDELINES": "guidelines",
         "HumanMessage": HumanMessage,
         "AIMessage": AIMessage,
@@ -1217,6 +1215,24 @@ def _compile_file_writer_node(
         "_get_artifacts_base": _get_artifacts_base,
         "_is_subpath": _is_subpath,
     }
+    prompt_source = "".join(notebook["cells"][25]["source"])
+    prompt_assignment = next(
+        node
+        for node in ast.parse(prompt_source).body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "file_writer_prompt_template"
+            for t in node.targets
+        )
+    )
+    exec(
+        compile(
+            ast.Module(body=[prompt_assignment], type_ignores=[]),
+            "<generated file writer prompt>",
+            "exec",
+        ),
+        ns,
+    )
     exec(code, ns)
     return ns["file_writer_node"]
 
