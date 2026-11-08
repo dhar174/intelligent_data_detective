@@ -2294,6 +2294,187 @@ def _cp5_serialize_repl(function):
     cells[32]["source"] = source
 
 
+def apply_cp5_cleaner_grounding_patch(cells):
+    """Ground the cleaner assignment in observed work, without synthetic completion."""
+    source = join_source(cells[44]["source"])
+    factory = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                   and n.name == "create_data_cleaner_agent")
+    before = ast.get_source_segment(source, factory)
+    body = before
+    body = replace_required(
+        body, "    from langchain.agents.middleware import wrap_tool_call",
+        "    from langchain.agents.middleware import wrap_tool_call, wrap_model_call",
+        patch_id="cleaner native model middleware import")
+    body = replace_required(
+        body, '    memory_id_rules = (', '''    @wrap_model_call
+    def cleaner_progress(request, handler):
+        import hashlib
+        import json
+        history = request.state["messages"]
+        start = next((i for i in range(len(history) - 1, -1, -1)
+                      if isinstance(history[i], HumanMessage)
+                      and history[i].name == "runtime_context"), -1)
+        calls, rounds, seen = {}, {}, set()
+        redundant = 0
+        recent = []
+        retrievals = {"get_dataframe_schema", "get_column_names", "check_missing_values"}
+        mutations = {"fill_missing_median", "detect_and_remove_duplicates", "delete_rows", "drop_column"}
+        memory_tools = {"manage_memory", "search_memory"}
+        for index, message in enumerate(history[start + 1:]):
+            if isinstance(message, AIMessage):
+                for call in message.tool_calls:
+                    calls[call["id"]] = (index, call)
+                    rounds.setdefault(index, []).append((call["name"], None))
+            elif isinstance(message, ToolMessage) and message.tool_call_id in calls:
+                round_id, call = calls[message.tool_call_id]
+                text = message.content if isinstance(message.content, str) else "[non-text output]"
+                reported_error = message.status == "error" or text.startswith(("Error", "Failed"))
+                try:
+                    envelope, _ = json.JSONDecoder().raw_decode(text.lstrip())
+                except ValueError:
+                    envelope = None
+                if isinstance(envelope, dict):
+                    reported_error = reported_error or bool(envelope.get("error")) or (
+                        envelope.get("status") in ("error", "failed")
+                        or envelope.get("success") is False or envelope.get("ok") is False)
+                entries = rounds[round_id]
+                entries[entries.index((call["name"], None))] = (call["name"], not reported_error)
+                recent.append({"tool": call["name"], "args": call["args"],
+                               "reported_error": reported_error, "result": text[:600]})
+                if call["name"] in retrievals:
+                    fingerprint = hashlib.sha256(json.dumps(
+                        [call["name"], call["args"], text], sort_keys=True, default=str
+                    ).encode()).hexdigest()
+                    redundant = redundant + 1 if fingerprint in seen else 0
+                    seen.add(fingerprint)
+                    if redundant >= 3:
+                        raise ValueError("Cleaner made no progress: three redundant retrieval results. "
+                                         "Use observed data, perform a necessary cleaning action, or report an unfinished task.")
+                elif call["name"] in mutations and not reported_error:
+                    redundant = 0
+        memory_rounds = 0
+        for entries in rounds.values():
+            if any(ok is None for _, ok in entries):
+                continue
+            if all(name in memory_tools and ok for name, ok in entries):
+                memory_rounds += 1
+            else:
+                memory_rounds = 0
+            if memory_rounds >= 3:
+                raise ValueError("Cleaner repeated three memory-only rounds without cleaning progress. "
+                                 "Memory notes are optional; perform the assignment or report an unfinished task.")
+        profiles = {}
+        for df_id in list(request.state.get("available_df_ids") or [])[:8]:
+            frame = get_global_df_registry().get_dataframe(df_id)
+            if frame is None:
+                profiles[df_id] = {"available": False}
+                continue
+            try:
+                duplicates = int(frame.duplicated().sum())
+            except TypeError:
+                duplicates = None  # Unhashable cells cannot establish a duplicate count.
+            profiles[df_id] = {
+                "rows": len(frame), "columns": list(map(str, frame.columns)),
+                "missing_values": {str(k): int(v) for k, v in frame.isna().sum().items()},
+                "duplicate_rows": duplicates,
+            }
+        progress = json.dumps({"observed_data": profiles, "recent_tool_results": recent[-8:],
+                               "redundant_retrieval_streak": redundant,
+                               "consecutive_memory_only_rounds": memory_rounds}, default=str)
+        messages = list(request.messages)
+        position = next((i for i in range(len(messages) - 1, -1, -1)
+                         if messages[i].name == "runtime_context"), None)
+        if position is not None:
+            context = messages[position]
+            original = str(context.content).split("\\n\\nObserved cleaner progress:\\n", 1)[0]
+            messages[position] = context.model_copy(update={"content": original +
+                "\\n\\nObserved cleaner progress:\\n" + progress})
+        return handler(request.override(messages=messages))
+
+    memory_id_rules = (''', patch_id="cleaner observed progress middleware")
+    body = replace_required(body, '        "Boundaries: clean only the active dataset;',
+        '        "The newest runtime context and assignment override retained earlier assignments.",\n'
+        '        "Describe only observed tool work and actual current data. Exporting or writing memory does not clean data.",\n'
+        '        "Do not perform unsupported or unnecessary transformations. Unresolved work must remain unfinished.",\n'
+        '        "Boundaries: clean only the active dataset;', patch_id="cleaner grounded system contract")
+    body = replace_required(body, 'middleware =[_prehook, guard_cleaner_memory_id,',
+        'middleware =[cleaner_progress, _prehook, guard_cleaner_memory_id,',
+        patch_id="cleaner progress before shared request budgeting")
+    source = source.replace(before, body, 1)
+    cells[44]["source"] = source
+
+    source = join_source(cells[57]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "data_cleaner_node")
+    before = ast.get_source_segment(source, node)
+    body = before
+    start = body.index('    user_prompt = state.get("user_prompt", sample_prompt_text)')
+    end = body.index('    # --- NEW: emergency reroute handling (data_cleaner) ---', start)
+    body = body[:start] + '''    user_prompt = (
+        "Perform the current cleaning assignment using the bound tools and observed data. "
+        "Never claim an action that has no successful tool evidence. Exporting a CSV does not clean "
+        "the underlying DataFrame. Memory notes are optional and do not advance cleaning. "
+        "Do not impose category normalization or outlier clipping unless actually needed and supported. "
+        "After final validation, save the actual resulting DataFrame once as CSV using export_dataframe; "
+        "use its returned path and do not create backup or marker files. "
+        "Reuse profiles until data changes. Three redundant retrieval results or three consecutive "
+        "memory-only rounds stop this node. Verify the resulting DataFrame, then call the `CleaningMetadata` response tool "
+        "listing only performed actions and remaining caveats. If blocked or incomplete, "
+        "set finished_this_task=False; never invent best-effort successful findings."
+    )
+    global_df_registry = get_global_df_registry()
+    initial_description = state.get("initial_description") or InitialDescription(
+        dataset_description="No description available", data_sample="No sample available",
+        notes="No initial evidence", expect_reply=False, reply_msg_to_supervisor="", finished_this_task=False)
+    tool_descriptions = "Use only the registered tool schemas."
+    cleaner_memories = enhanced_retrieve_mem(state)
+    rendered = _cp5_cleaner_messages(state, initial_description, user_prompt, memories=cleaner_memories)
+''' + body[end:]
+    body = replace_required(body, '''        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **dc_vars
+        )''', '''        rendered = _cp5_cleaner_messages(
+            state, initial_description, user_prompt, [*tmp_basemsgs, main_emer_msg], memories=cleaner_memories
+        )''', patch_id="cleaner emergency current assignment")
+    body = replace_required(body, '''    # --- PATCH: idempotency guard''',
+        '''    if state.get("cleaning_metadata") is not None:
+        _cp5_validate_cleaner_completion(state["cleaning_metadata"])
+    # --- PATCH: idempotency guard''', patch_id="cleaner cached completion integrity")
+    body = replace_required(body, '    cleaning_metadata: CleaningMetadata = result["structured_response"]',
+        '    cleaning_metadata: CleaningMetadata = result["structured_response"]\n'
+        '    _cp5_validate_cleaner_completion(cleaning_metadata)', patch_id="cleaner native completion integrity")
+    source = source.replace(before, body, 1)
+    source += '''
+
+def _cp5_validate_cleaner_completion(value):
+    if not isinstance(value, CleaningMetadata):
+        raise TypeError("Cleaner requires native CleaningMetadata.")
+    if not value.finished_this_task:
+        raise ValueError("Cleaner returned unfinished CleaningMetadata; completion was not published.")
+    if not str(value.data_description_after_cleaning or "").strip():
+        raise ValueError("Cleaner returned an unusable empty data description.")
+
+
+def _cp5_cleaner_messages(state, description, task, emergency_messages=(), *, memories=""):
+    import json
+    assignment = str(state.get("next_agent_prompt") or "Clean the active dataset conservatively.")
+    emergency = [str(m.content) for m in emergency_messages if m is not None]
+    context = {
+        "original_user_request": state.get("user_prompt", sample_prompt_text),
+        "current_assignment": assignment, "emergency_assignments": emergency,
+        "dataset_description": description.dataset_description, "data_sample": description.data_sample,
+        "available_df_ids": state.get("available_df_ids") or [],
+        "analysis_configuration": state.get("analysis_config"),
+        "memories": memories, "tooling_guidelines": DEFAULT_TOOLING_GUIDELINES,
+        "completion_contract": task,
+    }
+    return [HumanMessage(name="runtime_context", content=json.dumps(context, default=str)),
+            HumanMessage(name="cleaner_assignment", content=task + "\\n" + assignment + "\\n" + "\\n".join(emergency))]
+'''
+    cells[57]["source"] = source
+    for index in (44, 57):
+        ast.parse(join_source(cells[index]["source"]))
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -17556,6 +17737,7 @@ def main():
     apply_cp5_report_grounding_patch(cells)
     apply_cp5_figure_provenance_patch(cells)
     apply_cp5_repl_isolation_patch(cells)
+    apply_cp5_cleaner_grounding_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:

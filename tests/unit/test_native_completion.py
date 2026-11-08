@@ -62,6 +62,7 @@ import pytest
 import idd_core
 import idd_state
 from idd_registry import DataFrameRegistry, get_global_df_registry
+from idd_registry import override_global_registry
 from tests.unit.test_viz_join import FLAGS, figures, notebook, production_runtime
 
 WRAPPERS = [
@@ -262,6 +263,8 @@ def load_native(base, *, middleware=False):
             "viz_join",
             "_cp5_current_run_root",
             "_cp5_validated_figure_path",
+            "_cp5_cleaner_messages",
+            "_cp5_validate_cleaner_completion",
             "viz_evaluator_node",
         },
     )
@@ -1155,7 +1158,12 @@ def test_hosted_history_reduces_requests_and_keeps_checkpointed_parallel_pairs(
     _, *effective = model._requests[1]
     assert ns["count_tokens_approximately"](effective) <= 300
     assert effective[0].name == "history_summary"
-    assert effective[1:] == messages[4:]
+    assert effective[1].id == messages[4].id
+    assert str(effective[1].content).startswith(
+        "Clean context\n\nObserved cleaner progress:\n"
+    )
+    assert messages[4].content == "Clean context"
+    assert effective[2:] == messages[5:]
     assert len(summary.requests) == 1
     prompt = summary.requests[0]
     assert ns["count_tokens_approximately"](prompt) <= 160 - 20 - 32
@@ -1483,3 +1491,189 @@ def test_repl_parallel_calls_cannot_cross_dataframe_or_stdout(tmp_path, monkeypa
     assert "SECOND_SCOPE 100.0" in str(second_result.content)
     assert registry.get_dataframe("scope_a")["value"].tolist() == [10.0, 20.0]
     assert registry.get_dataframe("scope_b")["value"].tolist() == [100.0, 200.0]
+
+
+def _grounded_cleaner_fixture(base, *calls, payload=None):
+    import pandas as pd
+
+    ns, model, state = _cleaner_memory_fixture(base, *calls)
+    registry = DataFrameRegistry(data_dir=base / "cleaner-registry")
+    registry.register_dataframe(
+        pd.DataFrame(
+            {"value": [10.0, 20.0, 20.0, None], "group": ["a", "b", "b", "c"]}
+        ),
+        "retail-fixture",
+    )
+    state.update(
+        user_prompt="ORIGINAL_REQUEST: preserve useful observations and explain caveats",
+        next_agent_prompt="CURRENT_ASSIGNMENT: handle missing values and exact duplicates",
+    )
+    if payload is not None:
+        model.payload = payload.model_dump()
+    return ns, model, state, registry
+
+
+def _cleaner_context(request):
+    return "\n".join(str(m.content) for m in request if isinstance(m, HumanMessage))
+
+
+def test_cleaner_current_assignment_and_observed_quality_reach_model(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(tmp_path)
+    with override_global_registry(registry):
+        ns["data_cleaner_node"](state)
+    context = _cleaner_context(model._requests[0])
+    assert "ORIGINAL_REQUEST" in context and "CURRENT_ASSIGNMENT" in context
+    assert '"duplicate_rows": 1' in context and '"value": 1' in context
+    assert "never claim an action" in context.lower()
+    assert "once as CSV using export_dataframe" in context
+    assert "clip outliers" not in context.lower()
+    assert "best-effort values" not in context
+
+
+def test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        {"name": "detect_and_remove_duplicates", "args": {"df_id": "retail-fixture"}},
+    )
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    assert result["data_cleaning_complete"] is True
+    context = _cleaner_context(model._requests[-1])
+    assert '"duplicate_rows": 0' in context and '"value": 0' in context
+    assert (
+        "fill_missing_median" in context and "detect_and_remove_duplicates" in context
+    )
+    assert "Exporting a CSV does not clean" in context
+    assert len(registry.get_dataframe("retail-fixture")) == 3
+    assert all(not m.name == "cleaner_progress" for m in result["messages"])
+    assert all(
+        "Observed cleaner progress:" not in str(m.content)
+        for m in result["messages"]
+        if isinstance(m, HumanMessage)
+    )
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_cleaner_unfinished_native_output_never_publishes_completion(
+    tmp_path, existing
+):
+    incomplete = cleaner_result().model_copy(update={"finished_this_task": False})
+    ns, model, state, registry = _grounded_cleaner_fixture(tmp_path, payload=incomplete)
+    if existing:
+        state.update(cleaning_metadata=incomplete, data_cleaning_complete=True)
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="Cleaner.*unfinished"
+    ):
+        ns["data_cleaner_node"](state)
+    assert (
+        state.get("cleaning_metadata") is incomplete
+        if existing
+        else state.get("cleaning_metadata") is None
+    )
+
+
+def test_cleaner_redundant_schema_loop_fails_before_recursion(tmp_path):
+    call = {"name": "get_dataframe_schema", "args": {"df_id": "retail-fixture"}}
+    ns, model, state, registry = _grounded_cleaner_fixture(tmp_path, *([call] * 8))
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="Cleaner.*no progress"
+    ):
+        ns["data_cleaner_node"](state)
+    assert model._emitted == ["get_dataframe_schema"] * 4
+    assert state["cleaning_metadata"] is None
+
+
+def test_cleaner_memory_only_loop_does_not_count_as_cleaning_progress(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path, *[_memory_call(content=f"Different memory {i}") for i in range(8)]
+    )
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="Cleaner.*memory-only"
+    ):
+        ns["data_cleaner_node"](state)
+    assert len(model._emitted) == 3
+    assert state["cleaning_metadata"] is None
+
+
+def test_cleaner_changed_quality_results_reset_retrieval_streak(tmp_path):
+    profile = {"name": "check_missing_values", "args": {"df_id": "retail-fixture"}}
+    mutation = {
+        "name": "fill_missing_median",
+        "args": {"df_id": "retail-fixture", "column_name": "value"},
+    }
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path, *([profile] * 3), mutation, *([profile] * 3)
+    )
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    assert result["data_cleaning_complete"] is True
+    assert len(model._requests) == 8
+
+
+def test_cleaner_progress_bound_resets_for_new_assignment_on_same_thread(tmp_path):
+    profile = {"name": "get_dataframe_schema", "args": {"df_id": "retail-fixture"}}
+    completion = {"name": "CleaningMetadata", "args": cleaner_result().model_dump()}
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path, *([profile] * 4), profile, completion
+    )
+    with override_global_registry(registry):
+        with pytest.raises(ValueError, match="Cleaner.*no progress"):
+            ns["data_cleaner_node"](state)
+        next_state = dict(
+            state, user_prompt="A fresh assignment", cleaning_metadata=None
+        )
+        result = ns["data_cleaner_node"](next_state)
+    assert result["data_cleaning_complete"] is True
+    assert model._emitted[-2:] == ["get_dataframe_schema", "CleaningMetadata"]
+
+
+def test_cleaner_export_only_keeps_dirty_quality_visible(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        {
+            "name": "export_dataframe",
+            "args": {
+                "df_id": "retail-fixture",
+                "file_name": "still-dirty",
+                "file_format": "csv",
+            },
+        },
+    )
+    with override_global_registry(registry):
+        ns["data_cleaner_node"](state)
+    result = next(
+        m
+        for m in model._requests[1]
+        if isinstance(m, ToolMessage) and m.name == "export_dataframe"
+    )
+    assert not str(result.content).startswith(("Error", "Failed"))
+    assert list(tmp_path.rglob("still-dirty.csv"))
+    context = _cleaner_context(model._requests[1])
+    assert '"duplicate_rows": 1' in context and '"value": 1' in context
+    assert "Exporting a CSV does not clean" in context
+
+
+def test_cleaner_structured_tool_error_cannot_reset_progress_bound(tmp_path):
+    profile = {"name": "check_missing_values", "args": {"df_id": "retail-fixture"}}
+    invalid = {
+        "name": "fill_missing_median",
+        "args": {"df_id": "retail-fixture", "column_name": "not_a_column"},
+    }
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path, *([profile] * 3), invalid, profile
+    )
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="Cleaner.*no progress"
+    ):
+        ns["data_cleaner_node"](state)
+    assert len(model._emitted) == 5
+    errors = [
+        m
+        for m in model._requests[-1]
+        if isinstance(m, ToolMessage) and m.name == "fill_missing_median"
+    ]
+    assert json.loads(errors[-1].content)["status"] == "error"
