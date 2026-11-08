@@ -552,8 +552,20 @@ def test_cp5_visualization_fanin_and_reporting_in_real_kernel(tmp_path):
             [str(repo / "tests/unit/test_native_completion.py"), "-k", "viz"],
         ),
         (
+            "native-cleaner",
+            [
+                str(repo / "tests/unit/test_native_completion.py"),
+                "-k",
+                "not viz and cleaner",
+            ],
+        ),
+        (
             "native-rest",
-            [str(repo / "tests/unit/test_native_completion.py"), "-k", "not viz"],
+            [
+                str(repo / "tests/unit/test_native_completion.py"),
+                "-k",
+                "not viz and not cleaner",
+            ],
         ),
         (
             "join-report",
