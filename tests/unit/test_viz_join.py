@@ -4,6 +4,7 @@ Figures and reports here are temporary test fixtures, never production proof.
 """
 
 import ast
+import base64
 from dataclasses import dataclass, fields
 from datetime import datetime
 import json
@@ -11,6 +12,7 @@ import logging
 from pathlib import Path
 import socket
 from types import SimpleNamespace
+from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.channels.binop import BinaryOperatorAggregate
@@ -104,6 +106,19 @@ def load_functions(base, names=("viz_join", "viz_evaluator_node")):
         get_store=lambda: None,
         update_memory_with_kind=lambda *a, **k: None,
         _pl_logger=logging.getLogger(__name__),
+        base64=base64,
+        Optional=Optional,
+    )
+    preview = next(
+        n
+        for n in ast.parse("".join(notebook()["cells"][32]["source"])).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_encode_preview"
+    )
+    exec(
+        compile(
+            ast.Module(body=[preview], type_ignores=[]), "<generated Cell 32>", "exec"
+        ),
+        ns,
     )
     exec(
         compile(ast.Module(body=nodes, type_ignores=[]), "<generated Cell 57>", "exec"),

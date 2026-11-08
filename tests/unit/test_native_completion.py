@@ -131,6 +131,7 @@ def load_native(base, *, middleware=False):
         builtins=builtins,
     )
     ns.update(base64=base64, hashlib=hashlib)
+    execute_definitions(ns, 32, {"_encode_preview"})
     for value in (
         create_agent,
         AgentState,

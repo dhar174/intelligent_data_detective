@@ -1,10 +1,15 @@
 """Offline regressions for the generated native evaluator."""
 
+import base64
+import hashlib
+import json
+from pathlib import Path
 import socket
 from copy import deepcopy
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from PIL import Image
 
 from idd_state import VizFeedback
 from tests.unit.test_native_completion import (
@@ -49,6 +54,154 @@ def invoke(base, *, grade="acceptable", finished=True, revision=0):
     ns["viz_evaluator_llm"] = model
     ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
     return ns, state, model, response
+
+
+def _assert_current_image_context(request, items):
+    from langchain_openai.chat_models.base import _construct_responses_api_input
+
+    context = next(m for m in reversed(request) if m.name == "runtime_context")
+    assert isinstance(
+        context.content, list
+    ), "Evaluator must receive actual PNG blocks, not metadata alone"
+    expected = {item.visualization_id: item for item in items}
+    observed = {}
+    for index, block in enumerate(context.content):
+        if not isinstance(block, dict) or block.get("type") != "image_url":
+            continue
+        label = json.loads(context.content[index - 1]["text"])
+        identifier = label["visualization_id"]
+        assert identifier in expected and identifier not in observed
+        item = expected[identifier]
+        assert Path(label["path"]).resolve() == Path(item.path).resolve()
+        prefix, encoded = block["image_url"]["url"].split(",", 1)
+        assert prefix == "data:image/png;base64"
+        digest = hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest()
+        assert digest == hashlib.sha256(Path(item.path).read_bytes()).hexdigest()
+        observed[identifier] = digest
+    assert set(observed) == set(expected)
+    wire = _construct_responses_api_input([context])[0]["content"]
+    image_count = sum(block.get("type") == "input_image" for block in wire)
+    assert image_count == len(items)
+    return observed
+
+
+@pytest.mark.parametrize("pressure", [False, True], ids=["normal", "pressure"])
+def test_every_current_png_reaches_first_model_request_as_image(tmp_path, pressure):
+    ns, state, model, _ = invoke(tmp_path)
+    # Real checkpointed history already has IDs; add_messages legitimately
+    # allocates IDs on new unassigned input objects.
+    state["messages"] = [HumanMessage(id="current-image-user", content="prior history")]
+    if pressure:
+        summary = _HistorySummarySpy()
+        ns["prehook"] = ns["make_hosted_history_middleware"](
+            summary, model_budget_tokens=16_000, max_summary_tokens=32
+        )
+        ns["viz_evaluator_agent"] = ns["create_viz_evaluator_agent"]()
+        state["messages"].insert(
+            0, AIMessage(id="stale-image-review", content="Earlier review " * 6000)
+        )
+    before = deepcopy(state)
+    file_hashes = {
+        item.path: hashlib.sha256(Path(item.path).read_bytes()).hexdigest()
+        for item in state["visualization_results"].visualizations
+    }
+    output = ns["viz_evaluator_node"](state)
+    _assert_current_image_context(
+        model._requests[0], state["visualization_results"].visualizations
+    )
+    assert state == before
+    assert {
+        path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        for path in file_hashes
+    } == file_hashes
+    assert output["viz_grade"] == "acceptable"
+    assert output["viz_eval_result"].finished_this_task
+    assert model._emitted == ["VizFeedback"] and len(model._requests) == 1
+    if pressure:
+        assert summary.requests
+        assert all(m.id != "stale-image-review" for m in model._requests[0])
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing", "corrupt", "stale", "oversized", "unreadable"]
+)
+@pytest.mark.parametrize("recovery", ["0", "1"])
+def test_invalid_current_png_cannot_reach_evaluator_approval(
+    tmp_path, monkeypatch, failure, recovery
+):
+    ns, state, model, _ = invoke(tmp_path)
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", recovery)
+    item = state["visualization_results"].visualizations[0]
+    path = Path(item.path)
+    if failure == "missing":
+        path.unlink()
+        assert not path.exists()
+    elif failure == "corrupt":
+        path.write_bytes(b"not-a-png")
+        assert path.read_bytes() == b"not-a-png"
+    elif failure == "stale":
+        stale = tmp_path.parent / (tmp_path.name + "-other-run") / "stale.png"
+        stale.parent.mkdir()
+        Image.new("RGB", (120, 80), "blue").save(stale)
+        assert stale.is_file()
+        state["visualization_results"].visualizations[0] = item.model_copy(
+            update={"path": str(stale)}
+        )
+    elif failure == "oversized":
+        image = (
+            ns["np"]
+            .random.default_rng(7)
+            .integers(0, 256, size=(1000, 1000, 3), dtype="uint8")
+        )
+        Image.fromarray(image).save(path)
+        assert path.stat().st_size > 2 * 1024 * 1024
+    else:
+        import builtins
+
+        original = builtins.open
+
+        def denied(file, *args, **kwargs):
+            if isinstance(file, (str, Path)) and Path(file).resolve() == path.resolve():
+                raise PermissionError("offline unreadable PNG")
+            return original(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", denied)
+    with pytest.raises(ValueError, match="(?i)(visualization|preview|png|current)"):
+        ns["viz_evaluator_node"](state)
+    assert not model._requests and not model._emitted
+    assert "viz_grade" not in state
+
+
+def test_reused_evaluator_thread_receives_fresh_image_bytes(tmp_path):
+    ns, state, model, _ = invoke(tmp_path)
+    state["_config"] = {"configurable": {"thread_id": "same-image-evidence-thread"}}
+    items = state["visualization_results"].visualizations
+    first = ns["viz_evaluator_node"](state)
+    original = _assert_current_image_context(model._requests[0], items)
+    Image.new("RGB", (240, 160), "red").save(items[0].path)
+    assert (
+        hashlib.sha256(Path(items[0].path).read_bytes()).hexdigest()
+        != original[items[0].visualization_id]
+    )
+    state.update(
+        viz_revise_count=1, next_agent_prompt="Review the current revised figure bytes."
+    )
+    second = ns["viz_evaluator_node"](state)
+    latest = _assert_current_image_context(model._requests[-1], items)
+    first_context = next(
+        m for m in reversed(model._requests[0]) if m.name == "runtime_context"
+    )
+    retained_hashes = [
+        hashlib.sha256(
+            base64.b64decode(b["image_url"]["url"].split(",", 1)[1])
+        ).hexdigest()
+        for b in first_context.content
+        if isinstance(b, dict) and b.get("type") == "image_url"
+    ]
+    assert retained_hashes == list(original.values())
+    assert latest[items[0].visualization_id] != original[items[0].visualization_id]
+    assert first["viz_grade"] == second["viz_grade"] == "acceptable"
+    assert model._emitted == ["VizFeedback", "VizFeedback"]
 
 
 @pytest.mark.parametrize("pressure", [False, True], ids=["normal", "history-pressure"])
