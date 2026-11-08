@@ -1,6 +1,7 @@
 """SQLite-backed canonical revision path with controlled, offline model responses."""
 
 from pathlib import Path
+import json
 import socket
 from threading import Lock
 
@@ -66,12 +67,11 @@ class RuntimeTaskChatModel(ControlledChatModel):
             message for message in messages if message.name == "runtime_context"
         ]
         assert contexts, "Generated visualization worker must receive runtime context"
-        context = str(contexts[-1].content)
-        marker = "Assigned visualization_id:"
-        assert (
-            marker in context
-        ), "Generated worker omitted its assigned visualization ID"
-        assigned_id = context.rsplit(marker, 1)[1].splitlines()[0].strip()
+        runtime = json.loads(str(contexts[-1].content))
+        spec = VizSpec.model_validate(runtime["assigned_spec"])
+        context = runtime["visualization_task"]
+        assigned_id = spec.viz_id
+        assert assigned_id, "Generated worker omitted its assigned visualization ID"
         matches = [
             (instruction, payload)
             for instruction, payload in self.payload_by_instruction.items()
