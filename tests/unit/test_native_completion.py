@@ -265,6 +265,7 @@ def load_native(base, *, middleware=False):
             "_cp5_validated_figure_path",
             "_cp5_cleaner_messages",
             "_cp5_validate_cleaner_completion",
+            "_cp5_visualization_messages",
             "viz_evaluator_node",
         },
     )
@@ -764,6 +765,179 @@ def test_viz_distinguishes_new_and_alternating_python_errors(tmp_path, repeat):
     else:
         assert ns["viz_worker"](worker_state(tmp_path))["viz_results"]
         assert len(model._requests) == 6
+
+
+def _viz_retrieval_fixture(base, calls, model_type=ControlledChatModel):
+    ns = load_native(base, middleware=True)
+    items = figures(base)
+    model = model_type(
+        response_name="VisualizationResults",
+        payload=idd_state.VisualizationResults(
+            **FLAGS, visualizations=items[:1]
+        ).model_dump(),
+        scripted_responses=calls,
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(base)
+    state.update(
+        user_prompt="Analyze the whole dataset, produce all figures and a final report.",
+        next_agent_prompt="Please generate all requested visualizations for the cleaned dataset. Create histograms, bar charts, and scatter plots as PNG files.",
+        individual_viz_task="Create only the assigned controlled bar chart.",
+        artifacts_path=str(base),
+    )
+    return ns, model, state, items
+
+
+def test_viz_worker_scope_is_current_assignment_not_pipeline_or_perfection(tmp_path):
+    class ScopeModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            assert not any(
+                m.name == "supervisor"
+                and "generate all requested visualizations" in str(m.content)
+                for m in messages
+            ), "Pipeline-wide instruction is still delivered as this worker's supervisor assignment"
+            runtime = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            assignment = next(
+                m for m in reversed(messages) if m.name == "visualization_assignment"
+            )
+            assert isinstance(assignment, HumanMessage)
+            assert "only this worker's assigned visualization" in assignment.content
+            assert "VisualizationResults" in assignment.content
+            assert (
+                runtime["original_user_request"]
+                == "Analyze the whole dataset, produce all figures and a final report."
+            )
+            assert runtime["pipeline_assignment"].startswith(
+                "Please generate all requested visualizations"
+            )
+            assert (
+                "Create only the assigned controlled bar chart"
+                in runtime["visualization_task"]
+            )
+            assert not any(m.name == "supervisor" for m in messages)
+            assert "top marks" not in str(
+                runtime
+            ) and "Never stop or hand back" not in str(runtime)
+            return super()._generate(messages, **kwargs)
+
+    ns, model, state, _ = _viz_retrieval_fixture(tmp_path, [], ScopeModel)
+    assert ns["viz_worker"](state)["viz_results"]
+    assert model._emitted == ["VisualizationResults"]
+
+
+@pytest.mark.parametrize("tool_name", ["get_visualization", "list_visualizations"])
+def test_viz_unchanged_nonempty_retrieval_stops_without_completion(tmp_path, tool_name):
+    path = str(tmp_path / "visualizations" / "owned_chart_0.png")
+    args = (
+        {"path": path}
+        if tool_name == "get_visualization"
+        else {"artifacts_dir": str(tmp_path)}
+    )
+    ns, model, state, _ = _viz_retrieval_fixture(
+        tmp_path, [{"name": tool_name, "args": args}] * 90
+    )
+    with pytest.raises(
+        ValueError, match="Visualization repeated unchanged retrieval results"
+    ):
+        ns["viz_worker"](state)
+    assert len(model._requests) == 4
+    assert "VisualizationResults" not in model._emitted
+    results = [
+        m
+        for m in model._requests[-1]
+        if isinstance(m, ToolMessage) and m.name == tool_name
+    ]
+    assert results and all("not found" not in str(m.content).lower() for m in results)
+
+
+def test_viz_alternating_stale_retrievals_stop(tmp_path):
+    lookup = {
+        "name": "get_visualization",
+        "args": {"path": str(tmp_path / "visualizations/owned_chart_0.png")},
+    }
+    inventory = {
+        "name": "list_visualizations",
+        "args": {"artifacts_dir": str(tmp_path)},
+    }
+    ns, model, state, _ = _viz_retrieval_fixture(tmp_path, [lookup, inventory] * 45)
+    with pytest.raises(
+        ValueError, match="Visualization repeated unchanged retrieval results"
+    ):
+        ns["viz_worker"](state)
+    assert len(model._requests) == 5
+    assert "VisualizationResults" not in model._emitted
+
+
+def test_viz_new_preview_paging_and_figure_are_retrieval_progress(tmp_path):
+    path = str(tmp_path / "visualizations/owned_chart_0.png")
+    calls = [
+        {"name": "get_visualization", "args": {"path": path}},
+        {"name": "get_visualization", "args": {"path": path, "include_preview": True}},
+        {
+            "name": "list_visualizations",
+            "args": {"artifacts_dir": str(tmp_path), "start": 0, "limit": 1},
+        },
+        {
+            "name": "list_visualizations",
+            "args": {"artifacts_dir": str(tmp_path), "start": 1, "limit": 1},
+        },
+    ]
+    ns, model, state, _ = _viz_retrieval_fixture(
+        tmp_path, [c for call in calls for c in [call] * 3]
+    )
+    assert ns["viz_worker"](state)["viz_results"]
+    assert len(model._requests) == 13
+    assert any(
+        isinstance(m, ToolMessage) and isinstance(m.content, list)
+        for m in model._requests[-1]
+    )
+
+
+def test_viz_retrieval_bound_resets_for_new_assignment_same_thread(tmp_path):
+    call = {
+        "name": "get_visualization",
+        "args": {"path": str(tmp_path / "visualizations/owned_chart_0.png")},
+    }
+    ns, model, state, _ = _viz_retrieval_fixture(tmp_path, [])
+    complete = {"name": "VisualizationResults", "args": model.payload}
+    model.scripted_responses = [call, call, call, complete] * 2
+    original = list(state["messages"])
+    for name in ("First assigned chart", "Second assigned chart"):
+        state["individual_viz_task"] = name
+        assert ns["viz_worker"](state)["viz_results"]
+    assert state["messages"] == original
+    assert len(model._requests) == 8
+
+
+def test_viz_successful_python_work_resets_retrieval_streak(tmp_path):
+    call = {
+        "name": "get_visualization",
+        "args": {"path": str(tmp_path / "visualizations/owned_chart_0.png")},
+    }
+    work = {"name": "python_repl_tool", "args": {"code": "print(2 + 3)"}}
+    ns, model, state, _ = _viz_retrieval_fixture(
+        tmp_path, [call] * 3 + [work] + [call] * 3
+    )
+    assert ns["viz_worker"](state)["viz_results"]
+    assert len(model._requests) == 8
+
+
+def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
+    bad = {"name": "python_repl_tool", "args": {"code": "print(df)"}}
+    lookup = {
+        "name": "get_visualization",
+        "args": {"path": str(tmp_path / "visualizations/owned_chart_0.png")},
+    }
+    ns, model, state, _ = _viz_retrieval_fixture(
+        tmp_path, [bad] * 3 + [lookup] + [bad] * 3
+    )
+    assert ns["viz_worker"](state)["viz_results"]
+    assert len(model._requests) == 8
 
 
 def evaluator_state(base):

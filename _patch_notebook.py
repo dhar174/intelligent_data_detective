@@ -2566,10 +2566,39 @@ def apply_cp5_visualization_assignment_patch(cells):
                      if isinstance(m, HumanMessage) and m.name == "runtime_context"), default=-1)
         seen = set()
         redundant = 0
+        retrieval_seen = set()
+        retrieval_redundant = 0
+        retrieval_tools = {"list_visualizations", "get_visualization", "read_file",
+                           "list_available_files", "get_dataframe_schema", "get_column_names"}
+        calls = {call.get("id"): call.get("name")
+                 for message in messages[start + 1:]
+                 if isinstance(message, AIMessage)
+                 for call in (message.tool_calls or [])}
         for message in messages[start + 1:]:
             if not isinstance(message, ToolMessage):
                 continue
+            if calls.get(message.tool_call_id) != message.name:
+                continue
             if message.name in ("manage_memory", "search_memory"):
+                continue
+            if message.name in retrieval_tools:
+                import hashlib as _viz_hashlib, json as _viz_json
+                fingerprint = _viz_hashlib.sha256(_viz_json.dumps(
+                    [message.name, message.content, message.artifact],
+                    sort_keys=True, default=str,
+                ).encode("utf-8")).hexdigest()
+                retrieval_redundant = retrieval_redundant + 1 if fingerprint in retrieval_seen else 0
+                if fingerprint not in retrieval_seen:
+                    redundant = 0
+                    seen.clear()
+                retrieval_seen.add(fingerprint)
+                if retrieval_redundant >= 3:
+                    raise ValueError(
+                        "Visualization repeated unchanged retrieval results after three redundant results. "
+                        "Use the assigned spec and actual saved path; correct a concrete issue or "
+                        "complete natively so the canonical evaluator can assess the generated figure. "
+                        "No successful revision or figure approval has been inferred."
+                    )
                 continue
             text = str(message.content).strip()
             artifact = message.artifact if isinstance(message.artifact, dict) else {}
@@ -2592,6 +2621,9 @@ def apply_cp5_visualization_assignment_patch(cells):
             else:
                 redundant = 0
                 seen.clear()
+                if message.status != "error":
+                    retrieval_redundant = 0
+                    retrieval_seen.clear()
         return handler(request)
 
     tool_descriptions = "\\n".join(''', patch_id="visualization bounded Python error progress")
@@ -2617,6 +2649,57 @@ def apply_cp5_visualization_assignment_patch(cells):
         "in one call. Read the actual returned path and verify the file; correct tool errors rather "
         "than repeating unchanged code. Failed execution never establishes successful completion."
     )''', patch_id="complete visualization spec and fresh Python namespace delivery")
+    source = replace_required(source, '''    _msgs = (state.get("messages") or [])
+    newest_msg = (_msgs[-1] if _msgs else None) or state.get("last_agent_message") or state["final_turn_msgs_list"][-1] or AIMessage(content="No message available")
+
+
+    base_prompt = visualization_prompt_template
+    system_message_content = base_prompt.partial(**vis_vars)
+    rendered = system_message_content.format_messages(messages=[HumanMessage(content=user_prompt, name="user"),newest_msg,AIMessage(content=default_instruction,name="supervisor")], **vis_vars)''',
+        '    rendered = _cp5_visualization_messages(state, vis_vars)',
+        patch_id="visualization worker scope instead of pipeline-wide perfection prompt")
+    source = replace_required(source, '''        rendered = system_message_content.format_messages(
+            messages=[HumanMessage(content=user_prompt, name="user"), newest_msg, *tmp_basemsgs, main_emer_msg], **vis_vars
+        )''', '''        rendered = _cp5_visualization_messages(
+            state, vis_vars, [*tmp_basemsgs, main_emer_msg]
+        )''', patch_id="visualization scoped emergency assignment")
+    source += '''
+
+
+def _cp5_visualization_messages(state, variables, emergency_messages=()):
+    import json
+    spec = state.get("viz_spec") or state.get("individual_viz_task")
+    if isinstance(spec, dict):
+        spec = VizSpec.model_validate(spec)
+    contract = (
+        "Generate only this worker's assigned visualization from the provided spec and actual data. "
+        "The original user request and pipeline assignment are background context, not additional "
+        "figures or reporting tasks for this worker. Preserve the assigned figure ID and use the "
+        "actual returned current-run PNG path. Verify concrete output and correct real issues; "
+        "do not repeatedly retrieve unchanged figures in pursuit of unspecified perfection. "
+        "After producing the required real PNG, call VisualizationResults natively with its actual "
+        "DataVisualization metadata and stop. The canonical join and evaluator assess the complete "
+        "figure set and may request a genuine revision. If the required output cannot be produced, "
+        "report finished_this_task=False with the blocker; never claim successful completion or approval."
+    )
+    emergency = [str(message.content) for message in emergency_messages if message is not None]
+    context = {
+        "original_user_request": variables.get("user_prompt"),
+        "pipeline_assignment": state.get("next_agent_prompt"),
+        "visualization_task": variables["visualization_task"],
+        "assigned_spec": spec.model_dump(mode="json") if isinstance(spec, VizSpec) else None,
+        "available_df_ids": state.get("available_df_ids") or [],
+        "cleaned_dataset_description": variables.get("cleaned_dataset_description"),
+        "analysis_insights": variables.get("analysis_insights"),
+        "current_run_directory": str(_cp5_current_run_root()),
+        "memories": variables.get("memories"),
+        "emergency_assignments": emergency,
+        "completion_contract": contract,
+    }
+    return [HumanMessage(name="runtime_context", content=json.dumps(context, default=str)),
+            HumanMessage(name="visualization_assignment", content=contract + "\\n" +
+                         variables["visualization_task"] + "\\n" + "\\n".join(emergency))]
+'''
     cells[57]["source"] = source
     for index in (44, 57):
         ast.parse(join_source(cells[index]["source"]))
