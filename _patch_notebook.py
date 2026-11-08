@@ -2110,19 +2110,24 @@ def _cp5_visible_plot_result(content, artifact):
     source = join_source(cells[57]["source"])
     source += """
 
+def _cp5_current_run_root():
+    # Cell 51 RuntimeCtx.artifacts_dir is the authoritative per-run root.
+    root = getattr(globals().get("RUNTIME"), "artifacts_dir", None)
+    if not root:
+        raise ValueError("Visualization asset has no current run")
+    return PathlibPath(root).resolve()
+
+
 def _cp5_validated_figure_path(raw_path, state):
     # CP5-FIGURE-PROVENANCE: validate explicit references; never discover substitutes.
     from idd_tools import _resolve_artifact_path
     from PIL import Image
     if not isinstance(raw_path, (str, PathlibPath)) or not str(raw_path).strip():
         raise ValueError("Visualization asset path is empty or invalid")
-    root = getattr(RUNTIME, "run_dir", None)
-    if not root:
-        raise ValueError("Visualization asset has no current run")
-    root = PathlibPath(root).resolve()
+    root = _cp5_current_run_root()
     try:
         base = root if PathlibPath(raw_path).is_absolute() else PathlibPath(
-            state.get("artifacts_path") or (WORKING_DIRECTORY / "artifacts"))
+            state.get("artifacts_path") or root)
         candidate = _resolve_artifact_path(str(raw_path), config={"configurable": {
             "runtime": {"artifacts_dir": base}}}, create_parents=False)
         path = _resolve_artifact_path(str(candidate), config={"configurable": {
@@ -2191,12 +2196,24 @@ def _cp5_validated_figure_path(raw_path, state):
     )
     source = replace_required(
         source,
+        """        # A path-only result must be an explicitly supplied, owned current-run PNG.
+        _run_dir = getattr(RUNTIME, "run_dir", None)
+        if not _run_dir or not _path_obj.is_relative_to(PathlibPath(_run_dir).resolve()):
+            raise ValueError("viz_join figure path is outside the current run")
+        if _path_obj.suffix.lower() != ".png" or not _path_obj.is_file() or _path_obj.stat().st_size <= 0:
+            raise ValueError("viz_join figure path is missing or invalid")
+""",
+        "        # The shared validator already verified this current-run PNG.\n",
+        patch_id="remove obsolete path-only runtime contract",
+    )
+    source = replace_required(
+        source,
         "    # Pass the assigned ID to the model instead of rewriting its output ID.",
         """    task += ("\\nUse the actual saved path returned by plotting tools, not an intended filename. "
              "For custom Python plots use an explicitly owned current-run artifact path. "
              "Failed tool output does not establish that a figure exists. Complete only after "
              "the PNG exists, retain the assigned visualization ID, and never invent a saved path.")
-    task += f"\\nOwned current-run directory: {getattr(globals().get('RUNTIME'), 'run_dir', None)}. Custom plots must use an absolute PNG path inside this directory."
+    task += f"\\nOwned current-run directory: {_cp5_current_run_root()}. Custom plots must use an absolute PNG path inside this directory."
     vis_vars["visualization_task"] = task
     # Pass the assigned ID to the model instead of rewriting its output ID.""",
         patch_id="worker saved-path contract",

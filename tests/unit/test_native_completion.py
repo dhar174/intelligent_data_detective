@@ -59,7 +59,7 @@ import pytest
 import idd_core
 import idd_state
 from idd_registry import DataFrameRegistry, get_global_df_registry
-from tests.unit.test_viz_join import FLAGS, figures, notebook
+from tests.unit.test_viz_join import FLAGS, figures, notebook, production_runtime
 
 WRAPPERS = [
     ("initial_analysis", "InitialDescription", "initial_analyst_llm", "IA"),
@@ -152,7 +152,7 @@ def load_native(base, *, middleware=False):
         ns[value.__name__] = value
     ns.update(
         WORKING_DIRECTORY=base,
-        RUNTIME=SimpleNamespace(run_dir=base, artifacts_dir=base / "artifacts"),
+        RUNTIME=production_runtime(base),
         PathlibPath=Path,
         in_memory_store=InMemoryStore(),
         get_store=lambda: None,
@@ -257,6 +257,7 @@ def load_native(base, *, middleware=False):
             "data_cleaner_node",
             "viz_worker",
             "viz_join",
+            "_cp5_current_run_root",
             "_cp5_validated_figure_path",
             "viz_evaluator_node",
         },

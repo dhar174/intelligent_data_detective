@@ -1095,9 +1095,9 @@ def visualization_orchestrator(state):
 
 def viz_worker(state):
     global RUNTIME
-    from types import SimpleNamespace
+    from tests.unit.test_viz_join import production_runtime
     from PIL import Image
-    RUNTIME = SimpleNamespace(run_dir=WORKING_DIRECTORY, artifacts_dir=WORKING_DIRECTORY / "artifacts")
+    RUNTIME = production_runtime(WORKING_DIRECTORY)
     _TRANSITION_LOG.append("viz_worker")
     figure_path = WORKING_DIRECTORY / "chart1.png"
     Image.new("RGB", (240, 160), "white").save(figure_path)
@@ -1710,6 +1710,7 @@ from pathlib import Path
 import pytest
 from tests.unit.test_figure_provenance import (
     test_real_fallback_path_used_after_failed_custom_plot,
+    test_real_runtime_owned_png_is_accepted,
     test_worker_rejects_false_asset_before_memory_or_publication,
 )
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
@@ -1717,12 +1718,15 @@ base = Path({str(tmp_path)!r})
 positive, negative = base / "real-plot", base / "missing-asset"
 positive.mkdir()
 negative.mkdir()
+joined = base / "real-runtime-join"
+joined.mkdir()
 def denied(*args, **kwargs):
     raise AssertionError("Network forbidden in figure provenance smoke")
 with pytest.MonkeyPatch.context() as mp:
     mp.setattr(socket.socket, "connect", denied)
     mp.setattr(socket, "create_connection", denied)
     test_real_fallback_path_used_after_failed_custom_plot(positive, mp)
+    test_real_runtime_owned_png_is_accepted(joined, True, False)
     test_worker_rejects_false_asset_before_memory_or_publication(negative, "missing")
 print({PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """

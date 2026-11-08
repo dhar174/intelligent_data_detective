@@ -1,6 +1,7 @@
 """Generated-function figure provenance checks; no providers or real credentials."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import io
 import textwrap
@@ -19,7 +20,13 @@ from tests.unit.test_native_completion import (
     load_native,
     worker_state,
 )
-from tests.unit.test_viz_join import figures, load_functions, state_for
+from tests.unit.test_viz_join import (
+    apply_join,
+    figures,
+    load_functions,
+    production_runtime,
+    state_for,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -44,6 +51,7 @@ def plot_namespace(base, monkeypatch):
     from idd_registry import DataFrameRegistry
 
     ns = load_native(base, middleware=True)
+    ns["RUNTIME"] = production_runtime(base / "artifacts" / "run-fixture")
     registry = DataFrameRegistry(data_dir=base / "registry")
     registry.register_dataframe(
         pd.DataFrame(
@@ -66,7 +74,7 @@ def plot_namespace(base, monkeypatch):
         textwrap=textwrap,
         ast=ast,
     )
-    monkeypatch.setenv("IDD_ARTIFACTS_DIR", str(base / "artifacts"))
+    monkeypatch.delenv("IDD_ARTIFACTS_DIR", raising=False)
     return ns
 
 
@@ -94,6 +102,7 @@ def test_actual_plot_path_reaches_native_model_payload(
     assert not str(result.content).startswith("Failed"), result.content
     path = result.artifact["image_path"]
     assert Path(path).is_file()
+    assert Path(path).parent == ns["RUNTIME"].viz_dir
     wire = _construct_responses_api_input([result])
     assert json.loads(wire[0]["output"])["image_path"] == path
     assert "image_base64" not in str(wire) and "image_bytes" not in str(wire)
@@ -128,7 +137,7 @@ def test_worker_rejects_false_asset_before_memory_or_publication(tmp_path, damag
         item = figures(tmp_path / "old-run")[0]
         current = tmp_path / "current-run"
         current.mkdir()
-        ns["RUNTIME"].run_dir = current
+        ns["RUNTIME"] = production_runtime(current)
     model = ControlledChatModel(
         response_name="VisualizationResults",
         payload=VisualizationResults(**FLAGS, visualizations=[item]).model_dump(),
@@ -141,7 +150,12 @@ def test_worker_rejects_false_asset_before_memory_or_publication(tmp_path, damag
     for index, message in enumerate(state["messages"]):
         message.id = f"checkpoint-message-{index}"
     before = deepcopy(state)
-    with pytest.raises(ValueError, match="(?i)visualization.*(asset|figure|run)"):
+    expected = (
+        "outside the current run"
+        if damage in ("outside", "stale")
+        else "not a readable PNG" if damage == "corrupt" else "missing or invalid"
+    )
+    with pytest.raises(ValueError, match=expected):
         ns["viz_worker"](state)
     assert memory == []
     assert state == before
@@ -223,6 +237,8 @@ def test_join_rejects_unfinished_duplicate_before_deduplication(tmp_path, envelo
 
 def test_real_fallback_path_used_after_failed_custom_plot(tmp_path, monkeypatch):
     ns = plot_namespace(tmp_path, monkeypatch)
+    assert type(ns["RUNTIME"]).__name__ == "RuntimeCtx"
+    assert not hasattr(ns["RUNTIME"], "run_dir")
     missing = str(tmp_path / "intended-but-never-created.png")
 
     class FallbackModel(ControlledChatModel):
@@ -269,7 +285,7 @@ def test_real_fallback_path_used_after_failed_custom_plot(tmp_path, monkeypatch)
     assert len(model._requests) == 3
     assert any("actual saved path" in str(m.content) for m in model._requests[0])
     assert any(
-        f"Owned current-run directory: {tmp_path}" in str(m.content)
+        f"Owned current-run directory: {ns['RUNTIME'].artifacts_dir}" in str(m.content)
         for m in model._requests[0]
     )
     assert any(
@@ -277,3 +293,56 @@ def test_real_fallback_path_used_after_failed_custom_plot(tmp_path, monkeypatch)
         for m in model._requests[-1]
         if isinstance(m, ToolMessage)
     )
+
+
+@pytest.mark.parametrize("path_only", [False, True])
+@pytest.mark.parametrize("with_base", [False, True])
+def test_real_runtime_owned_png_is_accepted(tmp_path, path_only, with_base):
+    root = tmp_path / "artifacts" / "run-fixture"
+    ns = load_functions(root)
+    ns["WORKING_DIRECTORY"] = tmp_path
+    assert type(ns["RUNTIME"]).__name__ == "RuntimeCtx"
+    assert not hasattr(ns["RUNTIME"], "run_dir")
+    items = figures(root)
+    state = state_for([] if path_only else items)
+    state["viz_paths"] = [str(Path(item.path).relative_to(root)) for item in items]
+    if with_base:
+        state["artifacts_path"] = str(root)
+    else:
+        state.pop("artifacts_path", None)
+    result = apply_join(state, ns["viz_join"](state))
+    actual = result["visualization_results"].visualizations
+    assert len(actual) == len(items)
+    assert {Path(item.path).resolve() for item in actual} == {
+        Path(item.path) for item in items
+    }
+    if not path_only:
+        assert actual == items
+
+
+def test_missing_real_runtime_artifact_root_fails_closed(tmp_path):
+    ns = load_functions(tmp_path)
+    ns["RUNTIME"] = replace(ns["RUNTIME"], artifacts_dir=None)
+    with pytest.raises(ValueError, match="no current run"):
+        ns["_cp5_validated_figure_path"](figures(tmp_path)[0].path, {})
+
+
+def test_worker_missing_runtime_root_fails_before_model_call(tmp_path):
+    ns = load_native(tmp_path, middleware=True)
+    ns["RUNTIME"] = replace(ns["RUNTIME"], artifacts_dir=None)
+    model = ControlledChatModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    memory = []
+    ns["update_memory_with_kind"] = lambda *a, **k: memory.append(k)
+    with pytest.raises(ValueError, match="no current run"):
+        ns["viz_worker"](worker_state(tmp_path))
+    assert model._requests == []
+    assert memory == []
+
+
+def test_real_runtime_rejects_existing_older_run_png(tmp_path):
+    ns = load_functions(tmp_path / "current-run")
+    older = figures(tmp_path / "older-run")[0]
+    with pytest.raises(ValueError, match="outside the current run"):
+        ns["_cp5_validated_figure_path"](older.path, {})

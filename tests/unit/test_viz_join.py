@@ -4,6 +4,7 @@ Figures and reports here are temporary test fixtures, never production proof.
 """
 
 import ast
+from dataclasses import dataclass, fields
 from datetime import datetime
 import json
 import logging
@@ -43,13 +44,47 @@ def notebook():
     return json.loads((ROOT / NOTEBOOK).read_text(encoding="utf-8"))
 
 
+def production_runtime(base):
+    """Instantiate the actual generated runtime; never invent ownership fields."""
+    definition = next(
+        node
+        for node in ast.parse("".join(notebook()["cells"][51]["source"])).body
+        if isinstance(node, ast.ClassDef) and node.name == "RuntimeCtx"
+    )
+    namespace = {"__name__": __name__, "dataclass": dataclass}
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            definition,
+        ],
+        type_ignores=[],
+    )
+    exec(
+        compile(ast.fix_missing_locations(module), "<generated RuntimeCtx>", "exec"),
+        namespace,
+    )
+    values = {field.name: None for field in fields(namespace["RuntimeCtx"])}
+    values.update(
+        run_id=base.name,
+        artifacts_dir=base,
+        viz_dir=base / "visualizations",
+        reports_dir=base / "reports",
+        logs_dir=base / "logs",
+        data_dir=base / "data",
+        _config={"configurable": {"thread_id": "offline-runtime"}},
+    )
+    return namespace["RuntimeCtx"](**values)
+
+
 def load_functions(base, names=("viz_join", "viz_evaluator_node")):
     source = "".join(notebook()["cells"][57]["source"])
     nodes = [
         n
         for n in ast.parse(source).body
         if isinstance(n, ast.FunctionDef)
-        and n.name in (*names, "_cp5_validated_figure_path")
+        and n.name in (*names, "_cp5_current_run_root", "_cp5_validated_figure_path")
     ]
     assert set(names).issubset({n.name for n in nodes})
     ns = dict(
@@ -62,7 +97,7 @@ def load_functions(base, names=("viz_join", "viz_evaluator_node")):
         HumanMessage=HumanMessage,
         PathlibPath=Path,
         WORKING_DIRECTORY=base,
-        RUNTIME=SimpleNamespace(run_dir=base, artifacts_dir=base / "artifacts"),
+        RUNTIME=production_runtime(base),
         ALIASES={},
         sample_prompt_text="Offline retail fixture",
         in_memory_store=None,
