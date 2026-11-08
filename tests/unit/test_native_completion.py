@@ -585,6 +585,187 @@ def worker_state(base):
     )
 
 
+def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
+    tmp_path, monkeypatch
+):
+    from tests.unit.test_figure_provenance import plot_namespace, apply_join
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    spec = idd_state.VizSpec(
+        **FLAGS,
+        viz_id="net-distribution",
+        title="Net distribution",
+        viz_type="histogram",
+        df_id="retail-fixture",
+        columns=["net"],
+        x="net",
+        bins=3,
+        y=None,
+        hue=None,
+        agg=None,
+        query=None,
+        description="Net distribution",
+        limit=None,
+        style="matplotlib",
+        viz_instructions="Plot the distribution with the specified bins.",
+    )
+    path = ns["RUNTIME"].artifacts_dir / "native-distribution.png"
+    code = (
+        "import matplotlib.pyplot as plt\n"
+        "fig, ax = plt.subplots()\nax.hist(df['net'], bins=3)\n"
+        "ax.set(xlabel='Net revenue', ylabel='Orders', title='Net distribution')\n"
+        f"fig.savefig({str(path)!r})\nplt.close(fig)\nprint({str(path)!r})"
+    )
+    item = idd_state.DataVisualization(
+        **FLAGS,
+        path=str(path),
+        visualization_id=spec.viz_id,
+        visualization_title=spec.title,
+        visualization_type="histogram",
+        visualization_style="matplotlib",
+        visualization_description="Three bins of registered net revenue.",
+    )
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=idd_state.VisualizationResults(
+            **FLAGS, visualizations=[item]
+        ).model_dump(),
+        required_context=[
+            json.dumps(spec.model_dump(mode="json"), sort_keys=True),
+            "Every Python call starts with a fresh namespace",
+            "Pass df_id explicitly on each data call",
+        ],
+        scripted_responses=[
+            {"name": "python_repl_tool", "args": {"code": code, "df_id": spec.df_id}}
+        ],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+    )
+    update = ns["viz_worker"](state)
+    joined = apply_join({**state, **update}, ns["viz_join"]({**state, **update}))
+    assert joined["visualization_complete"] is True
+    assert (
+        joined["visualization_results"].visualizations[0].visualization_id
+        == spec.viz_id
+    )
+    with Image.open(path) as image:
+        image.verify()
+    assert model._emitted == ["python_repl_tool", "VisualizationResults"]
+    tool = next(
+        t for t in model._bindings[0] if getattr(t, "name", None) == "python_repl_tool"
+    )
+    assert "fresh namespace" in tool.description
+    assert (
+        "df_id" in tool.description
+        and "not Python variable aliases" in tool.description
+    )
+
+
+def test_viz_repeated_python_errors_stop_before_recursion(tmp_path):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload={},
+        scripted_responses=[{"name": "python_repl_tool", "args": {"code": "print(df)"}}]
+        * 90,
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["scope_a"])
+    with pytest.raises(
+        ValueError, match="Visualization repeated unchanged Python errors"
+    ):
+        ns["viz_worker"](worker_state(tmp_path))
+    assert len(model._requests) == 4
+    assert "VisualizationResults" not in model._emitted
+
+
+def test_viz_python_error_correction_and_new_assignment_share_native_thread(tmp_path):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    result = idd_state.VisualizationResults(
+        **FLAGS, visualizations=figures(tmp_path)
+    ).model_dump()
+    bad = {"name": "python_repl_tool", "args": {"code": "print(df)"}}
+    good = {
+        "name": "python_repl_tool",
+        "args": {"code": "print(df['value'].sum())", "df_id": "scope_a"},
+    }
+    complete = {"name": "VisualizationResults", "args": result}
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=result,
+        scripted_responses=[bad, bad, bad, good, complete] * 2,
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["scope_a"])
+    state = worker_state(tmp_path)
+    original = list(state["messages"])
+    for assignment in ("First assignment", "Second assignment"):
+        state["individual_viz_task"] = assignment
+        assert ns["viz_worker"](state)["viz_results"]
+    assert state["messages"] == original
+    assert model._emitted == ["python_repl_tool"] * 4 + ["VisualizationResults"] + [
+        "python_repl_tool"
+    ] * 4 + ["VisualizationResults"]
+    assert len(model._requests) == 10
+
+
+def test_viz_successful_calculation_resets_error_streak(tmp_path):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    result = idd_state.VisualizationResults(
+        **FLAGS, visualizations=figures(tmp_path)
+    ).model_dump()
+    bad = {"name": "python_repl_tool", "args": {"code": "print(df)"}}
+    good = {
+        "name": "python_repl_tool",
+        "args": {"code": "print(df['value'].sum())", "df_id": "scope_a"},
+    }
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=result,
+        scripted_responses=[bad, bad, bad, good, bad, bad, bad, good],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["scope_a"])
+    assert ns["viz_worker"](worker_state(tmp_path))["viz_results"]
+    assert len(model._requests) == 9
+
+
+@pytest.mark.parametrize("repeat", [False, True])
+def test_viz_distinguishes_new_and_alternating_python_errors(tmp_path, repeat):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    result = idd_state.VisualizationResults(
+        **FLAGS, visualizations=figures(tmp_path)
+    ).model_dump()
+    codes = (
+        ["print(missing_a)", "print(missing_b)"] * 4
+        if repeat
+        else [f"print(missing_{i})" for i in range(5)]
+    )
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=result,
+        scripted_responses=[
+            {"name": "python_repl_tool", "args": {"code": code}} for code in codes
+        ],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["scope_a"])
+    if repeat:
+        with pytest.raises(
+            ValueError, match="Visualization repeated unchanged Python errors"
+        ):
+            ns["viz_worker"](worker_state(tmp_path))
+        assert len(model._requests) == 5
+        assert "VisualizationResults" not in model._emitted
+    else:
+        assert ns["viz_worker"](worker_state(tmp_path))["viz_results"]
+        assert len(model._requests) == 6
+
+
 def evaluator_state(base):
     state = worker_state(base)
     items = figures(base)

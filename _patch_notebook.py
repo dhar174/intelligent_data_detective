@@ -2542,6 +2542,86 @@ def apply_cp5_visualization_memory_contract_patch(cells):
     cells[44]["source"] = source
 
 
+def apply_cp5_visualization_assignment_patch(cells):
+    """Deliver the complete data assignment and bound unchanged Python failures."""
+    source = join_source(cells[44]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "create_visualization_agent")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(before, '    memory_id_error = "idd_visualization_memory_id_contract"', '''    _cp5_visualization_tools = [
+        t.model_copy(update={"description": t.description +
+            " Every Python call starts with a fresh namespace. Pass df_id explicitly on each "
+            "data call to bind the registered DataFrame as df. Registry IDs are not Python variable "
+            "aliases. Keep imports, transformations and saving in the same call; use the returned "
+            "saved path, never an assumed filename."})
+        if t.name == "python_repl_tool" else t for t in _cp5_visualization_tools
+    ]
+    memory_id_error = "idd_visualization_memory_id_contract"''', patch_id="visualization Python binding contract")
+    body = replace_required(body, '    tool_descriptions = "\\n".join(', '''    from langchain.agents.middleware import wrap_model_call
+
+    @wrap_model_call
+    def visualization_python_progress(request, handler):
+        messages = list(request.state.get("messages") or [])
+        start = max((i for i, m in enumerate(messages)
+                     if isinstance(m, HumanMessage) and m.name == "runtime_context"), default=-1)
+        seen = set()
+        redundant = 0
+        for message in messages[start + 1:]:
+            if not isinstance(message, ToolMessage):
+                continue
+            if message.name in ("manage_memory", "search_memory"):
+                continue
+            text = str(message.content).strip()
+            artifact = message.artifact if isinstance(message.artifact, dict) else {}
+            error = message.name == "python_repl_tool" and (
+                message.status == "error" or artifact.get("error") or text.startswith((
+                    "NameError:", "KeyError:", "ValueError:", "TypeError:",
+                    "Failed to execute.", "Error: DataFrame",
+                ))
+            )
+            if error:
+                fingerprint = str(artifact.get("error") or text)
+                redundant = redundant + 1 if fingerprint in seen else 0
+                seen.add(fingerprint)
+                if redundant >= 3:
+                    raise ValueError(
+                        "Visualization repeated unchanged Python errors after three redundant results. "
+                        "Pass the assigned registry df_id explicitly on every data call, correct the "
+                        "code using the tool error, and verify a real PNG before native completion."
+                    )
+            else:
+                redundant = 0
+                seen.clear()
+        return handler(request)
+
+    tool_descriptions = "\\n".join(''', patch_id="visualization bounded Python error progress")
+    body = replace_required(body, 'middleware =[prehook_complex, guard_visualization_memory_id,',
+        'middleware =[visualization_python_progress, prehook_complex, guard_visualization_memory_id,',
+        patch_id="visualization local progress before shared history budgeting")
+    cells[44]["source"] = source.replace(before, body, 1)
+
+    source = join_source(cells[57]["source"])
+    source = replace_required(source,
+        '        vis_vars["visualization_task"] = f"{task}\\nAssigned visualization_id: {_cp5_spec.viz_id}"',
+        '''        vis_vars["visualization_task"] = f"{task}\\nAssigned visualization_id: {_cp5_spec.viz_id}"
+    if isinstance(_cp5_spec, VizSpec):
+        import json as _cp5_viz_json
+        vis_vars["visualization_task"] += (
+            "\\nComplete assigned VizSpec: " + _cp5_viz_json.dumps(
+                _cp5_spec.model_dump(mode="json"), sort_keys=True)
+        )
+    vis_vars["visualization_task"] += (
+        "\\nEvery Python call starts with a fresh namespace. Pass df_id explicitly on each data call "
+        "using the assigned VizSpec.df_id; the DataFrame is then available as df. Registry IDs are "
+        "not Python variable aliases. Keep imports, transformations, rendering and saving together "
+        "in one call. Read the actual returned path and verify the file; correct tool errors rather "
+        "than repeating unchanged code. Failed execution never establishes successful completion."
+    )''', patch_id="complete visualization spec and fresh Python namespace delivery")
+    cells[57]["source"] = source
+    for index in (44, 57):
+        ast.parse(join_source(cells[index]["source"]))
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -17753,6 +17833,7 @@ def main():
     apply_cp5_datetime_conversion_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
+    apply_cp5_visualization_assignment_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
