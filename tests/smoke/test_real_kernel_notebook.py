@@ -1987,6 +1987,61 @@ print(
         assert result["request_count"] == 1
         assert len(result["viz_ids"]) == 2
 
+    def test_generated_evaluator_image_context_in_real_kernel(self, tmp_path: Path):
+        """Attest actual PNG input blocks and native strict failures in Jupyter."""
+        probe_code = f"""
+import json
+import os
+from pathlib import Path
+import socket
+import pytest
+from tests.unit.test_viz_evaluator_completion import (
+    test_every_current_png_reaches_first_model_request_as_image,
+    test_invalid_current_png_cannot_reach_evaluator_approval,
+    test_reused_evaluator_thread_receives_fresh_image_bytes,
+)
+assert "ZMQInteractiveShell" in type(get_ipython()).__name__
+assert os.environ.get("OPENAI_API_KEY") is None
+base = Path({str(tmp_path)!r}) / "evaluator-image-fixtures"
+base.mkdir()
+def denied(*args, **kwargs):
+    raise AssertionError("Network forbidden in evaluator image smoke")
+with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(socket.socket, "connect", denied)
+    mp.setattr(socket, "create_connection", denied)
+    for pressure in (False, True):
+        case = base / ("pressure-" + str(pressure))
+        case.mkdir()
+        test_every_current_png_reaches_first_model_request_as_image(case, pressure)
+    for failure in ("missing", "corrupt", "stale", "oversized", "unreadable"):
+        for recovery in ("0", "1"):
+            case = base / (failure + "-" + recovery)
+            case.mkdir()
+            with pytest.MonkeyPatch.context() as image_mp:
+                test_invalid_current_png_cannot_reach_evaluator_approval(case, image_mp, failure, recovery)
+    case = base / "reused-thread"
+    case.mkdir()
+    test_reused_evaluator_thread_receives_fresh_image_bytes(case)
+print({PROBE_PREFIX!r} + json.dumps({{"status": "ok", "cases": 13}}))
+"""
+        _, probes, streams = execute_cells_in_real_kernel(
+            [1, 4, ("evaluator_image_context", probe_code)],
+            work_dir=tmp_path / "kernel_cwd",
+            env_overrides={
+                "OPENAI_API_KEY": None,
+                "AZURE_OPENAI_API_KEY": None,
+                "ANTHROPIC_API_KEY": None,
+                "TAVILY_API_KEY": None,
+                "GOOGLE_API_KEY": None,
+                "LANGSMITH_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "IDD_ALLOW_RECOVERY": "0",
+            },
+        )
+        result = probes.get("evaluator_image_context")
+        assert result is not None, f"Missing evaluator image probe: {streams}"
+        assert result == {"status": "ok", "cases": 13}
+
 
 # ===========================================================================
 # Stage 4: Security, Adversarial Fail-Closed Startup & Negative Controls

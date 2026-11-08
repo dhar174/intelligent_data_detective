@@ -2339,6 +2339,50 @@ def apply_cp5_file_writer_content_patch(cells):
     cells[25]["source"] = source
 
 
+def apply_cp5_evaluator_image_context_patch(cells):
+    """Provide actual current-run PNG evidence before native visual evaluation."""
+    source = join_source(cells[57]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "viz_evaluator_node")
+    before = ast.get_source_segment(source, node)
+    anchor = "        fb = _safe_viz_evaluator_invoke(viz_evaluator_agent, {\n"
+    evidence = '''        # CP5-EVALUATOR-IMAGES: pin pixels with the newest assignment context.
+        _ve_image_blocks = [{"type": "text", "text": rendered[0].content}]
+        for _ve_image in results:
+            try:
+                _ve_image_path = _cp5_validated_figure_path(_ve_image.path, state)
+            except (ValueError, OSError) as _ve_image_exc:
+                raise ValueError(
+                    "viz_evaluator integrity: Invalid current PNG for "
+                    + _ve_image.visualization_id + ": " + str(_ve_image_exc)
+                ) from _ve_image_exc
+            _ve_preview = _encode_preview(str(_ve_image_path))
+            if not _ve_preview:
+                raise ValueError(
+                    "viz_evaluator integrity: Current PNG preview unavailable or exceeds 2 MiB: "
+                    + _ve_image.visualization_id
+                    + ". Regenerate a readable current-run PNG within the preview limit before evaluation."
+                )
+            _ve_image_blocks.extend([
+                {"type": "text", "text": _ve_assignment_json.dumps({
+                    "visualization_id": _ve_image.visualization_id, "path": str(_ve_image_path)})},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + _ve_preview}},
+            ])
+        rendered[0] = rendered[0].model_copy(update={"content": _ve_image_blocks})
+'''
+    after = replace_required(before, anchor, evidence + anchor,
+                             patch_id="CP5 evaluator image context")
+    after = replace_required(
+        after, '"Complete this review with the native VizFeedback tool. A completed review uses "',
+        '"Inspect every supplied image against all required specification features; do not infer "\n'
+        '            "rendered features from titles or descriptions. "\n'
+        '            "Complete this review with the native VizFeedback tool. A completed review uses "',
+        patch_id="CP5 evaluator image instruction")
+    source = source.replace(before, after, 1)
+    ast.parse(source)
+    cells[57]["source"] = source
+
+
 def apply_cp5_cleaner_grounding_patch(cells):
     """Ground the cleaner assignment in observed work, without synthetic completion."""
     source = join_source(cells[44]["source"])
@@ -18003,6 +18047,7 @@ def main():
     apply_cp5_visualization_assignment_patch(cells)
     apply_cp5_scenario_request_patch(cells)
     apply_cp5_file_writer_content_patch(cells)
+    apply_cp5_evaluator_image_context_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
