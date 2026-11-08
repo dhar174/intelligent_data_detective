@@ -940,6 +940,200 @@ def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
     assert len(model._requests) == 8
 
 
+@pytest.mark.parametrize("upstream_finished", [False, True])
+def test_viz_required_custom_features_and_child_status_complete_natively(
+    tmp_path, monkeypatch, upstream_finished
+):
+    from tests.unit.test_figure_provenance import plot_namespace, apply_join
+    from matplotlib.figure import Figure
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    spec = idd_state.VizSpec(
+        **{**FLAGS, "finished_this_task": upstream_finished},
+        viz_id="grouped-regression",
+        title="Gross and net by group",
+        viz_type="scatter",
+        df_id="retail-fixture",
+        columns=["gross", "net", "group"],
+        x="gross",
+        y="net",
+        hue="group",
+        bins=None,
+        agg=None,
+        query=None,
+        description="Grouped scatter with linear fit",
+        limit=None,
+        style="matplotlib",
+        viz_instructions="Scatter gross against net, color by group, include a legend and an overall linear regression line.",
+    )
+    path = ns["RUNTIME"].artifacts_dir / "grouped-regression.png"
+    observed = []
+    save = Figure.savefig
+
+    def inspect_save(figure, *args, **kwargs):
+        axis = figure.axes[0]
+        legend = axis.get_legend()
+        observed.append(
+            {
+                "lines": [line.get_label() for line in axis.lines],
+                "legend": (
+                    [text.get_text() for text in legend.get_texts()] if legend else []
+                ),
+            }
+        )
+        return save(figure, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", inspect_save)
+    code = (
+        "import numpy as np\nimport matplotlib.pyplot as plt\n"
+        "fig, ax = plt.subplots()\n"
+        "for label, group in df.groupby('group'):\n    ax.scatter(group['gross'], group['net'], label=label)\n"
+        "fit = np.polyfit(df['gross'], df['net'], 1)\n"
+        "x = np.array([df['gross'].min(), df['gross'].max()])\n"
+        "ax.plot(x, np.polyval(fit, x), color='black', label='Overall linear fit')\n"
+        "ax.set(xlabel='Gross revenue', ylabel='Net revenue', title='Gross and net by group')\n"
+        f"ax.legend()\nfig.savefig({str(path)!r})\nplt.close(fig)\nprint({str(path)!r})"
+    )
+
+    class FeatureModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            context = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            outputs = [
+                m
+                for m in messages
+                if isinstance(m, ToolMessage)
+                and m.name in ("python_repl_tool", "create_scatter_plot")
+            ]
+            if not outputs:
+                custom = (
+                    "Use Python for required features unsupported by a built-in plot tool"
+                    in context["completion_contract"]
+                )
+                self.scripted_responses = (
+                    [
+                        {
+                            "name": "python_repl_tool",
+                            "args": {"code": code, "df_id": spec.df_id},
+                        }
+                    ]
+                    if custom
+                    else [
+                        {
+                            "name": "create_scatter_plot",
+                            "args": {
+                                "df_id": spec.df_id,
+                                "x": "gross",
+                                "y": "net",
+                                "hue": "group",
+                            },
+                        }
+                    ]
+                )
+            else:
+                complete = bool(
+                    observed
+                    and "Overall linear fit" in observed[-1]["lines"]
+                    and {"A", "B", "Overall linear fit"}.issubset(
+                        observed[-1]["legend"]
+                    )
+                )
+                saved = (
+                    str(path)
+                    if outputs[-1].name == "python_repl_tool"
+                    else json.loads(str(outputs[-1].content))["image_path"]
+                )
+                assert Path(saved).is_file()
+                item = idd_state.DataVisualization(
+                    **{**FLAGS, "finished_this_task": complete},
+                    path=saved,
+                    visualization_id=spec.viz_id,
+                    visualization_title=spec.title,
+                    visualization_type="scatter",
+                    visualization_style="matplotlib",
+                    visualization_description="Observed registered gross/net values by group with an overall fit.",
+                )
+                self.payload = idd_state.VisualizationResults(
+                    **FLAGS, visualizations=[item]
+                ).model_dump()
+            return super()._generate(messages, **kwargs)
+
+    model = FeatureModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+    )
+    original_frame = (
+        ns["get_global_df_registry"]().get_dataframe(spec.df_id).copy(deep=True)
+    )
+    out = ns["viz_worker"](state)
+    joined = apply_join({**state, **out}, ns["viz_join"]({**state, **out}))
+    item = joined["visualization_results"].visualizations[0]
+    assert item.finished_this_task is True and item.visualization_id == spec.viz_id
+    assert spec.finished_this_task is upstream_finished
+    ns["pd"].testing.assert_frame_equal(
+        original_frame, ns["get_global_df_registry"]().get_dataframe(spec.df_id)
+    )
+    assert model._emitted == ["python_repl_tool", "VisualizationResults"]
+    with Image.open(item.path) as image:
+        image.verify()
+
+
+@pytest.mark.parametrize("parent_finished", [False, True])
+def test_viz_child_unfinished_is_never_upgraded_even_with_real_png(
+    tmp_path, parent_finished
+):
+    ns = load_native(tmp_path, middleware=True)
+    items = figures(tmp_path)
+    items[0].finished_this_task = False
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=idd_state.VisualizationResults(
+            **{**FLAGS, "finished_this_task": parent_finished}, visualizations=items[:1]
+        ).model_dump(),
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(tmp_path)
+    with pytest.raises(ValueError, match="did not complete its required figures"):
+        ns["viz_worker"](state)
+    assert items[0].finished_this_task is False
+    assert not state.get("visualization_complete") and state["viz_results"] == []
+    assert model.payload["visualizations"][0]["finished_this_task"] is False
+
+
+def test_viz_statistical_context_preserves_findings_without_other_task_statuses(
+    tmp_path,
+):
+    ns, model, state, _ = _viz_retrieval_fixture(tmp_path, [])
+    insights = analysis_insights()
+    state["analysis_insights"] = insights
+    assert ns["viz_worker"](state)["viz_results"]
+    context = json.loads(
+        next(m.content for m in model._requests[0] if m.name == "runtime_context")
+    )
+    expected = insights.model_dump(
+        include={
+            "summary",
+            "correlation_insights",
+            "anomaly_insights",
+            "recommended_next_steps",
+        }
+    )
+    assert context["analysis_insights"] == expected
+    assert (
+        "Completion flags belong to the current rendering task"
+        in context["completion_contract"]
+    )
+    assert "Every completed DataVisualization child" in context["completion_contract"]
+    assert state["analysis_insights"] is insights
+
+
 def evaluator_state(base):
     state = worker_state(base)
     items = figures(base)

@@ -1728,6 +1728,9 @@ from tests.unit.test_native_completion import (
     test_viz_worker_scope_is_current_assignment_not_pipeline_or_perfection,
     test_viz_unchanged_nonempty_retrieval_stops_without_completion,
     test_viz_new_preview_paging_and_figure_are_retrieval_progress,
+    test_viz_required_custom_features_and_child_status_complete_natively,
+    test_viz_child_unfinished_is_never_upgraded_even_with_real_png,
+    test_viz_statistical_context_preserves_findings_without_other_task_statuses,
 )
 from tests.unit.test_datetime_conversion import (
     test_datetime_conversion_retains_values_with_supported_api,
@@ -1789,6 +1792,15 @@ with pytest.MonkeyPatch.context() as mp:
     stale_case = base / "nonempty-retrieval-loop"
     stale_case.mkdir()
     test_viz_unchanged_nonempty_retrieval_stops_without_completion(stale_case, "get_visualization")
+    feature_case = base / "required-feature-native-completion"
+    feature_case.mkdir()
+    test_viz_required_custom_features_and_child_status_complete_natively(feature_case, mp, False)
+    child_case = base / "unfinished-child-stays-unfinished"
+    child_case.mkdir()
+    test_viz_child_unfinished_is_never_upgraded_even_with_real_png(child_case, True)
+    findings_case = base / "statistical-findings-preserved"
+    findings_case.mkdir()
+    test_viz_statistical_context_preserves_findings_without_other_task_statuses(findings_case)
     for current_api in (False, True):
         for explicit_format in (False, True):
             date_case = base / ("date-" + str(current_api) + "-" + str(explicit_format))

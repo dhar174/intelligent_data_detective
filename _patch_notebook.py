@@ -2675,22 +2675,39 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         "Generate only this worker's assigned visualization from the provided spec and actual data. "
         "The original user request and pipeline assignment are background context, not additional "
         "figures or reporting tasks for this worker. Preserve the assigned figure ID and use the "
-        "actual returned current-run PNG path. Verify concrete output and correct real issues; "
+        "actual returned current-run PNG path. Use Python for required features unsupported by a built-in plot tool "
+        "(such as an overall regression line or custom annotations), with explicit df_id, complete "
+        "same-call plotting code and the owned output path. A saved PNG omitting required features "
+        "is still unfinished. Verify concrete output and correct real issues; "
         "do not repeatedly retrieve unchanged figures in pursuit of unspecified perfection. "
         "After producing the required real PNG, call VisualizationResults natively with its actual "
         "DataVisualization metadata and stop. The canonical join and evaluator assess the complete "
         "figure set and may request a genuine revision. If the required output cannot be produced, "
         "report finished_this_task=False with the blocker; never claim successful completion or approval."
+        " Completion flags belong to the current rendering task, not the upstream analysis or plan. "
+        "Every completed DataVisualization child must set finished_this_task=True only after its "
+        "required figure is actually complete and verified. Set the VisualizationResults parent "
+        "finished_this_task=True only when all required children are complete; otherwise set the "
+        "parent False and explain the blocker. Never copy an upstream spec's pending status into "
+        "a completed figure, or upgrade a genuinely unfinished figure just because a file exists."
     )
     emergency = [str(message.content) for message in emergency_messages if message is not None]
+    findings = variables.get("analysis_insights")
+    if isinstance(findings, AnalysisInsights):
+        findings = findings.model_dump(mode="json")
+    if isinstance(findings, dict):
+        findings = {key: findings[key] for key in (
+            "summary", "correlation_insights", "anomaly_insights", "recommended_next_steps"
+        ) if key in findings}
     context = {
         "original_user_request": variables.get("user_prompt"),
         "pipeline_assignment": state.get("next_agent_prompt"),
         "visualization_task": variables["visualization_task"],
         "assigned_spec": spec.model_dump(mode="json") if isinstance(spec, VizSpec) else None,
+        "assigned_spec_status_semantics": "Upstream planning status is not the current figure's completion status.",
         "available_df_ids": state.get("available_df_ids") or [],
         "cleaned_dataset_description": variables.get("cleaned_dataset_description"),
-        "analysis_insights": variables.get("analysis_insights"),
+        "analysis_insights": findings,
         "current_run_directory": str(_cp5_current_run_root()),
         "memories": variables.get("memories"),
         "emergency_assignments": emergency,
