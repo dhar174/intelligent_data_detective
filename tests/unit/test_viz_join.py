@@ -4,6 +4,7 @@ Figures and reports here are temporary test fixtures, never production proof.
 """
 
 import ast
+from dataclasses import dataclass, fields
 from datetime import datetime
 import json
 import logging
@@ -43,14 +44,49 @@ def notebook():
     return json.loads((ROOT / NOTEBOOK).read_text(encoding="utf-8"))
 
 
+def production_runtime(base):
+    """Instantiate the actual generated runtime; never invent ownership fields."""
+    definition = next(
+        node
+        for node in ast.parse("".join(notebook()["cells"][51]["source"])).body
+        if isinstance(node, ast.ClassDef) and node.name == "RuntimeCtx"
+    )
+    namespace = {"__name__": __name__, "dataclass": dataclass}
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__", names=[ast.alias(name="annotations")], level=0
+            ),
+            definition,
+        ],
+        type_ignores=[],
+    )
+    exec(
+        compile(ast.fix_missing_locations(module), "<generated RuntimeCtx>", "exec"),
+        namespace,
+    )
+    values = {field.name: None for field in fields(namespace["RuntimeCtx"])}
+    values.update(
+        run_id=base.name,
+        artifacts_dir=base,
+        viz_dir=base / "visualizations",
+        reports_dir=base / "reports",
+        logs_dir=base / "logs",
+        data_dir=base / "data",
+        _config={"configurable": {"thread_id": "offline-runtime"}},
+    )
+    return namespace["RuntimeCtx"](**values)
+
+
 def load_functions(base, names=("viz_join", "viz_evaluator_node")):
     source = "".join(notebook()["cells"][57]["source"])
     nodes = [
         n
         for n in ast.parse(source).body
-        if isinstance(n, ast.FunctionDef) and n.name in names
+        if isinstance(n, ast.FunctionDef)
+        and n.name in (*names, "_cp5_current_run_root", "_cp5_validated_figure_path")
     ]
-    assert {n.name for n in nodes} == set(names)
+    assert set(names).issubset({n.name for n in nodes})
     ns = dict(
         State=State,
         Command=Command,
@@ -61,7 +97,7 @@ def load_functions(base, names=("viz_join", "viz_evaluator_node")):
         HumanMessage=HumanMessage,
         PathlibPath=Path,
         WORKING_DIRECTORY=base,
-        RUNTIME=SimpleNamespace(run_dir=base, artifacts_dir=base / "artifacts"),
+        RUNTIME=production_runtime(base),
         ALIASES={},
         sample_prompt_text="Offline retail fixture",
         in_memory_store=None,
@@ -344,7 +380,7 @@ def test_relative_artifact_metadata_and_absolute_path_channel_are_one_figure(tmp
     assert update["visualization_results"].visualizations == relative
 
 
-def test_duplicate_id_or_equivalent_path_does_not_inflate_inventory(tmp_path):
+def test_conflicting_duplicate_identity_cannot_hide_in_inventory(tmp_path):
     items = figures(tmp_path)
     state = state_for(items)
     state["visualization_results"] = items + [
@@ -353,5 +389,5 @@ def test_duplicate_id_or_equivalent_path_does_not_inflate_inventory(tmp_path):
             update={"visualization_id": "another-id-for-the-same-file"}
         ),
     ]
-    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
-    assert update["visualization_results"].visualizations == items
+    with pytest.raises(ValueError, match="conflicting"):
+        load_functions(tmp_path)["viz_join"](state)
