@@ -1720,6 +1720,8 @@ from tests.unit.test_native_completion import (
     test_repl_parallel_calls_cannot_cross_dataframe_or_stdout,
     test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning,
     test_cleaner_unfinished_native_output_never_publishes_completion,
+    test_cleaner_parallel_mutations_preserve_both_updates,
+    test_cleaner_tool_serialization_releases_after_native_exception,
     test_viz_memory_corrected_update_completes_natively,
 )
 from tests.unit.test_datetime_conversion import (
@@ -1784,6 +1786,14 @@ with pytest.MonkeyPatch.context() as mp:
         date_case.mkdir()
         with pytest.MonkeyPatch.context() as date_mp:
             date_test(date_case, date_mp)
+    for mode in ("impute", "convert"):
+        parallel = base / ("cleaner-parallel-" + mode)
+        parallel.mkdir()
+        with pytest.MonkeyPatch.context() as mutation_mp:
+            test_cleaner_parallel_mutations_preserve_both_updates(parallel, mutation_mp, mode)
+    after_failure = base / "cleaner-after-native-exception"
+    after_failure.mkdir()
+    test_cleaner_tool_serialization_releases_after_native_exception(after_failure)
 print("\\n" + {PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """
         _, probes, streams = execute_cells_in_real_kernel(
