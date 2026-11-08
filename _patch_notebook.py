@@ -2731,6 +2731,33 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         ast.parse(join_source(cells[index]["source"]))
 
 
+def apply_cp5_scenario_request_patch(cells):
+    """Keep the actual scenario/custom request through runtime initialization."""
+    source = join_source(cells[51]["source"])
+    assignments = [
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "sample_prompt_text"
+            for target in node.targets
+        )
+    ]
+    if len(assignments) != 1:
+        raise RequiredPatchError("CP5 scenario request: expected one legacy fallback assignment")
+    fallback = ast.get_source_segment(source, assignments[0])
+    replacement = (
+        "# CP5-SCENARIO-REQUEST: preserve the request selected before runtime setup.\n"
+        "if not isinstance(globals().get('sample_prompt_text'), str) or not sample_prompt_text.strip():\n"
+        + "\n".join("    " + line for line in fallback.splitlines())
+    )
+    source = replace_required(source, fallback, replacement, patch_id="CP5 scenario request")
+    ast.parse(source)
+    cells[51]["source"] = (
+        source.splitlines(keepends=True) if isinstance(cells[51]["source"], list) else source
+    )
+    cells[51]["outputs"] = []
+    cells[51]["execution_count"] = None
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -17943,6 +17970,7 @@ def main():
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
+    apply_cp5_scenario_request_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:

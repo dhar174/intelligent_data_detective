@@ -435,6 +435,111 @@ def initial_description():
     )
 
 
+def _generated_request_state(base, *, scenario=None, existing=...):
+    """Run only actual request/message/state assignments, never notebook clients."""
+    ns = dict(
+        df_name=scenario or "retail_orders",
+        df_id=scenario or "retail_orders",
+        HumanMessage=HumanMessage,
+        RUNTIME=production_runtime(base),
+        run_config={"configurable": {"thread_id": "scenario-request-offline"}},
+    )
+
+    def selected(node, names):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in names
+            for target in node.targets
+        ):
+            return node
+        if isinstance(node, ast.If):
+            body = [x for child in node.body if (x := selected(child, names))]
+            other = [x for child in node.orelse if (x := selected(child, names))]
+            if body or other:
+                return ast.copy_location(
+                    ast.If(test=node.test, body=body or [ast.Pass()], orelse=other),
+                    node,
+                )
+        return None
+
+    def run(cell, names):
+        source = "".join(notebook()["cells"][cell]["source"])
+        nodes = [x for node in ast.parse(source).body if (x := selected(node, names))]
+        assert nodes, f"No generated request assignments in Cell {cell}"
+        exec(
+            compile(
+                ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
+                f"<generated request Cell {cell}>",
+                "exec",
+            ),
+            ns,
+        )
+
+    if scenario is not None:
+        # Retain the real df_name branch condition, not an unused prompt template.
+        run(48, {"sample_prompt_text"})
+    elif existing is not ...:
+        ns["sample_prompt_text"] = existing
+    before = ns.get("sample_prompt_text")
+    run(51, {"sample_prompt_text", "sample_prompt_final_human", "sample_prompt_tuple"})
+    run(72, {"initial_state"})
+    return before, ns
+
+
+@pytest.mark.parametrize("scenario", ["retail_orders", "sample_dirty"])
+def test_generated_scenario_request_reaches_initial_native_model(tmp_path, scenario):
+    expected, request = _generated_request_state(tmp_path, scenario=scenario)
+    ns = load_native(tmp_path, middleware=True)
+    execute_definitions(ns, 25, {"analyst_prompt_template_initial"})
+    execute_definitions(ns, 44, {"create_initial_analysis_agent"})
+    description = initial_description()
+    model = ControlledChatModel(
+        response_name="InitialDescription", payload=description.model_dump()
+    )
+    ns.update(initial_description=description, initial_analyst_llm=model)
+    agent = ns["create_initial_analysis_agent"](
+        user_prompt=request["sample_prompt_text"], df_ids=[scenario]
+    )
+    state = request["initial_state"]
+    result = agent.invoke(state, config=state["_config"])
+    assert result["structured_response"] == description
+    assert len(model._requests) == 1 and model._emitted == ["InitialDescription"]
+    users = [m for m in model._requests[0] if isinstance(m, HumanMessage)]
+    assert (
+        users[-1].content == expected
+    ), "Scenario request was overwritten before the model"
+    assert users[-1].name == "user"
+    assert state["user_prompt"] == expected
+    assert state["messages"][0].content == expected
+    assert request["sample_prompt_final_human"].content == expected
+    assert request["sample_prompt_tuple"] == ("user", expected)
+    assert "DATA CLEANING" in expected and "REPORTING" in expected
+    if scenario == "retail_orders":
+        assert "regional/channel differences" in expected
+        assert "at least three meaningful PNG charts" in expected
+    else:
+        assert "bar chart of 'category' counts" in expected
+        assert "scatter of 'score' vs 'value'" in expected
+
+
+@pytest.mark.parametrize("existing", [..., None, "", " \n\t", 42])
+def test_generated_request_retains_generic_fallback(tmp_path, existing):
+    _, request = _generated_request_state(tmp_path, existing=existing)
+    prompt = request["sample_prompt_text"]
+    assert prompt.startswith("Please analyze the dataset named retail_orders.")
+    assert "df_id parameter: `retail_orders`" in prompt
+    assert request["initial_state"]["user_prompt"] == prompt
+    assert request["initial_state"]["messages"][0].content == prompt
+    assert request["sample_prompt_tuple"] == ("user", prompt)
+
+
+def test_generated_request_preserves_custom_user_text_exactly(tmp_path):
+    custom = "  Answer my actual question: revenue by region.\nKeep this wording.  "
+    _, request = _generated_request_state(tmp_path, existing=custom)
+    assert request["sample_prompt_text"] == custom
+    assert request["initial_state"]["user_prompt"] == custom
+    assert request["initial_state"]["messages"][0].content == custom
+
+
 def analysis_insights():
     return idd_state.AnalysisInsights(
         **FLAGS,
