@@ -1720,6 +1720,7 @@ from tests.unit.test_native_completion import (
     test_repl_parallel_calls_cannot_cross_dataframe_or_stdout,
     test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning,
     test_cleaner_unfinished_native_output_never_publishes_completion,
+    test_viz_memory_corrected_update_completes_natively,
 )
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
 base = Path({str(tmp_path)!r})
@@ -1737,6 +1738,8 @@ concurrent.mkdir()
 cleaner, unfinished = base / "cleaner-grounded", base / "cleaner-unfinished"
 cleaner.mkdir()
 unfinished.mkdir()
+viz_memory = base / "viz-memory-correction"
+viz_memory.mkdir()
 def denied(*args, **kwargs):
     raise AssertionError("Network forbidden in figure provenance smoke")
 with pytest.MonkeyPatch.context() as mp:
@@ -1755,6 +1758,7 @@ with pytest.MonkeyPatch.context() as mp:
     test_repl_parallel_calls_cannot_cross_dataframe_or_stdout(concurrent, mp)
     test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(cleaner)
     test_cleaner_unfinished_native_output_never_publishes_completion(unfinished, False)
+    test_viz_memory_corrected_update_completes_natively(viz_memory)
 print("\\n" + {PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """
         _, probes, streams = execute_cells_in_real_kernel(

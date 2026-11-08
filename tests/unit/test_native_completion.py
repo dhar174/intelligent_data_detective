@@ -1677,3 +1677,198 @@ def test_cleaner_structured_tool_error_cannot_reset_progress_bound(tmp_path):
         if isinstance(m, ToolMessage) and m.name == "fill_missing_median"
     ]
     assert json.loads(errors[-1].content)["status"] == "error"
+
+
+_VIZ_MEMORY = ("memories", "visualization")
+
+
+def _viz_memory_fixture(base, *calls):
+    ns = load_native(base, middleware=True)
+    payload = idd_state.VisualizationResults(**FLAGS, visualizations=figures(base)[:1])
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload=payload.model_dump(),
+        scripted_responses=list(calls),
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(base)
+    return ns, model, state
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"action": "update", "content": "Revised"},
+        {"action": "delete"},
+        {"action": "create", "id": _CLEANING_MEMORY_ID, "content": "New"},
+    ],
+)
+def test_viz_memory_contract_rejection_is_paired_and_does_not_mutate_store(
+    tmp_path, args
+):
+    ns, model, state = _viz_memory_fixture(tmp_path, _memory_call(**args))
+    store = ns["in_memory_store"]
+    store.put(_VIZ_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+    update = ns["viz_worker"](state)
+    assert len(update["viz_results"]) == 1
+    assert model._emitted == ["manage_memory", "VisualizationResults"]
+    (error,) = _memory_errors(model._requests[1])
+    assert error.tool_call_id == "controlled-call-1"
+    assert "Omit id for create" in error.content and "search_memory" in error.content
+    assert store.get(_VIZ_MEMORY, _CLEANING_MEMORY_ID).value == {"content": "Original"}
+    assert len(store.search(_VIZ_MEMORY)) == 1
+
+
+def test_viz_memory_binding_preserves_native_enum_uuid_and_flat_arguments(tmp_path):
+    ns, model, state = _viz_memory_fixture(tmp_path)
+    ns["viz_worker"](state)
+    original = ns["_viz_mm_raw"]
+    catalog = next(t for t in ns["visualization_tools"] if t.name == "manage_memory")
+    bound = next(
+        t for t in model._bindings[0] if getattr(t, "name", None) == "manage_memory"
+    )
+    assert catalog is original
+    assert bound.args_schema is original.args_schema
+    schema = bound.args_schema.model_json_schema()["properties"]
+    assert set(schema) == {"content", "action", "id"}
+    assert schema["action"]["default"] == "create"
+    assert set(schema["action"]["enum"]) == {"create", "update", "delete"}
+    assert any(x.get("format") == "uuid" for x in schema["id"]["anyOf"])
+    assert "Omit id for create" in bound.description
+    assert catalog.description != bound.description
+
+
+def test_viz_memory_corrected_update_completes_natively(tmp_path):
+    ns, model, state = _viz_memory_fixture(
+        tmp_path,
+        _memory_call(action="update", content="Revised"),
+        _memory_call(action="update", content="Revised", id=_CLEANING_MEMORY_ID),
+    )
+    store = ns["in_memory_store"]
+    store.put(_VIZ_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+    assert len(ns["viz_worker"](state)["viz_results"]) == 1
+    assert store.get(_VIZ_MEMORY, _CLEANING_MEMORY_ID).value == {"content": "Revised"}
+    assert model._emitted == ["manage_memory", "manage_memory", "VisualizationResults"]
+
+
+def test_viz_memory_repeated_contract_violation_fails_closed(tmp_path):
+    ns, model, state = _viz_memory_fixture(
+        tmp_path, _memory_call(action="delete"), _memory_call(action="update")
+    )
+    with pytest.raises(
+        ValueError, match="Visualization manage_memory.*after.*correction"
+    ):
+        ns["viz_worker"](state)
+    assert model._emitted == ["manage_memory", "manage_memory"]
+    assert state["viz_results"] == []
+    assert not ns["in_memory_store"].search(_VIZ_MEMORY)
+
+
+@pytest.mark.parametrize("action", ["create", "update", "delete"])
+def test_viz_memory_valid_calls_delegate_to_real_langmem(tmp_path, action):
+    args = {"content": "Revised"}
+    if action != "create":
+        args.update(action=action, id=_CLEANING_MEMORY_ID)
+    ns, model, state = _viz_memory_fixture(tmp_path, _memory_call(**args))
+    store = ns["in_memory_store"]
+    if action != "create":
+        store.put(_VIZ_MEMORY, _CLEANING_MEMORY_ID, {"content": "Original"})
+    assert len(ns["viz_worker"](state)["viz_results"]) == 1
+    assert not _memory_errors(model._requests[1])
+    assert [x.value for x in store.search(_VIZ_MEMORY)] == (
+        [] if action == "delete" else [{"content": "Revised"}]
+    )
+
+
+@pytest.mark.parametrize(
+    "args,term",
+    [
+        ({"action": "create", "id": "malformed", "content": "New"}, "uuid"),
+        ({"action": "remember", "content": "New"}, "input should be"),
+    ],
+)
+def test_viz_memory_other_malformed_arguments_keep_native_validation(
+    tmp_path, args, term
+):
+    ns, model, state = _viz_memory_fixture(tmp_path, _memory_call(**args))
+    ns["viz_worker"](state)
+    (error,) = _memory_errors(model._requests[1])
+    assert term in error.content.lower()
+    assert error.artifact != "idd_visualization_memory_id_contract"
+    assert not ns["in_memory_store"].search(_VIZ_MEMORY)
+
+
+def test_viz_memory_unexpected_store_failure_propagates(tmp_path, monkeypatch):
+    ns, model, state = _viz_memory_fixture(tmp_path, _memory_call(content="New"))
+    failure = RuntimeError("Unexpected visualization store failure")
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(type(ns["in_memory_store"]), "put", fail)
+    with pytest.raises(RuntimeError) as caught:
+        ns["viz_worker"](state)
+    assert caught.value is failure
+    assert model._emitted == ["manage_memory"]
+    assert state["viz_results"] == []
+
+
+def test_viz_memory_parallel_rejections_are_one_correction_round(tmp_path, monkeypatch):
+    generate = ControlledChatModel._generate
+
+    def parallel(model, *args, **kwargs):
+        result = generate(model, *args, **kwargs)
+        if len(model._requests) == 1:
+            result.generations[0].message.tool_calls.append(
+                {
+                    "name": "manage_memory",
+                    "args": {"action": "update"},
+                    "id": "parallel-memory",
+                    "type": "tool_call",
+                }
+            )
+        return result
+
+    monkeypatch.setattr(ControlledChatModel, "_generate", parallel)
+    ns, model, state = _viz_memory_fixture(tmp_path, _memory_call(action="delete"))
+    assert len(ns["viz_worker"](state)["viz_results"]) == 1
+    assert {m.tool_call_id for m in _memory_errors(model._requests[1])} == {
+        "controlled-call-1",
+        "parallel-memory",
+    }
+    assert not ns["in_memory_store"].search(_VIZ_MEMORY)
+
+
+def test_viz_memory_correction_resets_for_new_assignment_on_same_thread(tmp_path):
+    ns, model, state = _viz_memory_fixture(tmp_path)
+    completion = {"name": "VisualizationResults", "args": model.payload}
+    model.scripted_responses = [
+        _memory_call(action="delete"),
+        completion,
+        _memory_call(action="update"),
+    ]
+    config = {"configurable": {"thread_id": "viz-memory-reused-thread"}}
+    for assignment in ["first", "second"]:
+        result = ns["_safe_visualization_invoke"](
+            ns["visualization_agent"],
+            {
+                "messages": [
+                    HumanMessage(
+                        name="runtime_context", content=assignment, id=assignment
+                    )
+                ]
+            },
+            config=config,
+        )
+        assert isinstance(result["structured_response"], idd_state.VisualizationResults)
+    assert model._emitted == [
+        "manage_memory",
+        "VisualizationResults",
+        "manage_memory",
+        "VisualizationResults",
+    ]
+    assert [m.tool_call_id for m in _memory_errors(model._requests[-1])] == [
+        "controlled-call-1",
+        "controlled-call-3",
+    ]
