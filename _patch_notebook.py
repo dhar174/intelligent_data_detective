@@ -2294,6 +2294,21 @@ def _cp5_serialize_repl(function):
     cells[32]["source"] = source
 
 
+def apply_cp5_datetime_conversion_patch(cells):
+    """Remove an obsolete Pandas keyword without changing parsing policy."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "convert_data_types")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        "pd.to_datetime(s, errors=errors, format=fmt, utc=False, infer_datetime_format=(fmt is None))",
+        "pd.to_datetime(s, errors=errors, format=fmt, utc=False)",
+        patch_id="datetime supported Pandas keyword contract",
+    )
+    cells[32]["source"] = source.replace(before, body, 1)
+
+
 def apply_cp5_cleaner_grounding_patch(cells):
     """Ground the cleaner assignment in observed work, without synthetic completion."""
     source = join_source(cells[44]["source"])
@@ -17718,6 +17733,7 @@ def main():
     apply_cp5_report_grounding_patch(cells)
     apply_cp5_figure_provenance_patch(cells)
     apply_cp5_repl_isolation_patch(cells)
+    apply_cp5_datetime_conversion_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
 

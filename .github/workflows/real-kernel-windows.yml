@@ -132,6 +132,7 @@ jobs:
         run: |
           python -m pytest \
             tests/unit/test_native_completion.py \
+            tests/unit/test_datetime_conversion.py \
             tests/unit/test_figure_provenance.py \
             tests/unit/test_viz_evaluator_completion.py \
             tests/unit/test_analyst_revision_completion.py \
