@@ -1708,6 +1708,7 @@ print({PROBE_PREFIX!r} + json.dumps({{
 import json, socket
 from pathlib import Path
 import pytest
+import pandas as pd
 from tests.unit.test_figure_provenance import (
     test_heatmap_native_worker_and_join_preserve_actual_path_and_id,
     test_heatmap_saves_actual_matrix_columns_and_payload,
@@ -1722,6 +1723,7 @@ from tests.unit.test_native_completion import (
     test_cleaner_unfinished_native_output_never_publishes_completion,
     test_cleaner_parallel_mutations_preserve_both_updates,
     test_cleaner_tool_serialization_releases_after_native_exception,
+    test_cleaner_numeric_validation_and_export_complete_only_natively,
     test_viz_memory_corrected_update_completes_natively,
     test_viz_worker_delivers_complete_spec_and_explicit_python_binding,
     test_viz_repeated_python_errors_stop_before_recursion,
@@ -1740,6 +1742,11 @@ from tests.unit.test_datetime_conversion import (
     test_datetime_parse_failure_remains_an_error,
     test_datetime_dry_run_does_not_replace_frame,
     test_datetime_missing_dataframe_remains_failure,
+    test_numeric_series_conversion_preserves_values_and_index,
+    test_numeric_locale_cleanup_remains_native,
+    test_numeric_parse_policy_is_preserved,
+    test_numeric_dry_run_does_not_replace_frame,
+    test_numeric_non_vector_column_is_still_rejected,
 )
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
 base = Path({str(tmp_path)!r})
@@ -1826,6 +1833,30 @@ with pytest.MonkeyPatch.context() as mp:
         date_case.mkdir()
         with pytest.MonkeyPatch.context() as date_mp:
             date_test(date_case, date_mp)
+    for index, (values, input_dtype, target, expected, dtype) in enumerate([
+        (["1", "2", "3"], None, "int", [1, 2, 3], "int64"),
+        ([1.25, 2.5, 3.75], None, "float", [1.25, 2.5, 3.75], "float64"),
+        (["1.25", "2.5", "3.75"], None, "float", [1.25, 2.5, 3.75], "float64"),
+        (["1", None, "3"], "string", "int", [1, pd.NA, 3], "Int64"),
+    ]):
+        numeric_case = base / ("numeric-values-" + str(index))
+        numeric_case.mkdir()
+        test_numeric_series_conversion_preserves_values_and_index(
+            numeric_case, values, input_dtype, target, expected, dtype)
+    for numeric_test in (test_numeric_locale_cleanup_remains_native,
+                         test_numeric_dry_run_does_not_replace_frame,
+                         test_numeric_non_vector_column_is_still_rejected):
+        numeric_case = base / numeric_test.__name__
+        numeric_case.mkdir()
+        numeric_test(numeric_case)
+    for policy in ("raise", "coerce"):
+        numeric_case = base / ("numeric-policy-" + policy)
+        numeric_case.mkdir()
+        test_numeric_parse_policy_is_preserved(numeric_case, policy)
+    for force_unfinished in (False, True):
+        numeric_case = base / ("numeric-native-cleaner-" + str(force_unfinished))
+        numeric_case.mkdir()
+        test_cleaner_numeric_validation_and_export_complete_only_natively(numeric_case, force_unfinished)
     for mode in ("impute", "convert"):
         parallel = base / ("cleaner-parallel-" + mode)
         parallel.mkdir()

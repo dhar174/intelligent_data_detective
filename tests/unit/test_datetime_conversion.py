@@ -1,4 +1,4 @@
-"""Generated datetime tool contracts, with no model/provider execution."""
+"""Generated dtype-conversion contracts, with no model/provider execution."""
 
 import socket
 
@@ -124,3 +124,113 @@ def test_datetime_missing_dataframe_remains_failure(tmp_path, monkeypatch):
     result = _invoke(ns, registry)
     assert result.artifact["error"]
     assert result.content.startswith("Error")
+
+
+def _numeric_fixture(tmp_path, values, input_dtype=None):
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "numeric-registry")
+    index = pd.Index([7, 3, 11])
+    registry.register_dataframe(
+        pd.DataFrame(
+            {
+                "number": pd.Series(values, index=index, dtype=input_dtype),
+                "label": pd.Series(["a", "b", "c"], index=index),
+            }
+        ),
+        "numeric-fixture",
+    )
+    return ns, registry
+
+
+def _numeric_invoke(ns, registry, target="float", **options):
+    with override_global_registry(registry):
+        result = ns["convert_data_types"].invoke(
+            {
+                "type": "tool_call",
+                "name": "convert_data_types",
+                "id": "numeric-call",
+                "args": {
+                    "df_id": "numeric-fixture",
+                    "column_types": {"number": target},
+                    **options,
+                },
+            }
+        )
+    assert isinstance(result, ToolMessage) and result.tool_call_id == "numeric-call"
+    return result
+
+
+@pytest.mark.parametrize(
+    "values,input_dtype,target,expected,dtype",
+    [
+        (["1", "2", "3"], None, "int", [1, 2, 3], "int64"),
+        ([1.25, 2.5, 3.75], None, "float", [1.25, 2.5, 3.75], "float64"),
+        (["1.25", "2.5", "3.75"], None, "float", [1.25, 2.5, 3.75], "float64"),
+        (["1", None, "3"], "string", "int", [1, pd.NA, 3], "Int64"),
+    ],
+)
+def test_numeric_series_conversion_preserves_values_and_index(
+    tmp_path, values, input_dtype, target, expected, dtype
+):
+    ns, registry = _numeric_fixture(tmp_path, values, input_dtype)
+    before = registry.get_dataframe("numeric-fixture").copy()
+    result = _numeric_invoke(ns, registry, target)
+    assert result.artifact["results"][0]["status"] == "ok", result.artifact
+    frame = registry.get_dataframe("numeric-fixture")
+    pd.testing.assert_series_equal(
+        frame["number"],
+        pd.Series(expected, index=before.index, name="number", dtype=dtype),
+    )
+    pd.testing.assert_series_equal(frame["label"], before["label"])
+    assert result.artifact["after_dtypes"]["number"] == dtype
+    assert "0 issue(s)" in result.content
+
+
+def test_numeric_locale_cleanup_remains_native(tmp_path):
+    ns, registry = _numeric_fixture(tmp_path, ["1.200,50", "2.500,00", "0,50"])
+    result = _numeric_invoke(
+        ns, registry, numeric_locale={"number": {"thousands": ".", "decimal": ","}}
+    )
+    assert result.artifact["results"][0]["status"] == "ok", result.artifact
+    assert registry.get_dataframe("numeric-fixture")["number"].tolist() == [
+        1200.5,
+        2500.0,
+        0.5,
+    ]
+
+
+@pytest.mark.parametrize("policy", ["raise", "coerce"])
+def test_numeric_parse_policy_is_preserved(tmp_path, policy):
+    ns, registry = _numeric_fixture(tmp_path, ["1", "bad-number", None])
+    before = registry.get_dataframe("numeric-fixture").copy()
+    result = _numeric_invoke(ns, registry, errors=policy)
+    if policy == "raise":
+        assert result.artifact["results"][0]["status"] == "error"
+        assert "bad-number" in result.artifact["results"][0]["detail"]
+        pd.testing.assert_frame_equal(registry.get_dataframe("numeric-fixture"), before)
+    else:
+        assert result.artifact["results"][0]["status"] == "ok", result.artifact
+        actual = registry.get_dataframe("numeric-fixture")["number"]
+        assert actual.iloc[0] == 1.0 and actual.iloc[1:].isna().all()
+        assert str(actual.dtype) == "float64"
+
+
+def test_numeric_dry_run_does_not_replace_frame(tmp_path):
+    ns, registry = _numeric_fixture(tmp_path, ["1", "2", "3"])
+    before = registry.get_dataframe("numeric-fixture")
+    result = _numeric_invoke(ns, registry, "int", dry_run=True)
+    assert result.artifact["results"][0]["status"] == "ok", result.artifact
+    assert result.artifact["action"] == "convert_types_dry_run"
+    assert result.artifact["after_dtypes"]["number"] == "int64"
+    assert registry.get_dataframe("numeric-fixture") is before
+    assert before["number"].tolist() == ["1", "2", "3"]
+
+
+def test_numeric_non_vector_column_is_still_rejected(tmp_path):
+    ns, registry = _numeric_fixture(tmp_path, [1, 2, 3])
+    frame = pd.DataFrame([[1, 2], [3, 4]], columns=["number", "number"])
+    registry.register_dataframe(frame, "numeric-fixture")
+    result = _numeric_invoke(ns, registry)
+    record = result.artifact["results"][0]
+    assert record["status"] == "error" and record["detail"] == "Column must be 1D."
+    pd.testing.assert_frame_equal(registry.get_dataframe("numeric-fixture"), frame)

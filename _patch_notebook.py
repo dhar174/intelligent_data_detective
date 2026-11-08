@@ -2309,6 +2309,21 @@ def apply_cp5_datetime_conversion_patch(cells):
     cells[32]["source"] = source.replace(before, body, 1)
 
 
+def apply_cp5_numeric_series_patch(cells):
+    """Validate numeric column values, not dtype descriptor instances."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "convert_data_types")
+    before = ast.get_source_segment(source, node)
+    incorrect = "if not isinstance(s2, (pd.Int64Dtype, pd.Float64Dtype)) or not is_1d_vector(s2):"
+    if before.count(incorrect) != 2:
+        raise RequiredPatchError("CP5 numeric conversion: expected two dtype-instance guards")
+    body = before.replace(incorrect, "if not is_1d_vector(s2):")
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+
 def apply_cp5_cleaner_grounding_patch(cells):
     """Ground the cleaner assignment in observed work, without synthetic completion."""
     source = join_source(cells[44]["source"])
@@ -17967,6 +17982,7 @@ def main():
     apply_cp5_figure_provenance_patch(cells)
     apply_cp5_repl_isolation_patch(cells)
     apply_cp5_datetime_conversion_patch(cells)
+    apply_cp5_numeric_series_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
