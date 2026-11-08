@@ -2225,7 +2225,7 @@ def _cp5_validated_figure_path(raw_path, state):
              "For custom Python plots use an explicitly owned current-run artifact path. "
              "Failed tool output does not establish that a figure exists. Complete only after "
              "the PNG exists, retain the assigned visualization ID, and never invent a saved path.")
-    task += f"\\nOwned current-run directory: {_cp5_current_run_root()}. Custom plots must use an absolute PNG path inside this directory."
+    task += f"\\nOwned current-run directory: {_cp5_current_run_root().as_posix()}. Custom plots must use the supplied absolute custom_plot_output_path inside this directory."
     vis_vars["visualization_task"] = task
     # Pass the assigned ID to the model instead of rewriting its output ID.""",
         patch_id="worker saved-path contract",
@@ -2668,6 +2668,9 @@ def apply_cp5_visualization_assignment_patch(cells):
 
 def _cp5_visualization_messages(state, variables, emergency_messages=()):
     import json
+    from uuid import uuid4
+    root = _cp5_current_run_root()
+    custom_output_path = (root / "visualizations" / f"custom_{uuid4().hex}.png").as_posix()
     spec = state.get("viz_spec") or state.get("individual_viz_task")
     if isinstance(spec, dict):
         spec = VizSpec.model_validate(spec)
@@ -2690,6 +2693,11 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         "finished_this_task=True only when all required children are complete; otherwise set the "
         "parent False and explain the blocker. Never copy an upstream spec's pending status into "
         "a completed figure, or upgrade a genuinely unfinished figure just because a file exists."
+        " For custom Python plots, save to the absolute custom_plot_output_path supplied below, "
+        "create its parent directory if needed, and print the full saved path. Copy that path "
+        "unchanged into the result; never substitute a basename or reconstruct a Windows "
+        "backslash literal. The supplied forward-slash spelling is safe in Python on Windows. "
+        "Built-in plotting tools may choose their own owned filename; use their actual returned path."
     )
     emergency = [str(message.content) for message in emergency_messages if message is not None]
     findings = variables.get("analysis_insights")
@@ -2708,7 +2716,8 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         "available_df_ids": state.get("available_df_ids") or [],
         "cleaned_dataset_description": variables.get("cleaned_dataset_description"),
         "analysis_insights": findings,
-        "current_run_directory": str(_cp5_current_run_root()),
+        "current_run_directory": root.as_posix(),
+        "custom_plot_output_path": custom_output_path,
         "memories": variables.get("memories"),
         "emergency_assignments": emergency,
         "completion_contract": contract,

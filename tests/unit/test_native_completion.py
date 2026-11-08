@@ -1134,6 +1134,123 @@ def test_viz_statistical_context_preserves_findings_without_other_task_statuses(
     assert state["analysis_insights"] is insights
 
 
+def test_viz_custom_destination_is_safe_to_copy_into_windows_python(tmp_path):
+    from pathlib import PureWindowsPath
+
+    ns = load_native(tmp_path, middleware=True)
+    root = PureWindowsPath(r"C:\Users\tester\temp\trial run\artifacts\run-owned")
+    ns["_cp5_current_run_root"] = lambda: root
+    variables = {
+        "visualization_task": "Create the assigned scatter.",
+        "analysis_insights": None,
+    }
+    state = worker_state(tmp_path)
+    context = json.loads(ns["_cp5_visualization_messages"](state, variables)[0].content)
+    destination = context["custom_plot_output_path"]
+    assert "\\" not in destination
+    assert PureWindowsPath(destination).is_relative_to(root / "visualizations")
+    assert PureWindowsPath(destination).suffix == ".png"
+    # Copying a Windows backslash path into an ordinary Python literal can
+    # introduce tabs/newlines or a unicodeescape SyntaxError. The supplied
+    # portable spelling must round-trip without changing a single character.
+    assert ast.literal_eval("'" + destination + "'") == destination
+    assert context["current_run_directory"] == root.as_posix()
+    assert "custom_plot_output_path" in context["completion_contract"]
+    assert "absolute" in context["completion_contract"]
+
+
+@pytest.mark.parametrize("mode", ["owned", "working-directory", "unfinished"])
+def test_viz_native_custom_save_uses_supplied_owned_destination(
+    tmp_path, monkeypatch, mode
+):
+    from tests.unit.test_figure_provenance import plot_namespace, apply_join
+
+    base = tmp_path / "temp" / "trial run"
+    base.mkdir(parents=True)
+    ns = plot_namespace(base, monkeypatch)
+
+    class DestinationModel(ControlledChatModel):
+        destination: str = ""
+
+        def _generate(self, messages, **kwargs):
+            context = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            outputs = [
+                m
+                for m in messages
+                if isinstance(m, ToolMessage) and m.name == "python_repl_tool"
+            ]
+            if not outputs:
+                self.destination = (
+                    "scatter_units_net.png"
+                    if mode == "working-directory"
+                    else context.get("custom_plot_output_path", "scatter_units_net.png")
+                )
+                code = (
+                    "import matplotlib.pyplot as plt\nfrom pathlib import Path\n"
+                    f"destination = {self.destination!r}\n"
+                    "Path(destination).parent.mkdir(parents=True, exist_ok=True)\n"
+                    "fig, ax = plt.subplots()\nax.scatter(df['gross'], df['net'])\n"
+                    "ax.set(xlabel='Gross', ylabel='Net', title='Actual registered data')\n"
+                    "fig.savefig(destination)\nplt.close(fig)\nprint(destination)"
+                )
+                self.scripted_responses = [
+                    {
+                        "name": "python_repl_tool",
+                        "args": {"df_id": "retail-fixture", "code": code},
+                    }
+                ]
+            else:
+                actual = Path(self.destination)
+                if not actual.is_absolute():
+                    actual = base / actual
+                assert actual.is_file(), str(outputs[-1].content)
+                with Image.open(actual) as image:
+                    image.verify()
+                item = idd_state.DataVisualization(
+                    **{**FLAGS, "finished_this_task": mode != "unfinished"},
+                    path=self.destination,
+                    visualization_id="scatter_units_net",
+                    visualization_title="Actual registered data",
+                    visualization_type="scatter",
+                    visualization_style="matplotlib",
+                    visualization_description="Gross versus net",
+                )
+                self.payload = idd_state.VisualizationResults(
+                    **{**FLAGS, "finished_this_task": mode != "unfinished"},
+                    visualizations=[item],
+                ).model_dump()
+            return super()._generate(messages, **kwargs)
+
+    model = DestinationModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(base)
+    state["individual_viz_task"] = "Render only this scatter and save the actual PNG."
+    state["artifacts_path"] = str(ns["RUNTIME"].artifacts_dir)
+    if mode != "owned":
+        message = (
+            "asset is missing or invalid"
+            if mode == "working-directory"
+            else "did not complete"
+        )
+        with pytest.raises(ValueError, match=message):
+            ns["viz_worker"](state)
+        assert state["viz_results"] == [] and not state.get("visualization_complete")
+    else:
+        out = ns["viz_worker"](state)
+        joined = apply_join({**state, **out}, ns["viz_join"]({**state, **out}))
+        item = joined["visualization_results"].visualizations[0]
+        assert joined["visualization_complete"] is True
+        assert item.visualization_id == "scatter_units_net"
+        assert Path(item.path).is_relative_to(ns["RUNTIME"].artifacts_dir)
+        assert Path(model.destination).is_file()
+    assert model._emitted == ["python_repl_tool", "VisualizationResults"]
+
+
 def evaluator_state(base):
     state = worker_state(base)
     items = figures(base)

@@ -1731,6 +1731,8 @@ from tests.unit.test_native_completion import (
     test_viz_required_custom_features_and_child_status_complete_natively,
     test_viz_child_unfinished_is_never_upgraded_even_with_real_png,
     test_viz_statistical_context_preserves_findings_without_other_task_statuses,
+    test_viz_custom_destination_is_safe_to_copy_into_windows_python,
+    test_viz_native_custom_save_uses_supplied_owned_destination,
 )
 from tests.unit.test_datetime_conversion import (
     test_datetime_conversion_retains_values_with_supported_api,
@@ -1801,6 +1803,11 @@ with pytest.MonkeyPatch.context() as mp:
     findings_case = base / "statistical-findings-preserved"
     findings_case.mkdir()
     test_viz_statistical_context_preserves_findings_without_other_task_statuses(findings_case)
+    test_viz_custom_destination_is_safe_to_copy_into_windows_python(base / "portable-destination")
+    for destination_mode in ("owned", "working-directory", "unfinished"):
+        destination_case = base / ("destination-" + destination_mode)
+        destination_case.mkdir()
+        test_viz_native_custom_save_uses_supplied_owned_destination(destination_case, mp, destination_mode)
     for current_api in (False, True):
         for explicit_format in (False, True):
             date_case = base / ("date-" + str(current_api) + "-" + str(explicit_format))
