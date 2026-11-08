@@ -2301,6 +2301,100 @@ def test_cleaner_current_assignment_and_observed_quality_reach_model(tmp_path):
     assert "best-effort values" not in context
 
 
+@pytest.mark.parametrize("force_unfinished", [False, True])
+def test_cleaner_numeric_validation_and_export_complete_only_natively(
+    tmp_path, force_unfinished
+):
+    import pandas as pd
+
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "numeric-cleaner-registry")
+    expected = pd.DataFrame({"quantity": [1, 2, 3], "price": [10.5, 20.0, 30.5]})
+    registry.register_dataframe(expected.copy(), "retail-fixture")
+
+    class NumericCleanerModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            conversions = [
+                m
+                for m in messages
+                if isinstance(m, ToolMessage) and m.name == "convert_data_types"
+            ]
+            if conversions:
+                visible = json.loads(
+                    str(conversions[-1].content).split("result: ", 1)[1]
+                )
+                assert visible == conversions[-1].artifact
+                records = visible["results"]
+                complete = all(record["status"] == "ok" for record in records)
+                frame = registry.get_dataframe("retail-fixture")
+                self.payload = idd_state.CleaningMetadata(
+                    **{
+                        **FLAGS,
+                        "finished_this_task": complete and not force_unfinished,
+                    },
+                    steps_taken=[
+                        "Attempted numeric validation; inspected tool results and exported current frame."
+                    ],
+                    data_description_after_cleaning=json.dumps(
+                        {
+                            "rows": len(frame),
+                            "dtypes": frame.dtypes.astype(str).to_dict(),
+                            "conversion_results": records,
+                        }
+                    ),
+                ).model_dump()
+            return super()._generate(messages, **kwargs)
+
+    model = NumericCleanerModel(
+        response_name="CleaningMetadata",
+        payload={},
+        scripted_responses=[
+            {
+                "name": "convert_data_types",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "column_types": {"quantity": "int", "price": "float"},
+                },
+            },
+            {
+                "name": "export_dataframe",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "file_name": "numeric-cleaned",
+                    "file_format": "csv",
+                },
+            },
+        ],
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    with override_global_registry(registry):
+        if force_unfinished:
+            with pytest.raises(ValueError, match="Cleaner returned unfinished"):
+                ns["data_cleaner_node"](state)
+            assert state["cleaning_metadata"] is None and not state.get(
+                "data_cleaning_complete"
+            )
+        else:
+            result = ns["data_cleaner_node"](state)
+            assert result["data_cleaning_complete"] is True
+            assert isinstance(result["cleaning_metadata"], idd_state.CleaningMetadata)
+            assert result["cleaning_metadata"].finished_this_task is True
+    pd.testing.assert_frame_equal(registry.get_dataframe("retail-fixture"), expected)
+    (export,) = tmp_path.rglob("numeric-cleaned.csv")
+    pd.testing.assert_frame_equal(pd.read_csv(export), expected)
+    assert model._emitted == [
+        "convert_data_types",
+        "export_dataframe",
+        "CleaningMetadata",
+    ]
+    assert model.payload["finished_this_task"] is (not force_unfinished)
+
+
 def test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(tmp_path):
     ns, model, state, registry = _grounded_cleaner_fixture(
         tmp_path,
