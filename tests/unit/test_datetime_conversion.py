@@ -1,5 +1,6 @@
-"""Generated dtype-conversion contracts, with no model/provider execution."""
+"""Generated dtype-conversion contracts at offline tool and model boundaries."""
 
+import json
 import socket
 
 from langchain_core.messages import ToolMessage
@@ -7,7 +8,13 @@ import pandas as pd
 import pytest
 
 from idd_registry import DataFrameRegistry, override_global_registry
-from tests.unit.test_native_completion import load_native
+from tests.unit.test_native_completion import (
+    ControlledChatModel,
+    cleaner_result,
+    initial_description,
+    load_native,
+    worker_state,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +98,10 @@ def test_datetime_coercion_policy_remains_native(tmp_path, monkeypatch):
         tmp_path, monkeypatch, values=["2025-01-01 00:00:00", "bad-date"]
     )
     result = _invoke(ns, registry, errors="coerce")
-    assert result.artifact["results"][0]["status"] == "ok"
+    record = result.artifact["results"][0]
+    assert record["status"] == "coerced"
+    assert "1 non-missing value(s) became missing" in record["detail"]
+    assert "1 issue(s)" in result.content
     frame = registry.get_dataframe("date-fixture")
     assert frame["when"].iloc[0] == pd.Timestamp("2025-01-01")
     assert pd.isna(frame["when"].iloc[1])
@@ -209,7 +219,10 @@ def test_numeric_parse_policy_is_preserved(tmp_path, policy):
         assert "bad-number" in result.artifact["results"][0]["detail"]
         pd.testing.assert_frame_equal(registry.get_dataframe("numeric-fixture"), before)
     else:
-        assert result.artifact["results"][0]["status"] == "ok", result.artifact
+        record = result.artifact["results"][0]
+        assert record["status"] == "coerced", result.artifact
+        assert "1 non-missing value(s) became missing" in record["detail"]
+        assert "1 issue(s)" in result.content
         actual = registry.get_dataframe("numeric-fixture")["number"]
         assert actual.iloc[0] == 1.0 and actual.iloc[1:].isna().all()
         assert str(actual.dtype) == "float64"
@@ -234,3 +247,125 @@ def test_numeric_non_vector_column_is_still_rejected(tmp_path):
     record = result.artifact["results"][0]
     assert record["status"] == "error" and record["detail"] == "Column must be 1D."
     pd.testing.assert_frame_equal(registry.get_dataframe("numeric-fixture"), frame)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize(
+    "values,expected_loss",
+    [(["1", "bad-number", None], 1), (["ORD-1000", "ORD-1001", "ORD-1002"], 3)],
+)
+def test_numeric_coercion_reports_new_missing_values_in_native_content(
+    tmp_path, dry_run, values, expected_loss
+):
+    ns, registry = _numeric_fixture(tmp_path, values)
+    before = registry.get_dataframe("numeric-fixture").copy()
+    result = _numeric_invoke(ns, registry, "int", errors="coerce", dry_run=dry_run)
+
+    assert "1 issue(s)" in result.content
+    assert json.loads(result.content.split("result: ", 1)[1]) == result.artifact
+    assert result.artifact["action"] == (
+        "convert_types_dry_run" if dry_run else "convert_types"
+    )
+    record = result.artifact["results"][0]
+    assert record["status"] == "coerced"
+    assert f"{expected_loss} non-missing value(s) became missing" in record["detail"]
+    after = registry.get_dataframe("numeric-fixture")
+    if dry_run:
+        pd.testing.assert_frame_equal(after, before)
+    else:
+        assert (
+            int((before["number"].notna() & after["number"].isna()).sum())
+            == expected_loss
+        )
+        assert str(after["number"].dtype) == "Int64"
+        pd.testing.assert_index_equal(after.index, before.index)
+
+
+def test_numeric_coercion_preview_guides_native_cleaner_to_preserve_identifiers(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "identifier-registry")
+    expected = pd.DataFrame({"order_id": [f"ORD-{n}" for n in range(1000, 1180)]})
+    registry.register_dataframe(expected.copy(), "retail-fixture")
+
+    class PreviewFollowingCleaner(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            if len(self._requests) == 1:
+                preview = next(
+                    m
+                    for m in reversed(messages)
+                    if isinstance(m, ToolMessage) and m.name == "convert_data_types"
+                )
+                assert "1 issue(s)" in preview.content
+                visible = json.loads(preview.content.split("result: ", 1)[1])
+                assert visible["results"][0]["status"] == "coerced"
+                assert (
+                    "180 non-missing value(s) became missing"
+                    in visible["results"][0]["detail"]
+                )
+                pd.testing.assert_frame_equal(
+                    registry.get_dataframe("retail-fixture"), expected
+                )
+            return super()._generate(messages, **kwargs)
+
+    completion = cleaner_result().model_copy(
+        update={
+            "data_description_after_cleaning": "180 order IDs retained as strings.",
+            "steps_taken": [
+                "Previewed unsafe coercion, preserved identifiers as strings, exported the data."
+            ],
+        }
+    )
+    model = PreviewFollowingCleaner(
+        response_name="CleaningMetadata",
+        payload=completion.model_dump(),
+        scripted_responses=[
+            {
+                "name": "convert_data_types",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "column_types": {"order_id": "int"},
+                    "dry_run": True,
+                },
+            },
+            {
+                "name": "convert_data_types",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "column_types": {"order_id": "string"},
+                },
+            },
+            {
+                "name": "export_dataframe",
+                "args": {
+                    "df_id": "retail-fixture",
+                    "file_name": "cleaned-ids",
+                    "file_format": "csv",
+                },
+            },
+        ],
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+
+    assert result["cleaning_metadata"] == completion
+    assert result["data_cleaning_complete"] is True
+    assert model._emitted == [
+        "convert_data_types",
+        "convert_data_types",
+        "export_dataframe",
+        "CleaningMetadata",
+    ]
+    assert (
+        registry.get_dataframe("retail-fixture")["order_id"].tolist()
+        == expected["order_id"].tolist()
+    )
+    pd.testing.assert_frame_equal(pd.read_csv(tmp_path / "cleaned-ids.csv"), expected)

@@ -1747,6 +1747,7 @@ from tests.unit.test_datetime_conversion import (
     test_numeric_parse_policy_is_preserved,
     test_numeric_dry_run_does_not_replace_frame,
     test_numeric_non_vector_column_is_still_rejected,
+    test_numeric_coercion_preview_guides_native_cleaner_to_preserve_identifiers,
 )
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
 base = Path({str(tmp_path)!r})
@@ -1853,6 +1854,12 @@ with pytest.MonkeyPatch.context() as mp:
         numeric_case = base / ("numeric-policy-" + policy)
         numeric_case.mkdir()
         test_numeric_parse_policy_is_preserved(numeric_case, policy)
+    identifier_preview = base / "numeric-identifier-preview"
+    identifier_preview.mkdir()
+    with pytest.MonkeyPatch.context() as preview_mp:
+        test_numeric_coercion_preview_guides_native_cleaner_to_preserve_identifiers(
+            identifier_preview, preview_mp
+        )
     for force_unfinished in (False, True):
         numeric_case = base / ("numeric-native-cleaner-" + str(force_unfinished))
         numeric_case.mkdir()

@@ -2324,6 +2324,58 @@ def apply_cp5_numeric_series_patch(cells):
     cells[32]["source"] = source
 
 
+def apply_cp5_conversion_reporting_patch(cells):
+    """Expose values lost to coercion without changing conversion policy."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "convert_data_types")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '            results.append({"column": col, "target": target, "status": status, "detail": detail})',
+        '''            if status == "ok":
+                newly_missing = int((df[col].notna() & work[col].isna()).sum())
+                if newly_missing:
+                    status = "coerced"
+                    detail = f"{newly_missing} non-missing value(s) became missing."
+
+            results.append({"column": col, "target": target, "status": status, "detail": detail})''',
+        patch_id="CP5 report actual conversion loss",
+    )
+    body = replace_required(
+        body,
+        '        after = work.dtypes.astype(str).to_dict()',
+        '        after = work.dtypes.astype(str).to_dict()\n'
+        '        issues = sum(r["status"] in ("missing", "error", "coerced") for r in results)',
+        patch_id="CP5 conversion issue count",
+    )
+    body = replace_required(
+        body,
+        '            return ("Type conversion (dry-run) simulated.", artifact)',
+        '            return (f"Type conversion (dry-run) simulated; {issues} issue(s) reported, "\n'
+        '                    f"result: {json.dumps(artifact)}", artifact)',
+        patch_id="CP5 model-visible conversion preview",
+    )
+    start = body.index('        bad = sum(1 for r in results')
+    end = body.index('\n\n    except Exception as e:', start)
+    body = body[:start] + (
+        '        return (f"Converted types for {ok} column(s); {issues} issue(s) reported, "\n'
+        '                f"result: {artifact_string}", artifact)'
+    ) + body[end:]
+    body = replace_required(
+        body,
+        '    * Category conversion can enforce custom category sets and ordering.',
+        '    * Category conversion can enforce custom category sets and ordering.\n'
+        '    * Results mark non-missing values made missing as coerced. Existing\n'
+        '      missing values do not count as conversion loss. Inspect a dry-run\n'
+        '      preview before applying a potentially lossy conversion.',
+        patch_id="CP5 conversion loss documentation",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+
 def apply_cp5_file_writer_content_patch(cells):
     """Align the writer prompt with the existing factory/node content key."""
     source = join_source(cells[25]["source"])
@@ -18111,6 +18163,7 @@ def main():
     apply_cp5_repl_isolation_patch(cells)
     apply_cp5_datetime_conversion_patch(cells)
     apply_cp5_numeric_series_patch(cells)
+    apply_cp5_conversion_reporting_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
