@@ -543,31 +543,47 @@ def test_cp5_visualization_fanin_and_reporting_in_real_kernel(tmp_path):
     repo = Path(__file__).resolve().parents[2]
     notebook = repo / "IntelligentDataDetective_beta_v5_patched.ipynb"
     digest = hashlib.sha256(notebook.read_bytes()).hexdigest()
-    source = f"""
+    # Keep all existing cases in one attested kernel, but do not put a growing
+    # whole module plus integration tests into a single 120-second cell.
+    # The complementary selectors retain every native case exactly once.
+    phases = [
+        (
+            "native-viz",
+            [str(repo / "tests/unit/test_native_completion.py"), "-k", "viz"],
+        ),
+        (
+            "native-rest",
+            [str(repo / "tests/unit/test_native_completion.py"), "-k", "not viz"],
+        ),
+        (
+            "join-report",
+            [
+                str(repo / "tests/unit/test_viz_join.py"),
+                str(repo / "tests/integration/test_viz_join_reporting.py"),
+            ],
+        ),
+    ]
+    sources = [f"""
 import sys, hashlib
 from pathlib import Path
 sys.path.insert(0, {str(repo)!r})
 assert hashlib.sha256(Path({str(notebook)!r}).read_bytes()).hexdigest() == {digest!r}
 import pytest
-# Run the complete focused cases in this attested kernel, including the real
-# SQLite selected-graph path and unmodified W14J positive/negative controls.
-result = pytest.main([
-    {str(repo / 'tests/unit/test_native_completion.py')!r},
-    {str(repo / 'tests/unit/test_viz_join.py')!r},
-    {str(repo / 'tests/integration/test_viz_join_reporting.py')!r},
-    '-q', '--basetemp', str(Path.cwd() / 'offline-fixtures'),
-])
+result = pytest.main({args!r} + ['-q', '--basetemp', str(Path.cwd() / {('offline-fixtures-' + name)!r})])
 assert result == 0, f'Offline visualization regression failure: {{result}}'
-print('CP5_VIZ_FANIN_OFFLINE_OK')
-"""
-    error, record, _, evidence_dir = execute(tmp_path, [source], timeout=120)
+print({('CP5_VIZ_FANIN_OFFLINE_OK:' + name)!r})
+""" for name, args in phases]
+    error, record, _, evidence_dir = execute(tmp_path, sources, timeout=120)
     assert error is None
     assert record["execution"]["status"] == "COMPLETED"
     assert record["execution_kind"] == "synthetic-no-key"
     assert record["cp5_pass"] is False
     executed = nbformat.read(evidence_dir / "executed.ipynb", as_version=4)
-    output = "".join(o.get("text", "") for o in executed.cells[0].outputs)
-    assert "CP5_VIZ_FANIN_OFFLINE_OK" in output
+    assert len(executed.cells) == len(phases)
+    for cell, (name, _) in zip(executed.cells, phases):
+        output = "".join(o.get("text", "") for o in cell.outputs)
+        assert f"CP5_VIZ_FANIN_OFFLINE_OK:{name}" in output
+        assert cell.execution_count is not None
 
 
 def test_cp5_structured_stream_messages_in_real_kernel(tmp_path):

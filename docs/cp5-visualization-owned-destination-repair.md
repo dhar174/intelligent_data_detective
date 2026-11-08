@@ -1,0 +1,41 @@
+# CP5 custom visualization destination contract
+
+Base: `31aaf6769a480dd0c6026ad45293a749d4318b38` (merged PR #198).
+
+## Verified failure and limits
+
+Fresh retail attempt `98761fe6-83e3-415d-a3ef-c3c196c21f39`, thread `thread-43723ee7-2a09-4c79-a73d-49cd95c8b519`, failed after 285.9 seconds at Cell 75 with STREAM_FAILURE; cleanup CONTEXT_CLOSED. SQLite error writes include three unfinished-worker errors and `Visualization asset is missing or invalid: scatter_units_net.png`. The actual PNG is retained under the temporary working directory, outside the owned `artifacts/run_default_id-20261108-1533-224b3472` root. The strict guard correctly rejected it. Two other retained PNGs are under the owned root. No evaluator, report, production validators, or paid sample_dirty run was reached.
+
+One public native VisualizationResults reply reports a sandbox write blocker and retains False completion flags. This is not proof of its exact failing Python path: stream formatting changes Windows escape sequences, and failed inner histories were not persisted. Do not normalize displayed paths, move the working-directory PNG into the run, or reinterpret unfinished output as successful. Historical evidence remains failed and unchanged.
+
+The existing task supplies an artifact directory and asks for an absolute owned path, but leaves custom filename construction to the model. A concrete destination removes that unnecessary construction step. Windows paths containing backslashes also require escaping when copied into Python code. The repair supplies a portable spelling before execution; it does not rewrite any model-produced output or resolve a failed reference after execution.
+
+The preceding attempt reached genuine visualization acceptance after two native analyst revisions, then failed report grounding on an abbreviated ID/path. An offline real-factory probe reconstructed public canonical state and verified exact inventory/context delivery before and after retrieval; 26 existing report-grounding regressions passed. This was not an exact replay of private live history and did not establish a missing-context production defect. Reporting code remains unchanged.
+
+The cleaned export for this attempt has 180 rows, no duplicates and no missing values (SHA-256 `63ecc0422c67c0f512cf318950c23f82f055b3b32d6aa70a7606c0263c4971bc`). Cleaner prose saying 176 and numeric-conversion 1D warnings remain separately documented; the analyst correctly reports 180. Neither issue is silently repaired here. Saved-response attempt subtotal USD 0.04088742 brings the carried partial campaign subtotal to USD 1.24853335. Embeddings, unsaved responses and final billing remain unresolved; spending limits are unchanged. No paid process runs during this repair.
+
+## Narrow correction
+
+Through the active patcher, Cell 57 supplies `custom_plot_output_path`: a UUID-unique PNG destination under the actual frozen RuntimeCtx artifact root's `visualizations` directory. The suggestion uses forward slashes and never incorporates an untrusted figure ID into a filename. It creates no files or directories. Custom Python plotting instructions require saving there, creating the parent if needed, printing the actual full saved path and copying it unchanged into the native result. Built-in plot tools keep their existing owned filenames and returned-path contract.
+
+The current-run directory in both the focused task and runtime context uses the same portable spelling. No output path is repaired or substituted; no file is discovered, moved, copied or approved by this helper. Real plotting still has to produce a readable owned PNG and a genuine native VisualizationResults response with the assigned ID and truthful completion flags. A worker ignoring the destination or returning unfinished output still fails closed.
+
+Only the task text inside viz_worker and its `_cp5_visualization_messages` helper change. All 98 other notebook cells are identical. The strict path validator and safe wrappers are AST-unchanged, as are factories, tools, shared/Qwen hooks, join, evaluator, schema, models/settings/retries/timeouts, recursion 160 and revision limits. Seven canonical modules, manifest and both production validators are unchanged. Invariants remain 99 cells, 70 State fields, 39 reducers, 15 nodes and 33 edges; acceptance remains 12/12 plus 9/9. No recovery, synthetic completion, checkpoint resume or flag conversion is introduced.
+
+## Offline reproduction and controls
+
+Before production edits, the corrected baseline selection has **2 failed, 2 passed**. The real generated factory/node and real Python tool create a readable scatter in the working directory; native completion then fails the existing owned-path check. The portable Windows-context assertion also fails because no concrete destination is supplied. An earlier trial had one additional fixture-root mismatch; that harness mismatch was corrected before recording this baseline or changing production code.
+
+After the repair, **4 passed**: portable Windows literal round-trip; real custom Python plot using the actual supplied absolute destination, real PNG verification, native completion and real join with preserved assigned ID; rejection of a working-directory basename despite a real PNG; and rejection of genuine unfinished output despite a real owned PNG. These are controlled mechanism tests, not proof that an unconstrained live model always obeys instructions or an exact replay of failed private history. The real-Jupyter provenance case invokes the same four controls. No credentials or external providers are used in these tests.
+
+## Verification at initial publication
+
+Only Cell 57 differs after regeneration. Raw notebook SHA-256: `b6cf975f437e923e1b18f53827f05cde7d8f2533d0acb8e59fea18d18395bdd9`. LF-normalized: `5da1759fbc4088fe94b6ee656aecf37c44265fd200d911bbab43d3acf1e1f1ed`.
+
+The enlarged existing proof-kernel regression also exposed an offline harness limit: one synthetic cell runs all 187 native-completion cases plus 36 join/reporting cases. It timed out at its unchanged 120-second cell bound in two local invocations and Windows PR attempt 1. The same case passed on Linux, the independent Windows branch run, and Windows PR attempt 2; none of those passes erases the local failures. The full local kernel selection initially had 55 passed / 1 timed out. Its failure receipts are retained.
+
+The synthetic test now runs three attested cells in the same kernel, each still bounded at 120 seconds: native `-k viz` (50 cases), native `-k 'not viz'` (137), and the unchanged join/reporting selection (36). Offline collection proves these sets are disjoint and their union is exactly the original 223 cases. Every cell independently checks the candidate notebook hash, must return pytest success, and must emit its own verified completion marker. All original tests, assertions, source immutability, no-network guard, synthetic-only status and `cp5_pass=False` checks remain. No production timeout or proof-runner implementation changes. This is a test-harness partition, not removal of coverage or acceptance of an incomplete test run; all final gates and a new exact-HEAD review must pass before merge.
+
+The first full focused gate produced 355 passed and one failed Windows assertion: the existing fallback-path test still expected the old native backslash directory spelling. Actual fallback plotting, native completion and join succeeded. The assertion now expects the portable path spelling; the failed receipt and original candidate are retained, and all final gates/review must be repeated at the new exact HEAD.
+
+Focused, supported broad no-key, parity/state/patcher, all 16 mandatory error-handling, validators, deterministic regeneration, and scientific/notebook/proof-runner Jupyter checks are running; final results are not claimed here. Exact-HEAD Linux/Windows runs and a fresh installed Antigravity review are required before merge or another live attempt. Final command/exit/count/hash receipts and review delivery will be posted in the PR conversation, counting overlapping selections once. #129 remains deferred and #165 open; no campaign resume or sample_dirty execution is authorized by a test receipt alone.
