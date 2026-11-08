@@ -48,9 +48,10 @@ def load_functions(base, names=("viz_join", "viz_evaluator_node")):
     nodes = [
         n
         for n in ast.parse(source).body
-        if isinstance(n, ast.FunctionDef) and n.name in names
+        if isinstance(n, ast.FunctionDef)
+        and n.name in (*names, "_cp5_validated_figure_path")
     ]
-    assert {n.name for n in nodes} == set(names)
+    assert set(names).issubset({n.name for n in nodes})
     ns = dict(
         State=State,
         Command=Command,
@@ -344,7 +345,7 @@ def test_relative_artifact_metadata_and_absolute_path_channel_are_one_figure(tmp
     assert update["visualization_results"].visualizations == relative
 
 
-def test_duplicate_id_or_equivalent_path_does_not_inflate_inventory(tmp_path):
+def test_conflicting_duplicate_identity_cannot_hide_in_inventory(tmp_path):
     items = figures(tmp_path)
     state = state_for(items)
     state["visualization_results"] = items + [
@@ -353,5 +354,5 @@ def test_duplicate_id_or_equivalent_path_does_not_inflate_inventory(tmp_path):
             update={"visualization_id": "another-id-for-the-same-file"}
         ),
     ]
-    update = apply_join(state, load_functions(tmp_path)["viz_join"](state))
-    assert update["visualization_results"].visualizations == items
+    with pytest.raises(ValueError, match="conflicting"):
+        load_functions(tmp_path)["viz_join"](state)

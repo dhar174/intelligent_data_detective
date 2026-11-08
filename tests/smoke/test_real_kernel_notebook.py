@@ -707,7 +707,7 @@ with patch.object(socket.socket, "connect", forbid_network), \\
         empty_state = {"_config": {}, "viz_tasks": [object()]}
         with pytest.raises(ValueError, match="expected 1 figures, found 0"):
             viz_join(empty_state)
-        with pytest.raises(ValueError, match="figure path is missing or invalid"):
+        with pytest.raises(ValueError, match="(?:figure path|asset) is missing or invalid"):
             viz_join({**empty_state, "viz_paths": [str(figures_dir / "absent.png")]})
 
         assert not failures, failures
@@ -1094,9 +1094,15 @@ def visualization_orchestrator(state):
     return {{"viz_tasks": ["Plot category distribution"], "viz_specs": [spec]}}
 
 def viz_worker(state):
+    global RUNTIME
+    from types import SimpleNamespace
+    from PIL import Image
+    RUNTIME = SimpleNamespace(run_dir=WORKING_DIRECTORY, artifacts_dir=WORKING_DIRECTORY / "artifacts")
     _TRANSITION_LOG.append("viz_worker")
+    figure_path = WORKING_DIRECTORY / "chart1.png"
+    Image.new("RGB", (240, 160), "white").save(figure_path)
     dv = DataVisualization(
-        path=str(WORKING_DIRECTORY / "chart1.png"),
+        path=str(figure_path),
         visualization_id="viz_1",
         visualization_type="bar",
         visualization_description="Balanced distribution",
@@ -1695,6 +1701,47 @@ print({PROBE_PREFIX!r} + json.dumps({{
         assert res["model_goto"] == "analyst"
         assert res["shortcut_goto"] == "data_cleaner"
         assert res["cap_goto"] == "FINISH"
+
+    def test_generated_figure_provenance_in_real_kernel(self, tmp_path: Path):
+        """Real plotting, native completion and strict missing-asset rejection."""
+        probe_code = f"""
+import json, socket
+from pathlib import Path
+import pytest
+from tests.unit.test_figure_provenance import (
+    test_real_fallback_path_used_after_failed_custom_plot,
+    test_worker_rejects_false_asset_before_memory_or_publication,
+)
+assert "ZMQInteractiveShell" in type(get_ipython()).__name__
+base = Path({str(tmp_path)!r})
+positive, negative = base / "real-plot", base / "missing-asset"
+positive.mkdir()
+negative.mkdir()
+def denied(*args, **kwargs):
+    raise AssertionError("Network forbidden in figure provenance smoke")
+with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(socket.socket, "connect", denied)
+    mp.setattr(socket, "create_connection", denied)
+    test_real_fallback_path_used_after_failed_custom_plot(positive, mp)
+    test_worker_rejects_false_asset_before_memory_or_publication(negative, "missing")
+print({PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
+"""
+        _, probes, _ = execute_cells_in_real_kernel(
+            [1, 4, ("figure_provenance", probe_code)],
+            work_dir=tmp_path / "kernel_cwd",
+            env_overrides={
+                "OPENAI_API_KEY": None,
+                "AZURE_OPENAI_API_KEY": None,
+                "ANTHROPIC_API_KEY": None,
+                "TAVILY_API_KEY": None,
+                "LANGSMITH_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "GOOGLE_API_KEY": None,
+                "IDD_ALLOW_RECOVERY": "0",
+                "MPLBACKEND": "Agg",
+            },
+        )
+        assert probes["figure_provenance"]["status"] == "ok"
 
     def test_generated_analyst_revision_context_in_real_kernel(self, tmp_path: Path):
         """Run the generated analyst node with controlled models in a real ipykernel."""

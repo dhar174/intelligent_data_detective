@@ -2033,6 +2033,181 @@ def make_hosted_history_middleware(summary_llm, *, model_budget_tokens, max_summ
     return source
 
 
+def apply_cp5_figure_provenance_patch(cells):
+    """Bind model-visible completion claims to explicit owned PNG assets."""
+    source = join_source(cells[32]["source"])
+    tools = {
+        "create_histogram",
+        "create_scatter_plot",
+        "create_box_plot",
+        "create_violin_plot",
+    }
+    nodes = [
+        n
+        for n in ast.parse(source).body
+        if isinstance(n, ast.FunctionDef) and n.name in tools
+    ]
+    if len(nodes) != len(tools):
+        raise RequiredPatchError("CP5 figure provenance: missing plot tools")
+    for node in reversed(nodes):
+        body = ast.get_source_segment(source, node)
+        if "fig_path = PathlibPath(fig_save_dir) / fname" in body:
+            save_line = next(
+                line
+                for line in body.splitlines()
+                if line.lstrip().startswith("fig_save_dir = getattr(")
+            )
+            indent = save_line[: len(save_line) - len(save_line.lstrip())]
+            body = replace_required(
+                body,
+                save_line
+                + "\n"
+                + indent
+                + "PathlibPath(fig_save_dir).mkdir(parents=True, exist_ok=True)\n",
+                "",
+                patch_id="owned plot directory",
+            )
+            body = replace_required(
+                body,
+                "fig_path = PathlibPath(fig_save_dir) / fname",
+                'fig_path = _resolve_artifact_path(fname, config={"configurable": {"runtime": globals().get("RUNTIME")}}, subdir="visualizations")',
+                patch_id="owned plot path",
+            )
+        returns = [
+            r
+            for r in ast.walk(ast.parse(body))
+            if isinstance(r, ast.Return)
+            and isinstance(r.value, ast.Tuple)
+            and [getattr(x, "id", None) for x in r.value.elts]
+            == ["content", "artifact"]
+        ]
+        if len(returns) != 1:
+            raise RequiredPatchError(
+                f"Expected one successful plotting return: {node.name}"
+            )
+        body = replace_required(
+            body,
+            ast.get_source_segment(body, returns[0]),
+            "return (_cp5_visible_plot_result(content, artifact), artifact)",
+            patch_id="visible plot result",
+        )
+        source = source.replace(ast.get_source_segment(source, node), body, 1)
+    source += """
+
+def _cp5_visible_plot_result(content, artifact):
+    # CP5-FIGURE-PROVENANCE: artifacts are not included in model input.
+    import json
+    path = PathlibPath(artifact.get("image_path") or "")
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError("Visualization asset was not saved")
+    visible = {k: artifact[k] for k in (
+        "image_path", "plot_type", "dataframe_id", "x", "y", "columns"
+    ) if k in artifact}
+    return json.dumps({"message": content, **visible}, default=str)
+"""
+    cells[32]["source"] = source
+
+    source = join_source(cells[57]["source"])
+    source += """
+
+def _cp5_validated_figure_path(raw_path, state):
+    # CP5-FIGURE-PROVENANCE: validate explicit references; never discover substitutes.
+    from idd_tools import _resolve_artifact_path
+    from PIL import Image
+    if not isinstance(raw_path, (str, PathlibPath)) or not str(raw_path).strip():
+        raise ValueError("Visualization asset path is empty or invalid")
+    root = getattr(RUNTIME, "run_dir", None)
+    if not root:
+        raise ValueError("Visualization asset has no current run")
+    root = PathlibPath(root).resolve()
+    try:
+        base = root if PathlibPath(raw_path).is_absolute() else PathlibPath(
+            state.get("artifacts_path") or (WORKING_DIRECTORY / "artifacts"))
+        candidate = _resolve_artifact_path(str(raw_path), config={"configurable": {
+            "runtime": {"artifacts_dir": base}}}, create_parents=False)
+        path = _resolve_artifact_path(str(candidate), config={"configurable": {
+            "runtime": {"artifacts_dir": root}}}, create_parents=False)
+    except ValueError as exc:
+        raise ValueError("Visualization asset is outside the current run or has an invalid path") from exc
+    if path.suffix.lower() != ".png" or not path.is_file() or path.stat().st_size <= 0:
+        raise ValueError(f"Visualization asset is missing or invalid: {raw_path}")
+    try:
+        with Image.open(path) as image:
+            if image.format != "PNG":
+                raise ValueError("Expected PNG")
+            image.verify()
+    except Exception as exc:
+        raise ValueError(f"Visualization asset is not a readable PNG: {raw_path}") from exc
+    return path
+"""
+    source = replace_required(
+        source,
+        "    for item in sr.visualizations:\n        memory_text = (",
+        "    for item in sr.visualizations:\n        _cp5_validated_figure_path(item.path, state)\n\n    for item in sr.visualizations:\n        memory_text = (",
+        patch_id="worker asset validation before memory",
+    )
+    source = replace_required(
+        source,
+        "    _w14h_ids = set()\n    _w14h_paths = set()",
+        "    _w14h_ids = {}\n    _w14h_paths = {}",
+        patch_id="figure identity bindings",
+    )
+    start = source.index("    def _w14h_path_key(")
+    end = source.index("    _w14h_ids =", start)
+    source = source[:start] + source[end:]
+    source = replace_required(
+        source,
+        "        if isinstance(_item, VisualizationResults):\n            for _child in _item.visualizations:",
+        '        if isinstance(_item, VisualizationResults):\n            if _item.visualizations and not _item.finished_this_task:\n                raise ValueError("viz_join received unfinished visualization envelope")\n            for _child in _item.visualizations:',
+        patch_id="validate envelope completion before deduplication",
+    )
+    source = replace_required(
+        source,
+        """        _path_key = _w14h_path_key(_item.path)
+        if _item.visualization_id in _w14h_ids or _path_key in _w14h_paths:
+            return
+        _w14h_viz_items.append(_item)
+        _w14h_ids.add(_item.visualization_id)
+        _w14h_paths.add(_path_key)""",
+        """        if not _item.finished_this_task:
+            raise ValueError("viz_join received unfinished visualization metadata")
+        _path_key = _cp5_validated_figure_path(_item.path, state)
+        if (_item.visualization_id in _w14h_ids and _w14h_ids[_item.visualization_id] != _path_key) or (
+            _path_key in _w14h_paths and _w14h_paths[_path_key] != _item.visualization_id
+        ):
+            raise ValueError("viz_join received conflicting figure ID/path bindings")
+        if _item.visualization_id in _w14h_ids:
+            return
+        _w14h_viz_items.append(_item)
+        _w14h_ids[_item.visualization_id] = _path_key
+        _w14h_paths[_path_key] = _item.visualization_id""",
+        patch_id="validate structured figures before deduplication",
+    )
+    source = replace_required(
+        source,
+        '        _path_obj = _w14h_path_key(_w14h_path or "")',
+        "        _path_obj = _cp5_validated_figure_path(_w14h_path, state)",
+        patch_id="validate path-only duplicate references",
+    )
+    source = replace_required(
+        source,
+        "    # Pass the assigned ID to the model instead of rewriting its output ID.",
+        """    task += ("\\nUse the actual saved path returned by plotting tools, not an intended filename. "
+             "For custom Python plots use an explicitly owned current-run artifact path. "
+             "Failed tool output does not establish that a figure exists. Complete only after "
+             "the PNG exists, retain the assigned visualization ID, and never invent a saved path.")
+    task += f"\\nOwned current-run directory: {getattr(globals().get('RUNTIME'), 'run_dir', None)}. Custom plots must use an absolute PNG path inside this directory."
+    vis_vars["visualization_task"] = task
+    # Pass the assigned ID to the model instead of rewriting its output ID.""",
+        patch_id="worker saved-path contract",
+    )
+    cells[57]["source"] = source
+    for index in (32, 57):
+        ast.parse(join_source(cells[index]["source"]))
+        cells[index]["outputs"] = []
+        cells[index]["execution_count"] = None
+
+
 def main():
     with open(INPUT_NB, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -17293,6 +17468,7 @@ def main():
     # Run after inherited report/supervisor transformations so the generated
     # notebook and every subsequent regeneration share the same final behavior.
     apply_cp5_report_grounding_patch(cells)
+    apply_cp5_figure_provenance_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:

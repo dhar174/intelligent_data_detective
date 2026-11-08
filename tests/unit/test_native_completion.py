@@ -6,10 +6,12 @@ No notebook model configuration, credential loader or live runner is executed.
 
 import ast
 import base64
+import builtins
 from contextlib import contextmanager
 from datetime import datetime
 import glob
 import hashlib
+import io
 import json
 import logging
 import os
@@ -18,6 +20,7 @@ import re
 import shutil
 import socket
 import time
+import textwrap
 from types import SimpleNamespace
 import typing
 import uuid
@@ -118,6 +121,10 @@ def load_native(base, *, middleware=False):
         re=re,
         shutil=shutil,
         uuid=uuid,
+        ast=ast,
+        io=io,
+        textwrap=textwrap,
+        builtins=builtins,
     )
     ns.update(base64=base64, hashlib=hashlib)
     for value in (
@@ -250,6 +257,7 @@ def load_native(base, *, middleware=False):
             "data_cleaner_node",
             "viz_worker",
             "viz_join",
+            "_cp5_validated_figure_path",
             "viz_evaluator_node",
         },
     )
