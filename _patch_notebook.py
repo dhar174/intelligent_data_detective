@@ -2037,6 +2037,7 @@ def apply_cp5_figure_provenance_patch(cells):
     """Bind model-visible completion claims to explicit owned PNG assets."""
     source = join_source(cells[32]["source"])
     tools = {
+        "create_correlation_heatmap",
         "create_histogram",
         "create_scatter_plot",
         "create_box_plot",
@@ -2051,6 +2052,17 @@ def apply_cp5_figure_provenance_patch(cells):
         raise RequiredPatchError("CP5 figure provenance: missing plot tools")
     for node in reversed(nodes):
         body = ast.get_source_segment(source, node)
+        if node.name == "create_correlation_heatmap":
+            body = replace_required(
+                body,
+                '''        safe_cols = "_".join([str(c).replace(os.sep, "_") for c in cols])[:80]
+        fname = f"{df_id}__hist__{safe_cols}__{uuid.uuid4().hex[:8]}.png"''',
+                '''        safe_cols = "_".join(
+            str(c).replace(os.sep, "_").replace(os.altsep or os.sep, "_") for c in corr.columns
+        )[:80]
+        fname = f"{df_id}__correlation_heatmap__{safe_cols}__{uuid.uuid4().hex[:8]}.png"''',
+                patch_id="heatmap actual rendered columns and filename",
+            )
         if "fig_path = PathlibPath(fig_save_dir) / fname" in body:
             save_line = next(
                 line
