@@ -7,6 +7,7 @@ No notebook model configuration, credential loader or live runner is executed.
 import ast
 import base64
 import builtins
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 import glob
@@ -19,8 +20,10 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import sys
 import time
 import textwrap
+from threading import Event
 from types import SimpleNamespace
 import typing
 import uuid
@@ -1337,3 +1340,146 @@ def test_native_worker_rejects_invalid_required_completion(tmp_path, damage):
     )
     with pytest.raises((ValueError, ValidationError)):
         ns["viz_worker"](worker_state(tmp_path))
+
+
+def _repl_scope_fixture(base):
+    import pandas as pd
+
+    ns = load_native(base, middleware=True)
+    registry = DataFrameRegistry(data_dir=base / "scope-registry")
+    registry.register_dataframe(pd.DataFrame({"value": [10.0, 20.0]}), "scope_a")
+    registry.register_dataframe(pd.DataFrame({"value": [100.0, 200.0]}), "scope_b")
+    ns.update(get_global_df_registry=lambda: registry, global_df_registry=registry)
+    ns["ambient_frame"] = pd.DataFrame({"unrelated": [999.0]})
+    return ns, registry
+
+
+def _invoke_scope(ns, code, df_id="scope_a", call_id="scope-call"):
+    return ns["python_repl_tool"].invoke(
+        {
+            "type": "tool_call",
+            "id": call_id,
+            "name": "python_repl_tool",
+            "args": {"code": code, "df_id": df_id},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("base = 5\ndef compute():\n    return base + 1\nprint(compute())", "6"),
+        (
+            "frame = df.copy()\nprint(frame['value'].apply(lambda value: value + frame['value'].iloc[0]).tolist())",
+            "[20.0, 30.0]",
+        ),
+        ("offset = 3\nprint(sum(value + offset for value in [1, 2]))", "9"),
+    ],
+)
+def test_repl_same_call_nested_scopes_resolve_assignments(tmp_path, code, expected):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    result = _invoke_scope(ns, code)
+    assert str(result.content).splitlines()[0] == expected
+    assert "NameError" not in str(result.content)
+
+
+def test_repl_fresh_calls_do_not_retain_variables(tmp_path):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    assert "41" in str(
+        _invoke_scope(ns, "call_private = 41\nprint(call_private)").content
+    )
+    result = _invoke_scope(ns, "print(call_private)")
+    assert "NameError" in str(result.content)
+
+
+def test_repl_registers_only_authored_dataframe_bindings(tmp_path):
+    ns, registry = _repl_scope_fixture(tmp_path)
+    result = _invoke_scope(
+        ns, "frame = df[['value']].copy()\nprint(frame['value'].sum())"
+    )
+    assert result.artifact["newly_registered_dfs"] == ["frame"]
+    assert registry.get_dataframe("frame")["value"].tolist() == [10.0, 20.0]
+    assert registry.get_dataframe("ambient_frame") is None
+
+
+def test_repl_dataframe_rebinding_persists_under_input_id(tmp_path):
+    ns, registry = _repl_scope_fixture(tmp_path)
+    result = _invoke_scope(
+        ns, "df = df.assign(value=df['value'] + 7)\nprint(df['value'].sum())"
+    )
+    assert "44.0" in str(result.content)
+    assert registry.get_dataframe("scope_a")["value"].tolist() == [17.0, 27.0]
+    assert not result.artifact.get("newly_registered_dfs")
+
+
+def test_repl_real_code_errors_remain_errors(tmp_path):
+    ns, registry = _repl_scope_fixture(tmp_path)
+    result = _invoke_scope(ns, "raise RuntimeError('controlled-repl-failure')")
+    assert "RuntimeError" in str(result.content) and "controlled-repl-failure" in str(
+        result.content
+    )
+    assert registry.get_dataframe("scope_a")["value"].tolist() == [10.0, 20.0]
+
+
+def test_repl_sandbox_still_rejects_outside_writes(tmp_path):
+    ns, _ = _repl_scope_fixture(tmp_path)
+    outside = tmp_path.parent / (tmp_path.name + "-outside.txt")
+    result = _invoke_scope(
+        ns, f"open({str(outside.as_posix())!r}, 'w').write('forbidden')"
+    )
+    assert not outside.exists()
+    assert "Error" in str(result.content) or "outside" in str(result.content).lower()
+
+
+def test_repl_parallel_calls_cannot_cross_dataframe_or_stdout(tmp_path, monkeypatch):
+    ns, registry = _repl_scope_fixture(tmp_path)
+    original_stdout = sys.stdout
+    first_inside, release_first, second_started, second_inside = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
+    cls = ns["PythonAstREPLTool"]
+    original = cls.invoke
+
+    def intercept(self, value, *args, **kwargs):
+        if "FIRST_SCOPE" in value["query"]:
+            first_inside.set()
+            assert release_first.wait(8)
+        else:
+            second_inside.set()
+        return original(self, value, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "invoke", intercept)
+
+    def second_call():
+        second_started.set()
+        return _invoke_scope(
+            ns, "print('SECOND_SCOPE', float(df['value'].iloc[0]))", "scope_b", "second"
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            _invoke_scope,
+            ns,
+            "print('FIRST_SCOPE', float(df['value'].iloc[0]))",
+            "scope_a",
+            "first",
+        )
+        assert first_inside.wait(8)
+        second = executor.submit(second_call)
+        try:
+            assert second_started.wait(8)
+            overlapped = second_inside.wait(0.5)
+        finally:
+            release_first.set()
+        first_result = first.result(timeout=8)
+        second_result = second.result(timeout=8)
+    assert not overlapped, "REPL namespace and stdout capture must execute atomically"
+    assert sys.stdout is original_stdout
+    assert "FIRST_SCOPE 10.0" in str(first_result.content)
+    assert "SECOND_SCOPE" not in str(first_result.content)
+    assert "SECOND_SCOPE 100.0" in str(second_result.content)
+    assert registry.get_dataframe("scope_a")["value"].tolist() == [10.0, 20.0]
+    assert registry.get_dataframe("scope_b")["value"].tolist() == [100.0, 200.0]

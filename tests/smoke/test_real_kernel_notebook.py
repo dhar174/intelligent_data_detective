@@ -1715,6 +1715,10 @@ from tests.unit.test_figure_provenance import (
     test_real_runtime_owned_png_is_accepted,
     test_worker_rejects_false_asset_before_memory_or_publication,
 )
+from tests.unit.test_native_completion import (
+    test_repl_same_call_nested_scopes_resolve_assignments,
+    test_repl_parallel_calls_cannot_cross_dataframe_or_stdout,
+)
 assert "ZMQInteractiveShell" in type(get_ipython()).__name__
 base = Path({str(tmp_path)!r})
 positive, negative = base / "real-plot", base / "missing-asset"
@@ -1725,6 +1729,9 @@ joined.mkdir()
 heatmap, fallback = base / "heatmap-native", base / "heatmap-fallback"
 heatmap.mkdir()
 fallback.mkdir()
+scope, concurrent = base / "repl-scope", base / "repl-concurrent"
+scope.mkdir()
+concurrent.mkdir()
 def denied(*args, **kwargs):
     raise AssertionError("Network forbidden in figure provenance smoke")
 with pytest.MonkeyPatch.context() as mp:
@@ -1737,9 +1744,13 @@ with pytest.MonkeyPatch.context() as mp:
     test_heatmap_saves_actual_matrix_columns_and_payload(
         fallback, mp, ["net", "gross"], "alphabetical", ["gross", "net"], False, True
     )
-print({PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
+    test_repl_same_call_nested_scopes_resolve_assignments(
+        scope, "base = 5\\ndef compute():\\n    return base + 1\\nprint(compute())", "6"
+    )
+    test_repl_parallel_calls_cannot_cross_dataframe_or_stdout(concurrent, mp)
+print("\\n" + {PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
 """
-        _, probes, _ = execute_cells_in_real_kernel(
+        _, probes, streams = execute_cells_in_real_kernel(
             [1, 4, ("figure_provenance", probe_code)],
             work_dir=tmp_path / "kernel_cwd",
             env_overrides={
@@ -1754,6 +1765,7 @@ print({PROBE_PREFIX!r} + json.dumps({{"status": "ok"}}))
                 "MPLBACKEND": "Agg",
             },
         )
+        assert "figure_provenance" in probes, f"Missing probe output: {streams}"
         assert probes["figure_provenance"]["status"] == "ok"
 
     def test_generated_analyst_revision_context_in_real_kernel(self, tmp_path: Path):
