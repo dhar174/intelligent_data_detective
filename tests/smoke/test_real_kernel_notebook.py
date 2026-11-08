@@ -1723,6 +1723,8 @@ from tests.unit.test_native_completion import (
     test_cleaner_parallel_mutations_preserve_both_updates,
     test_cleaner_tool_serialization_releases_after_native_exception,
     test_viz_memory_corrected_update_completes_natively,
+    test_viz_worker_delivers_complete_spec_and_explicit_python_binding,
+    test_viz_repeated_python_errors_stop_before_recursion,
 )
 from tests.unit.test_datetime_conversion import (
     test_datetime_conversion_retains_values_with_supported_api,
@@ -1768,6 +1770,14 @@ with pytest.MonkeyPatch.context() as mp:
     test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(cleaner)
     test_cleaner_unfinished_native_output_never_publishes_completion(unfinished, False)
     test_viz_memory_corrected_update_completes_natively(viz_memory)
+    for viz_test in (test_viz_worker_delivers_complete_spec_and_explicit_python_binding,
+                     test_viz_repeated_python_errors_stop_before_recursion):
+        viz_case = base / viz_test.__name__
+        viz_case.mkdir()
+        if viz_test is test_viz_worker_delivers_complete_spec_and_explicit_python_binding:
+            viz_test(viz_case, mp)
+        else:
+            viz_test(viz_case)
     for current_api in (False, True):
         for explicit_format in (False, True):
             date_case = base / ("date-" + str(current_api) + "-" + str(explicit_format))
