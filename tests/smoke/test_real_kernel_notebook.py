@@ -2042,6 +2042,74 @@ print({PROBE_PREFIX!r} + json.dumps({{"status": "ok", "cases": 13}}))
         assert result is not None, f"Missing evaluator image probe: {streams}"
         assert result == {"status": "ok", "cases": 13}
 
+    def test_generated_cleaner_csv_snapshot_in_real_kernel(self, tmp_path: Path):
+        """Run actual CSV tools, assignment isolation, and native guards in Jupyter."""
+        probe_code = f"""
+import json
+import os
+from pathlib import Path
+import socket
+import pytest
+from tests.unit import test_native_completion as native
+assert "ZMQInteractiveShell" in type(get_ipython()).__name__
+assert os.environ.get("OPENAI_API_KEY") is None
+base = Path({str(tmp_path)!r}) / "cleaner-csv-fixtures"
+base.mkdir()
+checks = []
+for recovery in ("0", "1"):
+    checks.append((native.test_cleaner_csv_stale_snapshot_cannot_publish_native_completion, (recovery,), True))
+for test in (
+    native.test_cleaner_csv_reexport_restores_native_completion,
+    native.test_cleaner_csv_real_receipt_preserves_tool_pair_and_checkpoint,
+    native.test_cleaner_csv_failed_export_does_not_refresh_snapshot,
+    native.test_cleaner_csv_other_dataframe_cannot_refresh_stale_snapshot,
+    native.test_cleaner_csv_new_assignment_keeps_history_without_stale_receipt_leak,
+    native.test_cleaner_csv_stale_snapshot_survives_hosted_history_pressure,
+):
+    checks.append((test, (), False))
+for operation in ("read", "noop", "failed_mutation"):
+    checks.append((native.test_cleaner_csv_unchanged_snapshot_remains_current, (operation,), False))
+for phase in ("capture", "before_model", "after_model"):
+    for recovery in ("0", "1"):
+        checks.append((native.test_cleaner_csv_fingerprint_failure_stops_without_recovery, (recovery, phase), True))
+for export_first in (False, True):
+    checks.append((native.test_cleaner_csv_parallel_snapshot_matches_actual_serialized_order, (export_first,), False))
+assert len(checks) == 19
+
+def denied(*args, **kwargs):
+    raise AssertionError("Network forbidden in cleaner CSV smoke")
+with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(socket.socket, "connect", denied)
+    mp.setattr(socket, "create_connection", denied)
+    for index, (test, args, needs_monkeypatch) in enumerate(checks):
+        case = base / (str(index) + "-" + test.__name__)
+        case.mkdir()
+        with pytest.MonkeyPatch.context() as case_mp:
+            case_mp.setenv("IDD_ALLOW_RECOVERY", "0")
+            if needs_monkeypatch:
+                test(case, case_mp, *args)
+            else:
+                test(case, *args)
+print({PROBE_PREFIX!r} + json.dumps({{"status": "ok", "cases": len(checks)}}))
+"""
+        _, probes, streams = execute_cells_in_real_kernel(
+            [1, 4, ("cleaner_csv_snapshot", probe_code)],
+            work_dir=tmp_path / "kernel_cwd",
+            env_overrides={
+                "OPENAI_API_KEY": None,
+                "AZURE_OPENAI_API_KEY": None,
+                "ANTHROPIC_API_KEY": None,
+                "TAVILY_API_KEY": None,
+                "GOOGLE_API_KEY": None,
+                "LANGSMITH_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "IDD_ALLOW_RECOVERY": "0",
+            },
+        )
+        result = probes.get("cleaner_csv_snapshot")
+        assert result is not None, f"Missing cleaner CSV probe: {streams}"
+        assert result == {"status": "ok", "cases": 19}
+
 
 # ===========================================================================
 # Stage 4: Security, Adversarial Fail-Closed Startup & Negative Controls

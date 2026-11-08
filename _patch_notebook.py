@@ -2404,6 +2404,7 @@ def apply_cp5_cleaner_grounding_patch(cells):
                       if isinstance(history[i], HumanMessage)
                       and history[i].name == "runtime_context"), -1)
         calls, rounds, seen = {}, {}, set()
+        csv_snapshots = {}
         redundant = 0
         recent = []
         retrievals = {"get_dataframe_schema", "get_column_names", "check_missing_values"}
@@ -2426,6 +2427,17 @@ def apply_cp5_cleaner_grounding_patch(cells):
                     reported_error = reported_error or bool(envelope.get("error")) or (
                         envelope.get("status") in ("error", "failed")
                         or envelope.get("success") is False or envelope.get("ok") is False)
+                if (call["name"] == message.name == "export_dataframe"
+                        and not reported_error and isinstance(message.artifact, dict)):
+                    receipt = message.artifact.get("idd_cleaner_csv_snapshot_v1")
+                    if receipt is not None:
+                        if (not isinstance(receipt, dict)
+                                or receipt.get("df_id") != call["args"].get("df_id")
+                                or not isinstance(receipt.get("sha256"), str)
+                                or len(receipt["sha256"]) != 64
+                                or any(c not in "0123456789abcdef" for c in receipt["sha256"])):
+                            raise ValueError("cleaner CSV integrity: invalid export snapshot receipt.")
+                        csv_snapshots[receipt["df_id"]] = receipt["sha256"]
                 entries = rounds[round_id]
                 entries[entries.index((call["name"], None))] = (call["name"], not reported_error)
                 recent.append({"tool": call["name"], "args": call["args"],
@@ -2467,7 +2479,14 @@ def apply_cp5_cleaner_grounding_patch(cells):
                 "missing_values": {str(k): int(v) for k, v in frame.isna().sum().items()},
                 "duplicate_rows": duplicates,
             }
+        def csv_snapshot_status():
+            with _cleaner_data_lock:
+                return {df_id: {"current": cleaner_csv_fingerprint(df_id) == digest}
+                        for df_id, digest in csv_snapshots.items()}
+
         progress = json.dumps({"observed_data": profiles, "recent_tool_results": recent[-8:],
+                               "csv_export_snapshots": csv_snapshot_status(),
+                               "csv_export_instruction": "Re-export any outdated CSV snapshot after the final data change before claiming completion. Use overwrite=True when replacing the same filename.",
                                "redundant_retrieval_streak": redundant,
                                "consecutive_memory_only_rounds": memory_rounds}, default=str)
         messages = list(request.messages)
@@ -2478,7 +2497,17 @@ def apply_cp5_cleaner_grounding_patch(cells):
             original = str(context.content).split("\\n\\nObserved cleaner progress:\\n", 1)[0]
             messages[position] = context.model_copy(update={"content": original +
                 "\\n\\nObserved cleaner progress:\\n" + progress})
-        return handler(request.override(messages=messages))
+        response = handler(request.override(messages=messages))
+        completed = response.structured_response
+        if isinstance(completed, CleaningMetadata) and completed.finished_this_task:
+            stale = [df_id for df_id, status in csv_snapshot_status().items() if not status["current"]]
+            if stale:
+                raise ValueError(
+                    "cleaner CSV integrity: completed with an outdated CSV snapshot for "
+                    + ", ".join(stale) + ". Re-export the current DataFrame after its final "
+                    "change, then complete natively. No successful completion was published."
+                )
+        return response
 
     memory_id_rules = (''', patch_id="cleaner observed progress middleware")
     body = replace_required(
@@ -2489,12 +2518,42 @@ def apply_cp5_cleaner_grounding_patch(cells):
     from threading import RLock
     _cleaner_data_lock = RLock()
 
+    def cleaner_csv_fingerprint(df_id):
+        import hashlib
+        import json
+        try:
+            frame = get_global_df_registry().get_dataframe(df_id)
+            if frame is None:
+                return None
+            # In-memory representation only; never write or repair an export here.
+            digest = hashlib.sha256(frame.to_csv(index=True).encode("utf-8"))
+            digest.update(frame.isna().to_numpy(dtype=bool).tobytes())
+            digest.update(json.dumps(list(map(str, frame.dtypes))).encode("utf-8"))
+            return digest.hexdigest()
+        except Exception as exc:
+            raise ValueError("cleaner CSV integrity: cannot fingerprint DataFrame " + str(df_id)) from exc
+
     @wrap_tool_call
     def serialize_cleaner_tools(request, handler):
         if request.tool_call["name"] in {"manage_memory", "search_memory"}:
             return handler(request)
         with _cleaner_data_lock:
-            return handler(request)
+            result = handler(request)
+            artifact = result.artifact if isinstance(result, ToolMessage) else None
+            if (request.tool_call["name"] == "export_dataframe"
+                    and isinstance(artifact, dict) and artifact.get("action") == "export"
+                    and artifact.get("format") == "csv" and result.status != "error"
+                    and artifact.get("dataframe_id") == request.tool_call["args"].get("df_id")
+                    and str(result.content).startswith("Exported to ")):
+                df_id = artifact["dataframe_id"]
+                fingerprint = cleaner_csv_fingerprint(df_id)
+                if fingerprint is None:
+                    raise ValueError("cleaner CSV integrity: exported DataFrame is unavailable.")
+                result = result.model_copy(update={"artifact": {
+                    **artifact,
+                    "idd_cleaner_csv_snapshot_v1": {"df_id": df_id, "sha256": fingerprint},
+                }})
+            return result
 
     @wrap_model_call
     def cleaner_progress''', patch_id="cleaner atomic native data-tool calls")
@@ -2576,6 +2635,16 @@ def _cp5_cleaner_messages(state, description, task, emergency_messages=(), *, me
     return [HumanMessage(name="runtime_context", content=json.dumps(context, default=str)),
             HumanMessage(name="cleaner_assignment", content=task + "\\n" + assignment + "\\n" + "\\n".join(emergency))]
 '''
+    wrapper = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                   and n.name == "_safe_data_cleaner_invoke")
+    wrapper_before = ast.get_source_segment(source, wrapper)
+    wrapper_after = replace_required(wrapper_before,
+        '    except Exception as _exc:\n',
+        '    except Exception as _exc:\n'
+        '        if str(_exc).startswith("cleaner CSV integrity:"):\n'
+        '            raise  # Integrity failures must not enter legacy recovery.\n',
+        patch_id="cleaner CSV integrity bypasses legacy recovery")
+    source = source.replace(wrapper_before, wrapper_after, 1)
     cells[57]["source"] = source
     for index in (44, 57):
         ast.parse(join_source(cells[index]["source"]))

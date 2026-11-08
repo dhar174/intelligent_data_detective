@@ -2588,6 +2588,420 @@ def test_cleaner_progress_reflects_real_mutation_and_export_is_not_cleaning(tmp_
     )
 
 
+def _cleaner_csv_call(base, df_id="retail-fixture", **options):
+    return {
+        "name": "export_dataframe",
+        "args": {
+            "df_id": df_id,
+            "file_name": str(base / "cleaned"),
+            "file_format": "csv",
+            **options,
+        },
+    }
+
+
+def _cleaner_csv_progress(model, request_index=-1):
+    context = next(
+        m
+        for m in reversed(model._requests[request_index])
+        if isinstance(m, HumanMessage) and m.name == "runtime_context"
+    )
+    return json.loads(
+        str(context.content).split("\n\nObserved cleaner progress:\n", 1)[1]
+    )
+
+
+@pytest.mark.parametrize("recovery", ["0", "1"])
+def test_cleaner_csv_stale_snapshot_cannot_publish_native_completion(
+    tmp_path, monkeypatch, recovery
+):
+    import pandas as pd
+
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", recovery)
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        _cleaner_csv_call(tmp_path),
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+    )
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="outdated CSV snapshot"
+    ):
+        ns["data_cleaner_node"](state)
+    assert pd.read_csv(tmp_path / "cleaned.csv")["value"].isna().sum() == 1
+    assert registry.get_dataframe("retail-fixture")["value"].isna().sum() == 0
+    assert state["cleaning_metadata"] is None
+    assert not state.get("data_cleaning_complete")
+    assert model._emitted == [
+        "export_dataframe",
+        "fill_missing_median",
+        "CleaningMetadata",
+    ]
+
+
+def test_cleaner_csv_reexport_restores_native_completion(tmp_path):
+    import pandas as pd
+
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        _cleaner_csv_call(tmp_path),
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        {"name": "detect_and_remove_duplicates", "args": {"df_id": "retail-fixture"}},
+        _cleaner_csv_call(tmp_path, overwrite=True),
+    )
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    before_export = _cleaner_csv_progress(model, 3)
+    assert before_export["csv_export_snapshots"] == {
+        "retail-fixture": {"current": False}
+    }
+    assert "Re-export" in before_export["csv_export_instruction"]
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": True}
+    }
+    pd.testing.assert_frame_equal(
+        pd.read_csv(tmp_path / "cleaned.csv"),
+        registry.get_dataframe("retail-fixture").reset_index(drop=True),
+    )
+    assert result["cleaning_metadata"] == cleaner_result()
+    assert result["data_cleaning_complete"] is True
+    assert model._emitted == [
+        "export_dataframe",
+        "fill_missing_median",
+        "detect_and_remove_duplicates",
+        "export_dataframe",
+        "CleaningMetadata",
+    ]
+
+
+def test_cleaner_csv_real_receipt_preserves_tool_pair_and_checkpoint(tmp_path):
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        {"name": "detect_and_remove_duplicates", "args": {"df_id": "retail-fixture"}},
+        _cleaner_csv_call(tmp_path),
+    )
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    message = next(
+        m
+        for m in model._requests[-1]
+        if isinstance(m, ToolMessage) and m.name == "export_dataframe"
+    )
+    assert message.content == "Exported to cleaned.csv (csv)."
+    assert message.tool_call_id == "controlled-call-3"
+    assert message.artifact["action"] == "export"
+    assert message.artifact["rows"] == 3 and message.artifact["cols"] == 2
+    assert Path(message.artifact["path"]) == tmp_path / "cleaned.csv"
+    assert message.artifact["params_used"]["csv"]["sep"] == ","
+    receipt = message.artifact["idd_cleaner_csv_snapshot_v1"]
+    assert receipt["df_id"] == "retail-fixture"
+    assert re.fullmatch("[0-9a-f]{64}", receipt["sha256"])
+    checkpoint = ns["data_cleaner_agent"].get_state(state["_config"])
+    stored = next(
+        m
+        for m in checkpoint.values["messages"]
+        if isinstance(m, ToolMessage) and m.tool_call_id == message.tool_call_id
+    )
+    serde = JsonPlusSerializer()
+    restored = serde.loads_typed(serde.dumps_typed(stored))
+    assert restored == message
+    assert result["data_cleaning_complete"] is True
+
+
+@pytest.mark.parametrize("operation", ["read", "noop", "failed_mutation"])
+def test_cleaner_csv_unchanged_snapshot_remains_current(tmp_path, operation):
+    import pandas as pd
+
+    last = {
+        "read": {"name": "get_dataframe_schema", "args": {"df_id": "retail-fixture"}},
+        "noop": {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        "failed_mutation": {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "absent"},
+        },
+    }[operation]
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        {"name": "detect_and_remove_duplicates", "args": {"df_id": "retail-fixture"}},
+        _cleaner_csv_call(tmp_path),
+        last,
+    )
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": True}
+    }
+    pd.testing.assert_frame_equal(
+        pd.read_csv(tmp_path / "cleaned.csv"),
+        registry.get_dataframe("retail-fixture").reset_index(drop=True),
+    )
+    assert result["cleaning_metadata"] == cleaner_result()
+
+
+def test_cleaner_csv_failed_export_does_not_refresh_snapshot(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        _cleaner_csv_call(tmp_path),
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        _cleaner_csv_call(tmp_path, columns=["absent"], overwrite=True),
+    )
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="outdated CSV snapshot"
+    ):
+        ns["data_cleaner_node"](state)
+    messages = [
+        m
+        for m in model._requests[-1]
+        if isinstance(m, ToolMessage) and m.name == "export_dataframe"
+    ]
+    assert "idd_cleaner_csv_snapshot_v1" in messages[0].artifact
+    assert "error" in messages[1].artifact
+    assert "idd_cleaner_csv_snapshot_v1" not in messages[1].artifact
+    assert state["cleaning_metadata"] is None
+
+
+def test_cleaner_csv_other_dataframe_cannot_refresh_stale_snapshot(tmp_path):
+    import pandas as pd
+
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        _cleaner_csv_call(tmp_path),
+        _cleaner_csv_call(tmp_path, "other-fixture", file_name="other-cleaned"),
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+        _cleaner_csv_call(
+            tmp_path, "other-fixture", file_name="other-cleaned", overwrite=True
+        ),
+    )
+    registry.register_dataframe(pd.DataFrame({"value": [1.0, 2.0]}), "other-fixture")
+    state["available_df_ids"] = ["retail-fixture", "other-fixture"]
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="outdated CSV snapshot for retail-fixture"
+    ):
+        ns["data_cleaner_node"](state)
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": False},
+        "other-fixture": {"current": True},
+    }
+
+
+def test_cleaner_csv_new_assignment_keeps_history_without_stale_receipt_leak(tmp_path):
+    import pandas as pd
+
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path,
+        _cleaner_csv_call(tmp_path),
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+        },
+    )
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="outdated CSV snapshot"
+    ):
+        ns["data_cleaner_node"](state)
+    old = next(
+        m
+        for m in model._requests[-1]
+        if isinstance(m, ToolMessage) and m.name == "export_dataframe"
+    )
+    old_artifact = dict(old.artifact)
+    expected = pd.DataFrame({"value": [2.0, 4.0]})
+    registry.register_dataframe(expected, "new-fixture")
+    model.scripted_responses.append(
+        _cleaner_csv_call(tmp_path, "new-fixture", file_name="new-cleaned")
+    )
+    state["available_df_ids"] = ["new-fixture"]
+    state["next_agent_prompt"] = "NEW_ASSIGNMENT: validate and export new-fixture."
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "new-fixture": {"current": True}
+    }
+    assert old.artifact == old_artifact
+    assert any(
+        isinstance(m, ToolMessage)
+        and m.tool_call_id == old.tool_call_id
+        and m.artifact == old_artifact
+        for m in model._requests[-1]
+    )
+    pd.testing.assert_frame_equal(pd.read_csv(tmp_path / "new-cleaned.csv"), expected)
+    assert result["data_cleaning_complete"] is True
+
+
+def test_cleaner_csv_stale_snapshot_survives_hosted_history_pressure(tmp_path):
+    ns, model, state, registry = _grounded_cleaner_fixture(tmp_path)
+    summary = _HistorySummarySpy()
+    ns["prehook_quick"] = ns["make_hosted_history_middleware"](
+        summary, model_budget_tokens=10_000, max_summary_tokens=32
+    )
+    agent = ns["create_data_cleaner_agent"](initial_description(), ["retail-fixture"])
+    ns["data_cleaner_agent"] = agent
+    older = AIMessage(
+        id="older-csv-observation", content="Earlier observation " * 20_000
+    )
+    with override_global_registry(registry):
+        # Native earlier assignment seeds retained history without data changes.
+        agent.invoke(
+            {
+                "messages": [
+                    older,
+                    HumanMessage(name="runtime_context", content="Earlier assignment"),
+                ],
+                "available_df_ids": ["retail-fixture"],
+            },
+            config=state["_config"],
+        )
+        model.scripted_responses = [
+            _cleaner_csv_call(tmp_path),
+            {
+                "name": "fill_missing_median",
+                "args": {"df_id": "retail-fixture", "column_name": "value"},
+            },
+        ]
+        with pytest.raises(ValueError, match="outdated CSV snapshot"):
+            ns["data_cleaner_node"](state)
+    assert summary.requests
+    assert all(m.id != older.id for m in model._requests[-1])
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": False}
+    }
+    stored = agent.get_state(state["_config"]).values["messages"]
+    assert any(m.id == older.id and m.content == older.content for m in stored)
+    assert any(
+        isinstance(m, ToolMessage)
+        and m.name == "export_dataframe"
+        and "idd_cleaner_csv_snapshot_v1" in m.artifact
+        for m in stored
+    )
+    assert state["cleaning_metadata"] is None
+    assert not state.get("data_cleaning_complete")
+
+
+@pytest.mark.parametrize("recovery", ["0", "1"])
+@pytest.mark.parametrize("phase", ["capture", "before_model", "after_model"])
+def test_cleaner_csv_fingerprint_failure_stops_without_recovery(
+    tmp_path, monkeypatch, recovery, phase
+):
+    import pandas as pd
+
+    monkeypatch.setenv("IDD_ALLOW_RECOVERY", recovery)
+    ns, model, state, registry = _grounded_cleaner_fixture(
+        tmp_path, _cleaner_csv_call(tmp_path)
+    )
+    real_csv = pd.DataFrame.to_csv
+    counts = []
+    fail_on = {"capture": 1, "before_model": 2, "after_model": 3}[phase]
+
+    def fail_fingerprint(frame, path_or_buf=None, *args, **kwargs):
+        if path_or_buf is None:
+            counts.append(1)
+            if len(counts) == fail_on:
+                raise RuntimeError("snapshot fingerprint canary")
+        return real_csv(frame, path_or_buf, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", fail_fingerprint)
+    with override_global_registry(registry), pytest.raises(
+        ValueError, match="cannot fingerprint"
+    ) as caught:
+        ns["data_cleaner_node"](state)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "canary" in str(caught.value.__cause__)
+    assert state["cleaning_metadata"] is None
+    assert not state.get("data_cleaning_complete")
+    assert len(model._requests) == (2 if phase == "after_model" else 1)
+
+
+@pytest.mark.parametrize("export_first", [False, True])
+def test_cleaner_csv_parallel_snapshot_matches_actual_serialized_order(
+    tmp_path, export_first
+):
+    from threading import Event
+    from langchain.agents.middleware import wrap_tool_call
+    import pandas as pd
+
+    ns, _, state, registry = _grounded_cleaner_fixture(tmp_path)
+    registry.register_dataframe(
+        pd.DataFrame({"value": [10.0, None, 30.0]}), "retail-fixture"
+    )
+    calls = [
+        {**_cleaner_csv_call(tmp_path), "id": "parallel-export"},
+        {
+            "name": "fill_missing_median",
+            "args": {"df_id": "retail-fixture", "column_name": "value"},
+            "id": "parallel-fill",
+        },
+    ]
+    first_name = "export_dataframe" if export_first else "fill_missing_median"
+    finished = Event()
+
+    @wrap_tool_call
+    def controlled_order(request, handler):
+        first = request.tool_call["name"] == first_name
+        if not first:
+            assert finished.wait(
+                8
+            ), "First real tool must finish before the second acquires the production lock"
+        result = handler(request)
+        if first:
+            finished.set()
+        return result
+
+    create = ns["create_agent"]
+
+    def ordered_factory(*args, **kwargs):
+        kwargs["middleware"] = [controlled_order, *kwargs["middleware"]]
+        return create(*args, **kwargs)
+
+    ns["create_agent"] = ordered_factory
+    model = ParallelCleanerModel(
+        response_name="CleaningMetadata",
+        payload=cleaner_result().model_dump(),
+        parallel_calls=calls,
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    with override_global_registry(registry):
+        if export_first:
+            with pytest.raises(ValueError, match="outdated CSV snapshot"):
+                ns["data_cleaner_node"](state)
+        else:
+            result = ns["data_cleaner_node"](state)
+            assert result["data_cleaning_complete"] is True
+    assert pd.read_csv(tmp_path / "cleaned.csv")["value"].isna().sum() == int(
+        export_first
+    )
+    assert registry.get_dataframe("retail-fixture")["value"].isna().sum() == 0
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": not export_first}
+    }
+
+
 @pytest.mark.parametrize("existing", [False, True])
 def test_cleaner_unfinished_native_output_never_publishes_completion(
     tmp_path, existing
