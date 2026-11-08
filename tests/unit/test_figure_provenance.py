@@ -291,7 +291,8 @@ def test_real_fallback_path_used_after_failed_custom_plot(tmp_path, monkeypatch)
     assert len(model._requests) == 3
     assert any("actual saved path" in str(m.content) for m in model._requests[0])
     assert any(
-        f"Owned current-run directory: {ns['RUNTIME'].artifacts_dir}" in str(m.content)
+        f"Owned current-run directory: {ns['RUNTIME'].artifacts_dir.as_posix()}"
+        in str(m.content)
         for m in model._requests[0]
     )
     assert any(

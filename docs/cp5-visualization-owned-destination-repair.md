@@ -32,4 +32,6 @@ After the repair, **4 passed**: portable Windows literal round-trip; real custom
 
 Only Cell 57 differs after regeneration. Raw notebook SHA-256: `b6cf975f437e923e1b18f53827f05cde7d8f2533d0acb8e59fea18d18395bdd9`. LF-normalized: `5da1759fbc4088fe94b6ee656aecf37c44265fd200d911bbab43d3acf1e1f1ed`.
 
+The first full focused gate produced 355 passed and one failed Windows assertion: the existing fallback-path test still expected the old native backslash directory spelling. Actual fallback plotting, native completion and join succeeded. The assertion now expects the portable path spelling; the failed receipt and original candidate are retained, and all final gates/review must be repeated at the new exact HEAD.
+
 Focused, supported broad no-key, parity/state/patcher, all 16 mandatory error-handling, validators, deterministic regeneration, and scientific/notebook/proof-runner Jupyter checks are running; final results are not claimed here. Exact-HEAD Linux/Windows runs and a fresh installed Antigravity review are required before merge or another live attempt. Final command/exit/count/hash receipts and review delivery will be posted in the PR conversation, counting overlapping selections once. #129 remains deferred and #165 open; no campaign resume or sample_dirty execution is authorized by a test receipt alone.
