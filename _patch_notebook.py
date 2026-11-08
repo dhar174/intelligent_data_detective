@@ -2324,6 +2324,21 @@ def apply_cp5_numeric_series_patch(cells):
     cells[32]["source"] = source
 
 
+def apply_cp5_file_writer_content_patch(cells):
+    """Align the writer prompt with the existing factory/node content key."""
+    source = join_source(cells[25]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "file_writer_prompt_template"
+                        for t in n.targets))
+    before = ast.get_source_segment(source, node)
+    if before.count("\n{content}\n") != 1:
+        raise RequiredPatchError("CP5 file writer: expected one content placeholder")
+    after = before.replace("\n{content}\n", "\n{file_content}\n")
+    source = source.replace(before, after, 1)
+    ast.parse(source)
+    cells[25]["source"] = source
+
+
 def apply_cp5_cleaner_grounding_patch(cells):
     """Ground the cleaner assignment in observed work, without synthetic completion."""
     source = join_source(cells[44]["source"])
@@ -17987,6 +18002,7 @@ def main():
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
     apply_cp5_scenario_request_patch(cells)
+    apply_cp5_file_writer_content_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:

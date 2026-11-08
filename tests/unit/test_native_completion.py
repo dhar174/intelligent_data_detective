@@ -672,6 +672,171 @@ def analyst_figures(base):
     return items
 
 
+def _file_writer_namespace(base):
+    ns = load_native(base, middleware=True)
+    ns["file_writer_tools"] = []
+    execute_definitions(ns, 25, {"file_writer_prompt_template"})
+    execute_definitions(ns, 57, {"_normalize_meta", "file_writer_node"})
+    return ns
+
+
+@pytest.mark.parametrize(
+    "content", ["", "Literal {content} and {file_content}", "Line 1\nLine 2"]
+)
+def test_file_writer_real_prompt_preserves_supplied_content(tmp_path, content):
+    ns = _file_writer_namespace(tmp_path)
+    requests = []
+
+    def stop_at_boundary(inputs, config=None):
+        requests.append(inputs)
+        raise RuntimeError("offline-writer-boundary-reached")
+
+    ns["file_writer_agent"] = SimpleNamespace(invoke=stop_at_boundary)
+    state = worker_state(tmp_path)
+    state.update(
+        next_agent_metadata={
+            "file_content": content,
+            "file_name": "notes.txt",
+            "file_type": "txt",
+        },
+        report_generator_complete=False,
+    )
+    with pytest.raises(RuntimeError, match="offline-writer-boundary-reached"):
+        ns["file_writer_node"](state)
+    assert len(requests) == 1
+    assert requests[0]["file_content"] == content
+    assert (
+        f"Write the following content to the specified file:\n{content}\n"
+        in requests[0]["messages"][0].content
+    )
+    assert not state.get("file_writer_complete")
+
+
+@pytest.mark.parametrize(
+    "mode", ["complete", "unfinished", "expect-reply", "invalid-tool", "native-error"]
+)
+def test_file_writer_real_prompt_reaches_native_final_manifest(tmp_path, mode):
+    from reportlab.pdfgen.canvas import Canvas
+
+    ns = _file_writer_namespace(tmp_path)
+    reports, visualizations = tmp_path / "reports", tmp_path / "visualizations"
+    reports.mkdir()
+    visualizations.mkdir()
+    charts = []
+    for i in range(3):
+        path = visualizations / f"figure-{i}.png"
+        Image.new("RGB", (120, 80), (30 + 30 * i, 80, 150)).save(path)
+        charts.append(path)
+    md, html, pdf = (
+        reports / f"final_report.{extension}" for extension in ("md", "html", "pdf")
+    )
+    md.write_text(
+        "# Offline report\n\n"
+        + "\n".join(
+            f"![Figure {i}](../visualizations/{p.name})" for i, p in enumerate(charts)
+        ),
+        encoding="utf-8",
+    )
+    html.write_text(
+        "<h1>Offline report</h1>"
+        + "".join(f'<img src="../visualizations/{p.name}">' for p in charts),
+        encoding="utf-8",
+    )
+    canvas = Canvas(str(pdf))
+    canvas.drawString(30, 800, "Offline manifest fixture")
+    canvas.save()
+    paths = [md, html, pdf, *charts]
+    before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    files = [
+        idd_state.FileResult(
+            **FLAGS,
+            write_success=True,
+            file_path=str(path),
+            file_type=path.suffix[1:],
+            file_name=path.name,
+            file_description="Existing offline fixture",
+            is_final_report=path == html,
+            category_tag="report" if path in (md, html, pdf) else "visualization",
+        )
+        for path in paths
+    ]
+
+    class ManifestModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            if mode == "native-error":
+                raise RuntimeError("offline-native-manifest-error")
+            return super()._generate(messages, **kwargs)
+
+    payload = idd_state.ListOfFiles(
+        **{
+            **FLAGS,
+            "finished_this_task": mode != "unfinished",
+            "expect_reply": mode == "expect-reply",
+        },
+        files=files,
+    ).model_dump()
+    model = ManifestModel(
+        response_name=(
+            "unregistered_writer_tool" if mode == "invalid-tool" else "ListOfFiles"
+        ),
+        payload={} if mode == "invalid-tool" else payload,
+    )
+    ns["file_writer_llm"] = model
+
+    def reject_ordinary_writer(*args, **kwargs):
+        raise AssertionError("Final manifest must not invoke ordinary file writer")
+
+    ns["file_writer_agent"] = SimpleNamespace(invoke=reject_ordinary_writer)
+    state = worker_state(tmp_path)
+    state["_config"]["configurable"]["runtime"] = ns["RUNTIME"]
+    state.update(
+        report_generator_complete=True,
+        report_results=idd_state.ReportResults(
+            **FLAGS,
+            markdown_report_path=str(md),
+            html_report_path=str(html),
+            pdf_report_path=str(pdf),
+        ),
+        visualization_results=idd_state.VisualizationResults(
+            **FLAGS,
+            visualizations=[
+                idd_state.DataVisualization(
+                    **FLAGS,
+                    path=str(path),
+                    visualization_id=f"figure-{i}",
+                    visualization_type="bar",
+                    visualization_title=f"Figure {i}",
+                    visualization_description="Offline fixture",
+                    visualization_style="matplotlib",
+                )
+                for i, path in enumerate(charts)
+            ],
+        ),
+    )
+    if mode == "invalid-tool":
+        with pytest.raises(GraphRecursionError):
+            ns["file_writer_node"](state)
+        assert not state.get("file_writer_complete")
+    elif mode == "native-error":
+        with pytest.raises(RuntimeError, match="offline-native-manifest-error"):
+            ns["file_writer_node"](state)
+        assert not state.get("file_writer_complete")
+    else:
+        result = ns["file_writer_node"](state)
+        assert result["file_writer_complete"] is (mode == "complete")
+        assert result["last_agent_finished_this_task"] is (mode == "complete")
+        assert len(result["file_results"]) == 6
+        assert model._emitted == ["ListOfFiles"]
+        assert all(
+            path.as_posix()
+            in str(model._requests[0][-1].content)
+            .replace("\\\\", "/")
+            .replace("\\", "/")
+            for path in paths
+        )
+    assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in paths} == before
+
+
 def worker_state(base):
     return dict(
         _config={"configurable": {"thread_id": "native-worker-fixture"}},
