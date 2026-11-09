@@ -1168,6 +1168,146 @@ def _viz_retrieval_fixture(base, calls, model_type=ControlledChatModel):
     return ns, model, state, items
 
 
+@pytest.mark.parametrize("renderer", ["custom", "builtin"])
+def test_assigned_worker_inspects_its_real_png_without_sibling_inventory(
+    tmp_path, monkeypatch, renderer
+):
+    import base64
+
+    from langchain_openai.chat_models.base import _construct_responses_api_input
+    from tests.unit.test_figure_provenance import apply_join, plot_namespace
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    root = ns["RUNTIME"].artifacts_dir
+    directory = root / "visualizations"
+    directory.mkdir(parents=True)
+    sibling = directory / "sibling-owned.png"
+    Image.new("RGB", (16, 16), "red").save(sibling)
+    spec = idd_state.VizSpec(
+        **FLAGS,
+        viz_id="assigned-scatter",
+        title="Gross vs net",
+        viz_type="scatter",
+        df_id="retail-fixture",
+        x="gross",
+        y="net",
+        columns=["gross", "net"],
+        hue=None,
+        bins=None,
+        agg=None,
+        query=None,
+        description="Gross and net values",
+        limit=None,
+        style="default",
+        viz_instructions="Plot gross against net.",
+    )
+
+    class InspectionModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            context = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            stage = len(self._requests)
+            if stage == 0:
+                if renderer == "custom":
+                    path = context["custom_plot_output_path"]
+                    self._owned_png = path
+                    call = {
+                        "name": "python_repl_tool",
+                        "args": {
+                            "df_id": spec.df_id,
+                            "code": (
+                                "import matplotlib.pyplot as plt\n"
+                                "fig, ax = plt.subplots()\n"
+                                "ax.scatter(df['gross'], df['net'])\n"
+                                f"fig.savefig({path!r})\nplt.close(fig)\nprint({path!r})"
+                            ),
+                        },
+                    }
+                else:
+                    call = {
+                        "name": "create_scatter_plot",
+                        "args": {"df_id": spec.df_id, "x": "gross", "y": "net"},
+                    }
+            elif stage == 1:
+                if renderer == "builtin":
+                    self._owned_png = json.loads(messages[-1].content)["image_path"]
+                assert Path(self._owned_png).is_file()
+                call = {
+                    "name": "list_visualizations",
+                    "args": {"artifacts_dir": root.as_posix()},
+                }
+            elif stage == 2:
+                listing = messages[-1]
+                assert isinstance(listing, ToolMessage)
+                assert listing.tool_call_id == "controlled-call-2"
+                visible = str(listing.content).partition("\n")[2]
+                assert visible.lstrip().startswith("["), listing.content
+                paths = {Path(x["path"]) for x in json.loads(visible)}
+                assert paths == {
+                    Path(self._owned_png)
+                }, "Assigned worker inventory disclosed sibling or non-assignment PNGs"
+                assert sibling.name not in listing.content
+                call = {
+                    "name": "get_visualization",
+                    "args": {"path": sibling.as_posix(), "include_preview": True},
+                }
+            elif stage == 3:
+                refused = messages[-1]
+                assert isinstance(refused, ToolMessage)
+                assert refused.tool_call_id == "controlled-call-3"
+                assert refused.status == "error" and "assigned" in refused.content
+                assert not refused.artifact
+                call = {
+                    "name": "get_visualization",
+                    "args": {"visualization_id": spec.viz_id, "include_preview": True},
+                }
+            else:
+                assert stage == 4
+                preview = messages[-1]
+                assert isinstance(preview, ToolMessage)
+                assert preview.tool_call_id == "controlled-call-4"
+                wire = _construct_responses_api_input([preview])[0]
+                image = next(
+                    block for block in wire["output"] if block["type"] == "input_image"
+                )
+                actual = Path(self._owned_png).read_bytes()
+                assert base64.b64decode(image["image_url"].split(",", 1)[1]) == actual
+                item = idd_state.DataVisualization(
+                    **FLAGS,
+                    path=self._owned_png,
+                    visualization_id=spec.viz_id,
+                    visualization_type="scatter",
+                    visualization_title=spec.title,
+                    visualization_description="Actual gross and net values",
+                    visualization_style="default",
+                )
+                call = {
+                    "name": "VisualizationResults",
+                    "args": idd_state.VisualizationResults(
+                        **FLAGS, visualizations=[item]
+                    ).model_dump(),
+                }
+            self.scripted_responses.append(call)
+            return super()._generate(messages, **kwargs)
+
+    model = InspectionModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(viz_spec=spec, viz_specs=[spec], artifacts_path=str(root))
+    state["_config"]["configurable"]["runtime"] = ns["RUNTIME"]
+    out = ns["viz_worker"](state)
+    joined = apply_join({**state, **out}, ns["viz_join"]({**state, **out}))
+    result = joined["visualization_results"].visualizations[0]
+    assert result.visualization_id == spec.viz_id
+    assert Path(result.path) != sibling
+    assert model._emitted[-1] == "VisualizationResults"
+    assert len(model._requests) == 5
+
+
 def test_viz_worker_scope_is_current_assignment_not_pipeline_or_perfection(tmp_path):
     class ScopeModel(ControlledChatModel):
         def _generate(self, messages, **kwargs):

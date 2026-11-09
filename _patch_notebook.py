@@ -3126,6 +3126,150 @@ def apply_cp5_worker_png_inspection_patch(cells):
     cells[57]["source"] = source
 
 
+def apply_cp5_worker_inspection_scope_patch(cells):
+    """Limit provisional inventory to actual renders from the current worker assignment."""
+    source = join_source(cells[44]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "create_visualization_agent")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '    tool_descriptions = "\\n".join(',
+        '''    inspection_descriptions = {
+        "list_visualizations": (
+            "During a dispatched assignment, list only that worker's saved provisional PNGs. "
+            "Do not scan a shared directory; artifacts_dir is ignored for this assignment."
+        ),
+        "get_visualization": (
+            "Inspect this assignment's PNG by exact saved path or listed ID. The assigned ID "
+            "selects the reserved custom PNG when saved, otherwise the latest built-in render. "
+            "Set include_preview=True to see the actual pixels. A preview is not completion."
+        ),
+    }
+    _cp5_visualization_tools = [
+        t.model_copy(update={"description": inspection_descriptions[t.name]})
+        if t.name in inspection_descriptions else t for t in _cp5_visualization_tools
+    ]
+
+    @wrap_tool_call
+    def scope_visualization_inspection(request, handler):
+        import json
+        from dataclasses import replace
+
+        call = request.tool_call
+        if call["name"] not in ("list_visualizations", "get_visualization") or request.tool is None:
+            return handler(request)
+        args = dict(call["args"])
+        try:
+            request.tool.args_schema.model_validate(args)
+        except ValidationError:
+            return handler(request)  # Keep native validation and call-ID pairing.
+
+        history = list(request.state.get("messages") or [])
+        start = next((i for i in reversed(range(len(history)))
+                      if isinstance(history[i], HumanMessage)
+                      and history[i].name == "runtime_context"), None)
+        if start is None:
+            return handler(request)
+        context = json.loads(history[start].content)
+        spec = context.get("assigned_spec")
+        if not isinstance(spec, dict) or not spec.get("viz_id"):
+            return handler(request)  # Utility use without a dispatched VizSpec.
+
+        root = _cp5_current_run_root() / "visualizations"
+        candidates = {}
+
+        def add_candidate(raw_path, plot_type=None):
+            if not isinstance(raw_path, str) or not PathlibPath(raw_path).is_absolute():
+                return
+            try:
+                path = _cp5_validated_figure_path(raw_path, request.state)
+            except ValueError:
+                return  # A missing or invalid file cannot be inspected.
+            if not path.is_relative_to(root) or path != PathlibPath(raw_path):
+                return
+            candidates.pop(path, None)
+            candidates[path] = _coerce_viz_dict(
+                path.as_posix(), vtype=plot_type,
+                desc="Provisional render for the current assignment; not a completed figure.",
+            )
+
+        plot_tools = {
+            "create_histogram", "create_scatter_plot", "create_box_plot",
+            "create_violin_plot", "create_correlation_heatmap",
+        }
+        calls = {entry.get("id"): entry.get("name")
+                 for message in history[start + 1:] if isinstance(message, AIMessage)
+                 for entry in message.tool_calls}
+        for message in history[start + 1:]:
+            if (isinstance(message, ToolMessage) and message.status != "error"
+                    and message.name in plot_tools
+                    and calls.get(message.tool_call_id) == message.name
+                    and isinstance(message.artifact, dict)
+                    and not message.artifact.get("error")):
+                add_candidate(message.artifact.get("image_path"), message.artifact.get("plot_type"))
+        # The custom path is reserved uniquely for this assignment, so it
+        # can be inspected after saving without parsing arbitrary Python stdout.
+        add_candidate(context.get("custom_plot_output_path"))
+        if candidates:
+            candidates[next(reversed(candidates))]["visualization_id"] = spec["viz_id"]
+
+        args["artifacts_dir"] = None  # Disable the common-directory scan for a worker.
+        if call["name"] == "get_visualization":
+            raw_path = args.get("path")
+            selected = None
+            if raw_path and PathlibPath(raw_path).is_absolute():
+                selected = candidates.get(PathlibPath(raw_path).resolve())
+            elif not raw_path and args.get("visualization_id"):
+                selected = next((item for item in candidates.values()
+                                 if item["visualization_id"] == args["visualization_id"]), None)
+            if selected is None:
+                return ToolMessage(
+                    content=("No PNG for this lookup in the current assigned figure's renders. "
+                             "Save the assigned figure or inspect its exact saved path."),
+                    name=call["name"], tool_call_id=call["id"], status="error",
+                )
+            args["path"] = selected["path"]
+
+        # Supply a private inventory to the existing retrieval tools. The
+        # normal tool receipts persist, but no figure state is published here.
+        scope = {
+            "visualization_results": {"visualizations": list(candidates.values())},
+            "available_df_ids": [spec.get("df_id")],
+        }
+        return handler(replace(
+            request, tool_call={**call, "args": args}, state=scope,
+            runtime=replace(request.runtime, state=scope),
+        ))
+
+    tool_descriptions = "\\n".join(''',
+        patch_id="CP5 provisional worker inventory from assignment-local render receipts",
+    )
+    body = replace_required(
+        body,
+        'guard_visualization_memory_id, guard_visualization_completion,',
+        'guard_visualization_memory_id, scope_visualization_inspection, guard_visualization_completion,',
+        patch_id="CP5 assignment-scoped worker inspection middleware",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[44]["source"] = source
+
+    source = join_source(cells[57]["source"])
+    source = replace_required(
+        source,
+        '        "the assigned visualization ID belongs in your completion metadata and may not be "\n'
+        '        "in the inventory yet. read_file is for text; do not use it to inspect PNGs."',
+        '''        "the worker inventory contains only provisional renders from this assignment. "
+        "The assigned ID previews your reserved custom PNG, if saved, or the latest built-in render. "
+        "A preview does not certify completion. Keep the assigned ID in your native result. "
+        "read_file is for text; do not use it to inspect PNGs."''',
+        patch_id="CP5 provisional inspection contract in the rendered assignment",
+    )
+    ast.parse(source)
+    cells[57]["source"] = source
+
+
 def apply_cp5_scenario_request_patch(cells):
     """Keep the actual scenario/custom request through runtime initialization."""
     source = join_source(cells[51]["source"])
@@ -18371,6 +18515,7 @@ def main():
     apply_cp5_visualization_assignment_patch(cells)
     apply_cp5_viz_native_correction_patch(cells)
     apply_cp5_worker_png_inspection_patch(cells)
+    apply_cp5_worker_inspection_scope_patch(cells)
     apply_cp5_scenario_request_patch(cells)
     apply_cp5_file_writer_content_patch(cells)
     apply_cp5_evaluator_image_context_patch(cells)
