@@ -3147,6 +3147,7 @@ def apply_cp5_visualization_assignment_patch(cells):
         redundant = 0
         retrieval_seen = set()
         retrieval_redundant = 0
+        rendered_pngs = set()
         feedback_message = None
         terminal_path = None
         retrieval_tools = {"list_visualizations", "get_visualization", "read_file",
@@ -3171,32 +3172,44 @@ def apply_cp5_visualization_assignment_patch(cells):
                 ))
             )
             unchanged_png = is_python and not error and artifact.get("idd_unchanged_owned_png_sha256")
-            if message.name in retrieval_tools or unchanged_png:
+            render_digest = artifact.get("idd_owned_builtin_render_sha256")
+            if render_digest and render_digest not in rendered_pngs:
+                rendered_pngs.add(render_digest)
+                redundant = retrieval_redundant = 0
+                seen.clear()
+                retrieval_seen.clear()
+                continue
+            if message.name in retrieval_tools or unchanged_png or render_digest:
                 import hashlib as _viz_hashlib, json as _viz_json
-                # Compare tool evidence independently of how the Python code was phrased.
-                evidence = ({k: v for k, v in artifact.items() if k != "code_executed"}
-                            if unchanged_png else message.artifact)
-                fingerprint = _viz_hashlib.sha256(_viz_json.dumps(
-                    [message.name, message.content, evidence],
-                    sort_keys=True, default=str,
-                ).encode("utf-8")).hexdigest()
-                retrieval_redundant = retrieval_redundant + 1 if fingerprint in retrieval_seen else 0
-                if fingerprint not in retrieval_seen:
-                    redundant = 0
-                    seen.clear()
-                retrieval_seen.add(fingerprint)
+                if render_digest:
+                    # Built-in render paths are unique even for identical images.
+                    retrieval_redundant += 1
+                else:
+                    # Compare tool evidence independently of how the Python code was phrased.
+                    evidence = ({k: v for k, v in artifact.items() if k != "code_executed"}
+                                if unchanged_png else message.artifact)
+                    fingerprint = _viz_hashlib.sha256(_viz_json.dumps(
+                        [message.name, message.content, evidence],
+                        sort_keys=True, default=str,
+                    ).encode("utf-8")).hexdigest()
+                    retrieval_redundant = retrieval_redundant + 1 if fingerprint in retrieval_seen else 0
+                    if fingerprint not in retrieval_seen:
+                        redundant = 0
+                        seen.clear()
+                    retrieval_seen.add(fingerprint)
                 if retrieval_redundant >= 3:
-                    if unchanged_png and message is messages[-1] and start >= 0:
+                    terminal_digest = unchanged_png or artifact.get("idd_owned_preview_png_sha256")
+                    if terminal_digest and message is messages[-1] and start >= 0:
                         context = _viz_json.loads(messages[start].content)
                         path = context.get("custom_plot_output_path")
                         spec = context.get("assigned_spec")
                         if (isinstance(spec, dict) and spec.get("viz_id")
-                                and assigned_png_digest(path, request.state) == unchanged_png):
+                                and assigned_png_digest(path, request.state) == terminal_digest):
                             terminal_path = path
                             feedback_message = message
                             break
                     raise ValueError(
-                        "Visualization repeated unchanged retrieval results or Python PNG checks after three redundant results. "
+                        "Visualization repeated unchanged retrieval results, Python PNG checks, or renders after three redundant results. "
                         "Use the assigned spec and actual saved path; correct a concrete issue or "
                         "complete natively so the canonical evaluator can assess the generated figure. "
                         "No successful revision or figure approval has been inferred."
@@ -3226,6 +3239,10 @@ def apply_cp5_visualization_assignment_patch(cells):
                 if feedback_message.name == "python_repl_tool"
                 else "This visualization lookup returned no new evidence."
             )
+            if isinstance(feedback_message.artifact, dict) and feedback_message.artifact.get(
+                "idd_owned_builtin_render_sha256"
+            ):
+                lead = "This render used a new filename but produced the same PNG bytes as an earlier render."
             feedback = (
                 lead + " If the PNG has a defect, change the rendering and inspect the changed PNG. "
                 "If it meets the assignment, submit native VisualizationResults with the "
@@ -3276,7 +3293,7 @@ def apply_cp5_visualization_assignment_patch(cells):
                 or PathlibPath(terminal_path) != _cp5_validated_figure_path(
                     result.visualizations[0].path, request.state
                 )
-                or assigned_png_digest(terminal_path, request.state) != unchanged_png
+                or assigned_png_digest(terminal_path, request.state) != terminal_digest
             ):
                 raise ValueError("Final VisualizationResults must identify the verified assigned PNG.")
         return response
@@ -3561,19 +3578,26 @@ def apply_cp5_worker_inspection_scope_patch(cells):
             return None  # Only an observed valid PNG contributes evidence.
         return None
 
+    plot_tools = {
+        "create_histogram", "create_scatter_plot", "create_box_plot",
+        "create_violin_plot", "create_correlation_heatmap",
+    }
+
     @wrap_tool_call
     def scope_visualization_inspection(request, handler):
         import json
         from dataclasses import replace
 
         call = request.tool_call
-        if call["name"] not in ("list_visualizations", "get_visualization", "python_repl_tool") or request.tool is None:
+        if (call["name"] not in plot_tools | {"list_visualizations", "get_visualization", "python_repl_tool"}
+                or request.tool is None):
             return handler(request)
         args = dict(call["args"])
-        try:
-            request.tool.args_schema.model_validate(args)
-        except ValidationError:
-            return handler(request)  # Keep native validation and call-ID pairing.
+        if call["name"] not in plot_tools:
+            try:
+                request.tool.args_schema.model_validate(args)
+            except ValidationError:
+                return handler(request)  # Keep native validation and call-ID pairing.
 
         history = list(request.state.get("messages") or [])
         start = next((i for i in reversed(range(len(history)))
@@ -3587,6 +3611,16 @@ def apply_cp5_worker_inspection_scope_patch(cells):
             return handler(request)  # Utility use without a dispatched VizSpec.
 
         root = _cp5_current_run_root() / "visualizations"
+        if call["name"] in plot_tools:
+            result = handler(request)
+            if (isinstance(result, ToolMessage) and result.status != "error"
+                    and isinstance(result.artifact, dict) and not result.artifact.get("error")):
+                digest = assigned_png_digest(result.artifact.get("image_path"), request.state)
+                if digest:
+                    return result.model_copy(update={"artifact": {
+                        **result.artifact, "idd_owned_builtin_render_sha256": digest,
+                    }})
+            return result
         if call["name"] == "python_repl_tool":
             import ast
 
@@ -3649,10 +3683,6 @@ def apply_cp5_worker_inspection_scope_patch(cells):
                 desc="Provisional render for the current assignment; not a completed figure.",
             )
 
-        plot_tools = {
-            "create_histogram", "create_scatter_plot", "create_box_plot",
-            "create_violin_plot", "create_correlation_heatmap",
-        }
         calls = {entry.get("id"): entry.get("name")
                  for message in history[start + 1:] if isinstance(message, AIMessage)
                  for entry in message.tool_calls}
@@ -3692,10 +3722,23 @@ def apply_cp5_worker_inspection_scope_patch(cells):
             "visualization_results": {"visualizations": list(candidates.values())},
             "available_df_ids": [spec.get("df_id")],
         }
-        return handler(replace(
+        result = handler(replace(
             request, tool_call={**call, "args": args}, state=scope,
             runtime=replace(request.runtime, state=scope),
         ))
+        if (call["name"] == "get_visualization" and args.get("include_preview")
+                and args["path"] == context.get("custom_plot_output_path")
+                and isinstance(result, ToolMessage) and result.status != "error"
+                and isinstance(result.artifact, dict) and not result.artifact.get("error")):
+            import base64, hashlib
+            item = result.artifact.get("item")
+            preview = item.get("image_base64") if isinstance(item, dict) else None
+            if preview:
+                digest = hashlib.sha256(base64.b64decode(preview, validate=True)).hexdigest()
+                result = result.model_copy(update={"artifact": {
+                    **result.artifact, "idd_owned_preview_png_sha256": digest,
+                }})
+        return result
 
     tool_descriptions = "\\n".join(''',
         patch_id="CP5 provisional worker inventory from assignment-local render receipts",
