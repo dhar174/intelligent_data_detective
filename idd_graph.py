@@ -15,6 +15,7 @@ Architecture: Checkpoint 3 (Issue #160 / Refs #140, #144, #145).
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import (
     Any,
@@ -62,7 +63,6 @@ from idd_state import (
     State,
     VizSpec,
 )
-
 
 # ---------------------------------------------------------------------------
 # Membership and Option Constants
@@ -270,6 +270,30 @@ def write_output_to_file(
     return Command(goto="supervisor")
 
 
+_RETAINED_REVISION_FIGURES = "cp5_retained_revision_figures"
+
+
+def _retained_revision_figure_records(state: State) -> list[dict]:
+    """Read the internal receipt produced after native analysis revision."""
+    if state.get("viz_grade") != "revise":
+        return []
+    metadata = state.get("next_agent_metadata")
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("notes") == _RETAINED_REVISION_FIGURES
+    ):
+        metadata = NextAgentMetadata.model_validate(metadata)
+    if (
+        not isinstance(metadata, NextAgentMetadata)
+        or metadata.notes != _RETAINED_REVISION_FIGURES
+    ):
+        return []
+    records = json.loads(metadata.file_content or "[]")
+    if not isinstance(records, list) or not records:
+        raise ValueError("Missing retained visualization revision records")
+    return records
+
+
 def assign_viz_workers(state: State):
     """Fan out visualization tasks to parallel viz_worker branches."""
     tasks = state.get("viz_tasks", []) or []
@@ -285,7 +309,16 @@ def assign_viz_workers(state: State):
             _safe_specs.append(sp)
     viz_specs = _safe_specs
 
+    retained = {
+        record["figure"]["visualization_id"]
+        for record in _retained_revision_figure_records(state)
+    }
+
     if not tasks or not viz_specs:
+        if retained:
+            raise ValueError(
+                "Visualization revision has no remaining render assignments"
+            )
         return Send(
             "report_orchestrator",
             {
@@ -325,7 +358,7 @@ def assign_viz_workers(state: State):
         child.pop("checkpoint_id", None)
         return {**_vw_cfg, "configurable": child}
 
-    return [
+    sends = [
         Send(
             "viz_worker",
             {
@@ -341,7 +374,11 @@ def assign_viz_workers(state: State):
             },
         )
         for index, (t, sp) in enumerate(zip(tasks, viz_specs))
+        if sp.viz_id not in retained
     ]
+    if retained and not sends:
+        raise ValueError("Visualization revision has no remaining render assignments")
+    return sends
 
 
 def dispatch_sections(state: State):

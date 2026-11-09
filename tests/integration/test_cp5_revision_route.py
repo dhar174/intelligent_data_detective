@@ -230,7 +230,7 @@ def _produce_real_plot(namespace, base, df_id, spec, monkeypatch):
     )
 
 
-def _thread_runtime(base, label, df_id, monkeypatch):
+def _thread_runtime(base, label, df_id, monkeypatch, *, retain_unchanged=False):
     import matplotlib
     from math import nan
 
@@ -295,11 +295,15 @@ def _thread_runtime(base, label, df_id, monkeypatch):
     revision_specs = (
         _revision_round_specs(label, df_id, "revision") if label == "thread-a" else []
     )
+    if label == "thread-a" and retain_unchanged:
+        revision_specs[1] = initial_specs[1].model_copy(deep=True)
     all_specs = initial_specs + revision_specs
     plot_results = {}
     task_payloads = {}
     with override_global_registry(registry):
         for spec in all_specs:
+            if spec.viz_instructions in task_payloads:
+                continue
             item = _produce_real_plot(namespace, base, df_id, spec, monkeypatch)
             plot_results[spec.viz_id] = item
             task_payloads[spec.viz_instructions] = VisualizationResults(
@@ -404,8 +408,11 @@ def _thread_id(state, config=None):
     return configurable.get("thread_id")
 
 
+@pytest.mark.parametrize(
+    "retain_unchanged", [False, True], ids=["regenerate", "retain"]
+)
 def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, retain_unchanged
 ):
     for key in (
         "OPENAI_API_KEY",
@@ -422,7 +429,11 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
 
     threads = {
         "revision-thread-a": _thread_runtime(
-            tmp_path / "thread_a", "thread-a", "retail-thread-a", monkeypatch
+            tmp_path / "thread_a",
+            "thread-a",
+            "retail-thread-a",
+            monkeypatch,
+            retain_unchanged=retain_unchanged,
         ),
         "revision-thread-b": _thread_runtime(
             tmp_path / "thread_b", "thread-b", "retail-thread-b", monkeypatch
@@ -526,6 +537,11 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
                 for item in values["visualization_results"].visualizations
             }
             assert actual_ids == expected_ids
+            if thread_id == "revision-thread-a" and retain_unchanged:
+                assert [
+                    item.visualization_id
+                    for item in values["visualization_results"].visualizations
+                ] == [spec.viz_id for spec in thread["revision_specs"]]
             assert {
                 DataVisualization.model_validate(item).visualization_id
                 for item in values["viz_results"]
@@ -550,11 +566,16 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
         revised_ids = {
             spec.viz_id for spec in threads["revision-thread-a"]["revision_specs"]
         }
-        assert initial_ids.isdisjoint(revised_ids)
+        retained_ids = (
+            {threads["revision-thread-a"]["initial_specs"][1].viz_id}
+            if retain_unchanged
+            else set()
+        )
+        assert initial_ids & revised_ids == retained_ids
         assert {
             v.visualization_id for v in thread_a["visualization_results"].visualizations
         } == revised_ids
-        assert initial_ids.isdisjoint(
+        assert (initial_ids - retained_ids).isdisjoint(
             {
                 v.visualization_id
                 for v in thread_a["visualization_results"].visualizations
@@ -571,7 +592,10 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
             Path(threads["revision-thread-a"]["plot_results"][viz_id].path).resolve()
             for viz_id in revised_ids
         }
-        assert initial_paths.isdisjoint(revised_paths)
+        assert initial_paths & revised_paths == {
+            Path(threads["revision-thread-a"]["plot_results"][viz_id].path).resolve()
+            for viz_id in retained_ids
+        }
         assert {Path(path).resolve() for path in thread_a["viz_paths"]} == revised_paths
         assert thread_a["analysis_insights"].summary == "Thread A initial analysis."
         assert thread_b["analysis_insights"].summary == "Thread B isolated analysis."
@@ -603,7 +627,7 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
         } == {spec.viz_id for spec in threads["revision-thread-b"]["initial_specs"]}
 
         for thread_id, expected_analyst_calls, expected_evals, expected_workers in (
-            ("revision-thread-a", 2, 2, 4),
+            ("revision-thread-a", 2, 2, 3 if retain_unchanged else 4),
             ("revision-thread-b", 1, 1, 2),
         ):
             runtime = threads[thread_id]
@@ -620,6 +644,11 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
             assert events[thread_id].count("viz_evaluator_node") == expected_evals
             assert "supervisor->analyst" in events[thread_id]
             assert "supervisor->visualization" in events[thread_id]
+        second_evaluation = "\n".join(
+            str(message.content)
+            for message in threads["revision-thread-a"]["evaluator_model"]._requests[1]
+        )
+        assert all(viz_id in second_evaluation for viz_id in revised_ids)
         revision_prompt = "\n".join(
             str(message.content)
             for message in threads["revision-thread-a"]["analyst_model"]._requests[1]
@@ -662,6 +691,92 @@ def test_sqlite_generated_revision_route_keeps_real_plots_and_isolated_threads(
             restored_b.values["analysis_insights"].summary
             == "Thread B isolated analysis."
         )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "free-text",
+        "changed-spec",
+        "changed-input",
+        "outside-run",
+        "path-only",
+        "tampered-png",
+        "tampered-input",
+    ],
+)
+def test_retained_revision_requires_unchanged_current_run_evidence(
+    tmp_path, monkeypatch, case
+):
+    from PIL import Image
+
+    thread = _thread_runtime(
+        tmp_path, "thread-a", "retail-thread-a", monkeypatch, retain_unchanged=True
+    )
+    ns, registry = thread["namespace"], thread["registry"]
+    old_specs, revised = thread["initial_specs"], thread["revision_specs"]
+    prior = [thread["plot_results"][s.viz_id] for s in old_specs]
+    if case == "outside-run":
+        outside = tmp_path / "other-run.png"
+        Image.new("RGB", (24, 24), "navy").save(outside)
+        prior[1] = prior[1].model_copy(update={"path": str(outside)})
+    if case == "path-only":
+        prior[1] = prior[1].model_copy(
+            update={"visualization_type": "image", "visualization_style": "generated"}
+        )
+
+    feedback = VizFeedback(
+        **FLAGS,
+        grade="revise",
+        feedback="Correct the first figure.",
+        redo_list=(
+            ["the first figure"] if case == "free-text" else [old_specs[0].viz_id]
+        ),
+    )
+    state = analyst_state(tmp_path, viz_eval_result=feedback, figures=prior)
+    state["viz_specs"] = old_specs
+    snapshots = ns["_cp5_analyst_revision_snapshot"](state, registry)
+    if case in {"free-text", "outside-run", "path-only"}:
+        assert snapshots == {}
+    else:
+        assert set(snapshots) == {old_specs[1].viz_id}
+
+    if case == "changed-spec":
+        revised = [
+            revised[0],
+            revised[1].model_copy(update={"viz_instructions": "Add a new trend line."}),
+        ]
+
+    def change_input():
+        frame = registry.get_dataframe(thread["df_id"]).copy()
+        frame.loc[0, "revenue"] += 500
+        registry.register_dataframe(frame, thread["df_id"])
+
+    if case == "changed-input":
+        change_input()
+
+    metadata = ns["_cp5_analyst_revision_metadata"](revised, snapshots, registry)
+    if case not in {"tampered-png", "tampered-input"}:
+        assert metadata is None
+        return
+
+    assert metadata is not None
+    selected = thread["plot_results"][revised[0].viz_id]
+    combined = {
+        **state,
+        "viz_specs": revised,
+        "viz_tasks": [spec.viz_instructions for spec in revised],
+        "viz_results": [selected.model_dump(), prior[1].model_dump()],
+        "visualization_results": None,
+        "viz_paths": [],
+        "next_agent_metadata": metadata,
+    }
+    if case == "tampered-png":
+        Image.new("RGB", (24, 24), "orange").save(prior[1].path)
+    else:
+        change_input()
+    with pytest.raises(ValueError, match="Retained visualization (input )?changed"):
+        ns["viz_join"](combined)
 
 
 def test_exhausted_retries_stop_the_canonical_graph_without_a_report(tmp_path):

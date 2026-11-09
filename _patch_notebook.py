@@ -851,6 +851,194 @@ print("Stream review message occurrences:", dict(sorted(review_message_counts.it
         cells[idx]["execution_count"] = None
 
 
+def apply_cp5_revision_retention_patch(cells) -> None:
+    # Carry verified unchanged worker figures through an exact-target revision.
+    helpers = '''
+def _cp5_analyst_revision_frame_digest(registry, df_id):
+    import hashlib
+    from pandas.util import hash_pandas_object
+
+    frame = registry.get_dataframe(df_id)
+    if frame is None:
+        return None
+    try:
+        digest = hashlib.sha256(hash_pandas_object(frame, index=True).to_numpy().tobytes())
+        digest.update(repr((list(frame.columns), list(map(str, frame.dtypes)))).encode("utf-8"))
+        digest.update(frame.isna().to_numpy(dtype=bool).tobytes())
+        return digest.hexdigest()
+    except (TypeError, ValueError):
+        return None  # Unhashable input falls back to rendering.
+
+
+def _cp5_analyst_revision_snapshot(state, registry):
+    import hashlib
+    from idd_state import VizFeedback
+
+    feedback = state.get("viz_eval_result")
+    if not isinstance(feedback, VizFeedback) or feedback.grade != "revise" or not feedback.finished_this_task:
+        return {}
+    try:
+        specs = [VizSpec.model_validate(spec) for spec in state.get("viz_specs") or []]
+        prior = VisualizationResults.model_validate(state.get("visualization_results"))
+    except ValueError:
+        return {}
+    by_id = {spec.viz_id: spec for spec in specs}
+    redo = set(feedback.redo_list)
+    if (len(by_id) != len(specs) or not redo or len(redo) != len(feedback.redo_list)
+            or not redo.issubset(by_id) or not prior.finished_this_task):
+        return {}  # Free-text or ambiguous targets keep the full render route.
+    if len({item.visualization_id for item in prior.visualizations}) != len(prior.visualizations):
+        return {}
+
+    snapshots = {}
+    paths = set()
+    frame_digests = {}
+    for item in prior.visualizations:
+        viz_id = item.visualization_id
+        spec = by_id.get(viz_id)
+        if spec is None or viz_id in redo or not item.finished_this_task:
+            continue
+        if item.visualization_type == "image" and item.visualization_style == "generated":
+            continue  # Legacy path-only join metadata has no native worker result.
+        try:
+            path = _cp5_validated_figure_path(item.path, state)
+            if not path.is_relative_to(_cp5_current_run_root() / "visualizations"):
+                continue
+            png_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (ValueError, OSError):
+            continue  # Render a replacement when the earlier file is unavailable.
+        if path in paths:
+            return {}
+        paths.add(path)
+        if spec.df_id not in frame_digests:
+            frame_digests[spec.df_id] = _cp5_analyst_revision_frame_digest(registry, spec.df_id)
+        data_sha256 = frame_digests[spec.df_id]
+        if data_sha256 is not None:
+            snapshots[viz_id] = (spec.model_copy(deep=True), {
+                "figure": item.model_dump(mode="json"),
+                "png_sha256": png_sha256,
+                "df_id": spec.df_id,
+                "data_sha256": data_sha256,
+            })
+    return snapshots
+
+
+def _cp5_analyst_revision_metadata(specs, snapshots, registry):
+    import json
+    from idd_graph import _RETAINED_REVISION_FIGURES
+    from idd_state import NextAgentMetadata
+
+    administrative = {"reply_msg_to_supervisor", "finished_this_task", "expect_reply"}
+    frame_digests = {}
+    retained = []
+    for spec in specs:
+        if spec.viz_id not in snapshots:
+            continue
+        before, record = snapshots[spec.viz_id]
+        if spec.model_dump(exclude=administrative) != before.model_dump(exclude=administrative):
+            continue
+        if spec.df_id not in frame_digests:
+            frame_digests[spec.df_id] = _cp5_analyst_revision_frame_digest(registry, spec.df_id)
+        if frame_digests[spec.df_id] == record["data_sha256"]:
+            retained.append(record)
+    if not retained or len(retained) == len(specs):
+        return None  # A revision still needs at least one fresh render.
+    return NextAgentMetadata(
+        reply_msg_to_supervisor="", finished_this_task=False, expect_reply=False,
+        df_id=None, file_type=None, file_name=None, section_name=None, viz_spec=None,
+        notes=_RETAINED_REVISION_FIGURES, file_content=json.dumps(retained),
+    )
+
+
+'''
+    src = join_source(cells[57]["source"])
+    src = replace_required(
+        src, "def analyst_node(state: State):",
+        helpers + "def analyst_node(state: State):", patch_id="CP5 revision retention helpers",
+    )
+    src = replace_required(
+        src, '    result = _safe_analyst_invoke(analyst_agent, _invoke_input, config=state.get("_config"))',
+        '''    _prior_figures = (
+        _cp5_analyst_revision_snapshot(state, get_global_df_registry()) if _is_revision else {}
+    )
+    result = _safe_analyst_invoke(analyst_agent, _invoke_input, config=state.get("_config"))''',
+        patch_id="CP5 snapshot prior figures before native analyst",
+    )
+    src = replace_required(
+        src, '    if _supervisor_messages_update is not None:\n',
+        '''    if _is_revision:
+        update["next_agent_metadata"] = _cp5_analyst_revision_metadata(
+            specs, _prior_figures, get_global_df_registry()
+        )
+    if _supervisor_messages_update is not None:
+''',
+        patch_id="CP5 publish retention receipt after native analyst",
+    )
+    src = replace_required(
+        src, '    _w14h_expected = len(state.get("viz_tasks", []) or [])',
+        '''    from idd_graph import _retained_revision_figure_records
+    _retained = _retained_revision_figure_records(state)
+    if _retained:
+        import hashlib
+        expected_ids = [VizSpec.model_validate(spec).viz_id for spec in state.get("viz_specs") or []]
+        if len(expected_ids) != len(_w14h_ids) or set(expected_ids) != set(_w14h_ids):
+            raise ValueError("Visualization revision returned unexpected or missing figure IDs")
+        by_id = {item.visualization_id: item for item in _w14h_viz_items}
+        _w14h_viz_items = [by_id[viz_id] for viz_id in expected_ids]
+        frame_digests = {}
+        for record in _retained:
+            figure = record["figure"]
+            path = _cp5_validated_figure_path(figure["path"], state)
+            if (_w14h_ids[figure["visualization_id"]] != path
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != record["png_sha256"]):
+                raise ValueError("Retained visualization changed during revision")
+            df_id = record["df_id"]
+            if df_id not in frame_digests:
+                frame_digests[df_id] = _cp5_analyst_revision_frame_digest(get_global_df_registry(), df_id)
+            if frame_digests[df_id] != record["data_sha256"]:
+                raise ValueError("Retained visualization input changed during revision")
+
+    _w14h_expected = len(state.get("viz_tasks", []) or [])''',
+        patch_id="CP5 validate retained figure provenance at join",
+    )
+    src = replace_required(
+        src, '    if not state.get("viz_tasks"):\n        # Ordered writes clear worker envelopes',
+        '''    if _retained:
+        _w14h_update["next_agent_metadata"] = None
+    if not state.get("viz_tasks"):
+        # Ordered writes clear worker envelopes''',
+        patch_id="CP5 retire retention receipt after join",
+    )
+    ast.parse(src)
+    cells[57]["source"] = src
+
+    src = join_source(cells[46]["source"])
+    src = replace_required(
+        src,
+        '''                    "next_agent_prompt": _cp5_instruction, "next_agent_metadata": None,
+                    "viz_results": None, "visualization_results": None,
+                    "viz_paths": _CP5Overwrite([]),''',
+        '''                    "next_agent_prompt": _cp5_instruction,
+                    "next_agent_metadata": state.get("next_agent_metadata") if _retained else None,
+                    "viz_results": _CP5Overwrite(_retained) if _retained else None,
+                    "visualization_results": None,
+                    "viz_paths": _CP5Overwrite([item["path"] for item in _retained]),''',
+        patch_id="CP5 seed new revision from verified native figures",
+    )
+    src = replace_required(
+        src,
+        '''                from langgraph.types import Overwrite as _CP5Overwrite
+                return Command(goto="visualization", update={''',
+        '''                from langgraph.types import Overwrite as _CP5Overwrite
+                from idd_graph import _retained_revision_figure_records
+                _retained = [record["figure"] for record in _retained_revision_figure_records(state)]
+                return Command(goto="visualization", update={''',
+        patch_id="CP5 bind retention receipt at the canonical revision route",
+    )
+    ast.parse(src)
+    cells[46]["source"] = src
+
+
 def apply_cp5_report_grounding_patch(cells) -> None:
     """Ground report inputs and respect native visualization revision feedback."""
     report_helpers = '''\
@@ -18713,6 +18901,7 @@ def main():
     apply_cp5_scenario_request_patch(cells)
     apply_cp5_file_writer_content_patch(cells)
     apply_cp5_evaluator_image_context_patch(cells)
+    apply_cp5_revision_retention_patch(cells)
 
     # Assert invariant cell count before saving
     if len(cells) != 99:
