@@ -1374,6 +1374,74 @@ def test_viz_unchanged_nonempty_retrieval_stops_without_completion(tmp_path, too
     assert results and all("not found" not in str(m.content).lower() for m in results)
 
 
+@pytest.mark.parametrize("repair", [True, False])
+def test_viz_unchanged_preview_gets_one_actionable_request_before_stop(
+    tmp_path, repair
+):
+    import base64
+
+    from langchain_openai.chat_models.base import _construct_responses_api_input
+
+    path = tmp_path / "visualizations" / "owned_chart_0.png"
+    repeated = {
+        "name": "get_visualization",
+        "args": {"path": str(path), "include_preview": True},
+    }
+    feedback = "This visualization lookup returned no new evidence."
+
+    class ProgressModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            text_messages = [m for m in messages if feedback in str(m.content)]
+            if len(self._requests) == 3:
+                assert (
+                    len(text_messages) == 1
+                ), "No in-band correction before the guard stops"
+                result = text_messages[0]
+                assert isinstance(result, ToolMessage)
+                assert result.tool_call_id == "controlled-call-3"
+                wire = _construct_responses_api_input([result])[0]
+                assert wire["call_id"] == result.tool_call_id
+                image = next(x for x in wire["output"] if x["type"] == "input_image")
+                assert base64.b64decode(image["image_url"].split(",", 1)[1]) == initial
+            else:
+                assert not text_messages, "Correction should be confined to one request"
+            return super()._generate(messages, **kwargs)
+
+    ns, model, state, _ = _viz_retrieval_fixture(
+        tmp_path, [repeated] * 3, ProgressModel
+    )
+    initial = path.read_bytes()
+    if repair:
+        model.scripted_responses.append(
+            {
+                "name": "python_repl_tool",
+                "args": {
+                    "code": (
+                        "import matplotlib.pyplot as plt\n"
+                        "fig, ax = plt.subplots()\n"
+                        "ax.bar(['A', 'B'], [10, 20])\n"
+                        "ax.set_title('Corrected render')\n"
+                        f"fig.savefig({path.as_posix()!r})\nplt.close(fig)\nprint({path.as_posix()!r})"
+                    )
+                },
+            }
+        )
+        update = ns["viz_worker"](state)
+        assert update["viz_results"] and path.read_bytes() != initial
+        with Image.open(path) as png:
+            png.verify()
+        assert model._emitted[-2:] == ["python_repl_tool", "VisualizationResults"]
+        assert len(model._requests) == 5
+    else:
+        model.scripted_responses.append(repeated)
+        with pytest.raises(
+            ValueError, match="Visualization repeated unchanged retrieval"
+        ):
+            ns["viz_worker"](state)
+        assert model._emitted == ["get_visualization"] * 4
+        assert path.read_bytes() == initial
+
+
 def test_viz_alternating_stale_retrievals_stop(tmp_path):
     lookup = {
         "name": "get_visualization",

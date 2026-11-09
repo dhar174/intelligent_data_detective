@@ -2829,6 +2829,7 @@ def apply_cp5_visualization_assignment_patch(cells):
         redundant = 0
         retrieval_seen = set()
         retrieval_redundant = 0
+        feedback_call_id = None
         retrieval_tools = {"list_visualizations", "get_visualization", "read_file",
                            "list_available_files", "get_dataframe_schema", "get_column_names"}
         calls = {call.get("id"): call.get("name")
@@ -2860,6 +2861,9 @@ def apply_cp5_visualization_assignment_patch(cells):
                         "complete natively so the canonical evaluator can assess the generated figure. "
                         "No successful revision or figure approval has been inferred."
                     )
+                if (retrieval_redundant == 2 and message is messages[-1]
+                        and message.name in ("get_visualization", "list_visualizations")):
+                    feedback_call_id = message.tool_call_id
                 continue
             text = str(message.content).strip()
             artifact = message.artifact if isinstance(message.artifact, dict) else {}
@@ -2885,6 +2889,27 @@ def apply_cp5_visualization_assignment_patch(cells):
                 if message.status != "error":
                     retrieval_redundant = 0
                     retrieval_seen.clear()
+        if feedback_call_id is not None:
+            feedback = (
+                "This visualization lookup returned no new evidence. "
+                "If the PNG has a defect, change the rendering and inspect the changed PNG. "
+                "If it meets the assignment, submit native VisualizationResults with the "
+                "actual assigned ID and saved path. If you cannot complete the figure, "
+                "report it as unfinished with the blocker. Another unchanged lookup will stop the worker."
+            )
+            # Add guidance only to this model request. The checkpointed tool
+            # result stays intact for the existing fingerprint and stop bound.
+            revised = []
+            for message in request.messages:
+                if isinstance(message, ToolMessage) and message.tool_call_id == feedback_call_id:
+                    content = message.content
+                    if isinstance(content, list):
+                        content = [*content, {"type": "text", "text": feedback}]
+                    else:
+                        content = content + "\\n\\n" + feedback
+                    message = message.model_copy(update={"content": content})
+                revised.append(message)
+            request = request.override(messages=revised)
         return handler(request)
 
     tool_descriptions = "\\n".join(''', patch_id="visualization bounded Python error progress")
