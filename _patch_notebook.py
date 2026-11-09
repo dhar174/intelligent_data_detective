@@ -1493,7 +1493,7 @@ def _cp5_analyst_retrieval_guard(request, handler):
             text = replace_required(
                 text,
                 "Completion: return exactly one AnalysisInsights structured response through the response tool, then stop.",
-                "Completion: call the native AnalysisInsights structured-response tool exactly once, then stop. For a visualization revision, preserve prior summary, correlation, anomaly, and next-step findings verbatim unless the assignment or evaluator feedback explicitly asks for recalculation; return the full revised plan with unaffected specifications unchanged.",
+                "Completion: call the native AnalysisInsights structured-response tool exactly once, then stop. For a visualization revision, preserve prior summary, correlation, anomaly, and next-step findings verbatim unless the assignment or evaluator feedback explicitly asks for recalculation; return the full revised plan with unaffected specifications copied field for field. Describe the rendering requirements in VizSpec without choosing PNG filenames or embedding save code. The worker owns the actual destination.",
                 patch_id="CP5 analyst native completion system prompt",
             )
             old_middleware = (
@@ -3350,6 +3350,7 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         "parent False and explain the blocker. Never copy an upstream spec's pending status into "
         "a completed figure, or upgrade a genuinely unfinished figure just because a file exists."
         " For custom Python plots, save to the absolute custom_plot_output_path supplied below, "
+        "which overrides any destination mentioned in the planner's spec or code. "
         "create its parent directory if needed, and print the full saved path. Copy that path "
         "unchanged into the result; never substitute a basename or reconstruct a Windows "
         "backslash literal. The supplied forward-slash spelling is safe in Python on Windows. "
@@ -3587,7 +3588,40 @@ def apply_cp5_worker_inspection_scope_patch(cells):
 
         root = _cp5_current_run_root() / "visualizations"
         if call["name"] == "python_repl_tool":
+            import ast
+
             raw_path = context.get("custom_plot_output_path")
+            instructions = spec.get("viz_instructions") or ""
+            try:
+                code = ast.parse(args["code"])
+            except SyntaxError:
+                return handler(request)  # Keep the native Python error contract.
+            # Catch the literal destination supplied by the plan before the
+            # Python tool can write it. Other Python inputs use its existing sandbox.
+            conflicting = any(
+                isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.value in instructions and PathlibPath(node.value).is_absolute()
+                and PathlibPath(node.value).suffix.lower() == ".png"
+                and PathlibPath(node.value) != PathlibPath(raw_path)
+                for node in ast.walk(code)
+            ) if isinstance(raw_path, str) else False
+            if conflicting:
+                marker = "idd_worker_planner_png_destination"
+                python_ids = {tool_call["id"] for message in history[start + 1:]
+                              if isinstance(message, AIMessage)
+                              for tool_call in message.tool_calls
+                              if tool_call["name"] == "python_repl_tool"}
+                if any(isinstance(message, ToolMessage) and message.status == "error"
+                       and message.tool_call_id in python_ids and message.artifact == marker
+                       for message in history[start + 1:]):
+                    raise ValueError("Visualization repeated the planner's conflicting PNG destination. "
+                                     "Save only to the assigned custom_plot_output_path.")
+                return ToolMessage(
+                    name=call["name"], tool_call_id=call["id"], status="error", artifact=marker,
+                    content=("The planner's PNG destination conflicts with this worker's assigned path. "
+                             f"Keep the rendering requirements and save to {raw_path}. "
+                             "This Python call was not executed."),
+                )
             before = assigned_png_digest(raw_path, request.state)
             result = handler(request)
             if (before is not None and isinstance(result, ToolMessage) and result.status != "error"
