@@ -1537,6 +1537,7 @@ def test_viz_successful_python_work_resets_retrieval_streak(tmp_path):
         "redraw",
         "new_analysis",
         "terminal",
+        "terminal_preview",
         "terminal_unfinished",
         "terminal_wrong_path",
     ],
@@ -1627,7 +1628,17 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
                 else:
                     assert not feedback
                 if stage == 5 and terminal:
-                    call = check
+                    call = (
+                        {
+                            "name": "get_visualization",
+                            "args": {
+                                "visualization_id": spec.viz_id,
+                                "include_preview": True,
+                            },
+                        }
+                        if decision == "terminal_preview"
+                        else check
+                    )
                 elif stage == 5 and decision == "redraw":
                     call = render("Revised figure with labels")
                 else:
@@ -1702,7 +1713,7 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
         output = ns["viz_worker"](state)
         assert output["viz_results"][0]["visualization_id"] == spec.viz_id
         assert model._emitted[-1] == "VisualizationResults"
-        if decision == "terminal":
+        if decision in ("terminal", "terminal_preview"):
             assert len(model._requests) == 7
             assert (
                 Path(output["viz_results"][0]["path"]).read_bytes()
@@ -1823,6 +1834,101 @@ def test_viz_worker_rejects_conflicting_planner_png_destination(
         assert len(model._requests) == 2
         assert "VisualizationResults" not in model._emitted
     assert not planner_path.exists()
+
+
+@pytest.mark.parametrize("change_render", [True, False])
+def test_viz_identical_builtin_renders_do_not_reset_progress(
+    tmp_path, monkeypatch, change_render
+):
+    from tests.unit.test_figure_provenance import plot_namespace
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    runtime = ns["RUNTIME"]
+    spec = idd_state.VizSpec(
+        **FLAGS,
+        viz_id="duplicate-box",
+        title="Net Revenue by Group",
+        viz_type="box",
+        df_id="retail-fixture",
+        viz_instructions="Create one box plot of net revenue by group.",
+        columns=["group", "net"],
+        x="group",
+        y="net",
+        hue=None,
+        bins=None,
+        agg=None,
+        query=None,
+        description="Revenue by group",
+        limit=None,
+        style="default",
+    )
+
+    class RepeatedRenderModel(ControlledChatModel):
+        _rendered: list = PrivateAttr(default_factory=list)
+
+        def _generate(self, messages, **kwargs):
+            stage = len(self._requests)
+            if stage:
+                result = messages[-1]
+                assert isinstance(result, ToolMessage)
+                content = json.loads(str(result.content).partition("\n\n")[0])
+                path = Path(content["image_path"])
+                assert path.is_file() and path not in self._rendered
+                self._rendered.append(path)
+            if stage == 3:
+                assert len({p.read_bytes() for p in self._rendered}) == 1
+                assert "same PNG bytes" in str(messages[-1].content)
+            if stage < 4:
+                call = {
+                    "name": "create_box_plot",
+                    "args": {
+                        "df_id": spec.df_id,
+                        "values": "net",
+                        "group": "group",
+                        "order": ["B", "A"] if stage == 3 and change_render else None,
+                    },
+                }
+            else:
+                assert stage == 4 and change_render
+                assert path.read_bytes() != self._rendered[0].read_bytes()
+                assert "same PNG bytes" not in str(messages[-1].content)
+                item = idd_state.DataVisualization(
+                    **FLAGS,
+                    path=path.as_posix(),
+                    visualization_id=spec.viz_id,
+                    visualization_type=spec.viz_type,
+                    visualization_title=spec.title,
+                    visualization_description="Revenue by group",
+                    visualization_style="default",
+                )
+                call = {
+                    "name": "VisualizationResults",
+                    "args": idd_state.VisualizationResults(
+                        **FLAGS, visualizations=[item]
+                    ).model_dump(),
+                }
+            self.scripted_responses.append(call)
+            return super()._generate(messages, **kwargs)
+
+    model = RepeatedRenderModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+    )
+    state["_config"]["configurable"]["runtime"] = runtime
+    if change_render:
+        result = ns["viz_worker"](state)
+        assert result["viz_results"][0]["visualization_id"] == spec.viz_id
+        assert model._emitted[-1] == "VisualizationResults"
+        assert len(model._requests) == 5
+    else:
+        with pytest.raises(ValueError, match="Visualization repeated unchanged"):
+            ns["viz_worker"](state)
+        assert len(model._requests) == 4
+        assert "VisualizationResults" not in model._emitted
+    assert len(list(runtime.viz_dir.glob("*.png"))) == 4
 
 
 def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
