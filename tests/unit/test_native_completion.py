@@ -857,6 +857,90 @@ def worker_state(base):
     )
 
 
+def test_dispatched_viz_workers_isolate_sibling_and_revision_checkpoint_history(
+    tmp_path,
+):
+    from idd_graph import assign_viz_workers
+
+    ns = load_native(tmp_path, middleware=True)
+    items = figures(tmp_path)[:2]
+    specs = [
+        analysis_insights()
+        .recommended_visualizations[0]
+        .model_copy(
+            update={
+                "viz_id": item.visualization_id,
+                "viz_instructions": f"Render only assignment {index}.",
+            }
+        )
+        for index, item in enumerate(items)
+    ]
+    state = worker_state(tmp_path)
+    outer = state["_config"]
+    outer["tags"] = ["parent"]
+    outer["configurable"]["runtime"] = ns["RUNTIME"]
+    outer_id = outer["configurable"]["thread_id"]
+    state.update(viz_specs=specs, viz_tasks=[spec.viz_instructions for spec in specs])
+    model = ControlledChatModel(
+        response_name="VisualizationResults",
+        payload={},
+        scripted_responses=[
+            {
+                "name": "VisualizationResults",
+                "args": idd_state.VisualizationResults(
+                    **FLAGS, visualizations=[item]
+                ).model_dump(),
+            }
+            for item in items * 2
+        ],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    agent = ns["create_visualization_agent"](["retail-fixture"])
+    ns["visualization_agent"] = agent
+    configs = []
+
+    for revision in (0, 1):
+        sends = assign_viz_workers({**state, "viz_revise_count": revision})
+        assert len(sends) == 2
+        for index, (send, item) in enumerate(zip(sends, items)):
+            assert send.node == "viz_worker"
+            assert send.arg["viz_spec"] is specs[index]
+            # Run the real generated worker after its sibling, so any shared
+            # checkpoint would deliver the earlier sibling's assignment.
+            result = ns["viz_worker"](send.arg)
+            assert result["viz_results"][0]["visualization_id"] == item.visualization_id
+            assert list(map(Path, result["viz_paths"])) == [Path(item.path)]
+            configs.append(send.arg["_config"])
+
+    assert len(model._requests) == 4
+    for request, item in zip(model._requests, items * 2):
+        assignments = [
+            json.loads(m.content)["assigned_spec"]["viz_id"]
+            for m in request
+            if m.name == "runtime_context"
+        ]
+        assert assignments == [
+            item.visualization_id
+        ], "A prior worker assignment reached the model"
+        assert not any(
+            isinstance(m, ToolMessage) and m.name == "VisualizationResults"
+            for m in request
+        ), "A prior worker completion reached the model"
+
+    assert [c["configurable"]["thread_id"] for c in configs] == [
+        f"{outer_id}:viz:{revision}:{index}" for revision in (0, 1) for index in (0, 1)
+    ]
+    assert outer["configurable"]["thread_id"] == outer_id
+    for config, item in zip(configs, items * 2):
+        assert (
+            config is not outer and config["configurable"] is not outer["configurable"]
+        )
+        assert config["tags"] == ["parent"]
+        assert config["configurable"]["runtime"] is ns["RUNTIME"]
+        saved = agent.get_state(config).values["structured_response"]
+        assert saved.visualizations[0].visualization_id == item.visualization_id
+
+
 @pytest.mark.parametrize("upstream_finished", [False, True])
 def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
     tmp_path, monkeypatch, upstream_finished

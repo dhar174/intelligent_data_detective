@@ -308,6 +308,22 @@ def assign_viz_workers(state: State):
     _vw_cfg = state.get("_config")
     _vw_ftml = state.get("final_turn_msgs_list") or []
     _vw_msgs = state.get("messages") or []
+    revision = state.get("viz_revise_count") or 0
+
+    def worker_config(index):
+        if not isinstance(_vw_cfg, dict):
+            return _vw_cfg
+        configurable = _vw_cfg.get("configurable")
+        if not isinstance(configurable, dict):
+            return _vw_cfg
+        parent_thread = configurable.get("thread_id")
+        if not isinstance(parent_thread, str) or not parent_thread:
+            return _vw_cfg
+        # The inner worker agent owns its checkpoint history. Keep the
+        # outer run and RuntimeCtx intact, with a fresh scope per assignment.
+        child = {**configurable, "thread_id": f"{parent_thread}:viz:{revision}:{index}"}
+        child.pop("checkpoint_id", None)
+        return {**_vw_cfg, "configurable": child}
 
     return [
         Send(
@@ -319,12 +335,12 @@ def assign_viz_workers(state: State):
                 "cleaning_metadata": _vw_cm,
                 "analysis_insights": _vw_ai,
                 "available_df_ids": _vw_df_ids,
-                "_config": _vw_cfg,
+                "_config": worker_config(index),
                 "final_turn_msgs_list": _vw_ftml,
                 "messages": _vw_msgs,
             },
         )
-        for t, sp in zip(tasks, viz_specs)
+        for index, (t, sp) in enumerate(zip(tasks, viz_specs))
     ]
 
 

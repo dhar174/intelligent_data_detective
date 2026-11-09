@@ -736,13 +736,23 @@ class TestPydanticSchemas:
             finished_this_task=True,
             expect_reply=False,
         )
+        runtime = object()
+        parent_config = {
+            "configurable": {
+                "thread_id": "t1",
+                "checkpoint_id": "outer-checkpoint",
+                "runtime": runtime,
+            },
+            "tags": ["parent"],
+        }
         state = {
             "viz_tasks": ["Plot scatter trend"],
             "viz_specs": [spec],
             "cleaning_metadata": cm,
             "analysis_insights": ai,
             "available_df_ids": ["df_clean"],
-            "_config": {"configurable": {"thread_id": "t1"}},
+            "_config": parent_config,
+            "viz_revise_count": 2,
         }
         sends = idd_graph.assign_viz_workers(state)
         assert isinstance(sends, list)
@@ -754,7 +764,13 @@ class TestPydanticSchemas:
         assert arg["cleaning_metadata"] is cm
         assert arg["analysis_insights"] is ai
         assert arg["available_df_ids"] == ["df_clean"]
-        assert arg["_config"] == {"configurable": {"thread_id": "t1"}}
+        assert arg["_config"] == {
+            "configurable": {"thread_id": "t1:viz:2:0", "runtime": runtime},
+            "tags": ["parent"],
+        }
+        assert state["_config"] is parent_config
+        assert parent_config["configurable"]["thread_id"] == "t1"
+        assert parent_config["configurable"]["checkpoint_id"] == "outer-checkpoint"
 
     def test_dispatch_sections_passes_parent_context(self):
         """dispatch_sections passes section, cleaning_metadata, analysis_insights, etc. in Send."""
