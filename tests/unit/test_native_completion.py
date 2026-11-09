@@ -1529,7 +1529,18 @@ def test_viz_successful_python_work_resets_retrieval_streak(tmp_path):
     assert len(model._requests) == 8
 
 
-@pytest.mark.parametrize("decision", ["complete", "repeat", "redraw", "new_analysis"])
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "complete",
+        "repeat",
+        "redraw",
+        "new_analysis",
+        "terminal",
+        "terminal_unfinished",
+        "terminal_wrong_path",
+    ],
+)
 def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
     tmp_path, monkeypatch, decision
 ):
@@ -1601,6 +1612,7 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
                     else check
                 )
             else:
+                terminal = decision == "repeat" or decision.startswith("terminal")
                 feedback = [m for m in messages if correction in str(m.content)]
                 if stage == 5 and decision != "new_analysis":
                     assert (
@@ -1614,12 +1626,24 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
                     )
                 else:
                     assert not feedback
-                if stage == 5 and decision == "repeat":
+                if stage == 5 and terminal:
                     call = check
                 elif stage == 5 and decision == "redraw":
                     call = render("Revised figure with labels")
                 else:
-                    assert stage == (6 if decision == "redraw" else 5)
+                    assert stage == (6 if terminal or decision == "redraw" else 5)
+                    if terminal:
+                        names = {getattr(t, "name", None) for t in self._bindings[-1]}
+                        assert names == {"VisualizationResults"}
+                        assert self._binding_kwargs[-1]["tool_choice"] == "any"
+                        assert any(
+                            "Report the actual result or return unfinished"
+                            in str(m.content)
+                            and path.as_posix() in str(m.content)
+                            and spec.viz_id in str(m.content)
+                            for m in messages
+                            if isinstance(m, ToolMessage)
+                        )
                     assert (path.read_bytes() != self._initial_png) == (
                         decision == "redraw"
                     )
@@ -1638,6 +1662,14 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
                             **FLAGS, visualizations=[item]
                         ).model_dump(),
                     }
+                    if decision == "terminal_unfinished":
+                        call["args"].update(finished_this_task=False, visualizations=[])
+                    elif decision == "terminal_wrong_path":
+                        sibling = path.with_name("unowned-by-assignment.png")
+                        sibling.write_bytes(self._initial_png)
+                        call["args"]["visualizations"][0]["path"] = sibling.as_posix()
+                    elif decision == "repeat":
+                        call = check
             self.scripted_responses.append(call)
             return super()._generate(messages, **kwargs)
 
@@ -1655,11 +1687,27 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
         ):
             ns["viz_worker"](state)
         assert "VisualizationResults" not in model._emitted
-        assert len(model._requests) == 6
+        assert len(model._requests) == 7
+    elif decision == "terminal_unfinished":
+        with pytest.raises(ValueError, match="did not complete its required figures"):
+            ns["viz_worker"](state)
+        assert model._emitted[-1] == "VisualizationResults"
+        assert len(model._requests) == 7
+    elif decision == "terminal_wrong_path":
+        with pytest.raises(ValueError, match="must identify the verified assigned PNG"):
+            ns["viz_worker"](state)
+        assert model._emitted[-1] == "VisualizationResults"
+        assert len(model._requests) == 7
     else:
         output = ns["viz_worker"](state)
         assert output["viz_results"][0]["visualization_id"] == spec.viz_id
         assert model._emitted[-1] == "VisualizationResults"
+        if decision == "terminal":
+            assert len(model._requests) == 7
+            assert (
+                Path(output["viz_results"][0]["path"]).read_bytes()
+                == model._initial_png
+            )
 
 
 def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
