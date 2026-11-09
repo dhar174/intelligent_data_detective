@@ -2861,8 +2861,7 @@ def apply_cp5_visualization_assignment_patch(cells):
                         "complete natively so the canonical evaluator can assess the generated figure. "
                         "No successful revision or figure approval has been inferred."
                     )
-                if (retrieval_redundant == 2 and message is messages[-1]
-                        and message.name in ("get_visualization", "list_visualizations")):
+                if retrieval_redundant == 2 and message is messages[-1]:
                     feedback_call_id = message.tool_call_id
                 continue
             text = str(message.content).strip()
@@ -2909,7 +2908,11 @@ def apply_cp5_visualization_assignment_patch(cells):
                         content = content + "\\n\\n" + feedback
                     message = message.model_copy(update={"content": content})
                 revised.append(message)
-            request = request.override(messages=revised)
+            # For this request, offer actions that can change the result.
+            # Native structured completion is still bound by ToolStrategy.
+            paused_tools = retrieval_tools | {"search_memory", "manage_memory"}
+            actions = [tool for tool in request.tools if tool.name not in paused_tools]
+            request = request.override(messages=revised, tools=actions)
         return handler(request)
 
     tool_descriptions = "\\n".join(''', patch_id="visualization bounded Python error progress")
