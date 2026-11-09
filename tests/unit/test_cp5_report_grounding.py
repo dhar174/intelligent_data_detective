@@ -10,7 +10,7 @@ import os
 import socket
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
@@ -268,6 +268,54 @@ def test_native_outline_rejects_ungrounded_figure_references(
     ns, _ = report_agent(tmp_path, "outline", outline)
     with pytest.raises(ValueError, match="(?i)(figure|inventory)"):
         ns["report_orchestrator"](report_state)
+
+
+@pytest.mark.parametrize("assigned", [False, True])
+@pytest.mark.parametrize("corrected", [True, False])
+def test_native_section_blank_figure_gets_one_paired_correction(
+    tmp_path, report_state, assigned, corrected
+):
+    section = report_state["section"]
+    figure = section.expected_figures[0]
+    blank = figure.model_copy(update={"visualization_id": "", "path": ""})
+    if not assigned:
+        section = section.model_copy(update={"expected_figures": []})
+        report_state["section"] = section
+    good = Section(
+        **FLAGS,
+        name=section.name,
+        section_num=section.section_num,
+        description=section.description,
+        goals=section.goals,
+        data_signals=[],
+        expected_figures=section.expected_figures,
+        content="Revenue varies by region." if assigned else "Methods and caveats.",
+    )
+    bad = good.model_copy(update={"expected_figures": [blank]})
+    model = ControlledChatModel(
+        response_name="Section",
+        payload=(good if corrected else bad).model_dump(),
+        scripted_responses=[{"name": "Section", "args": bad.model_dump()}],
+    )
+    ns, _ = report_agent(tmp_path, "section", good, model=model)
+    if corrected:
+        output = ns["section_worker"](report_state)
+        assert output["sections"] == [good]
+        assert output["last_agent_finished_this_task"] is True
+    else:
+        with pytest.raises(ValueError, match="No further correction round"):
+            ns["section_worker"](report_state)
+    assert len(model._requests) == 2
+    errors = [m for m in model._requests[1] if isinstance(m, ToolMessage)]
+    assert len(errors) == 1
+    error = errors[0]
+    assert error.name == "Section"
+    assert error.tool_call_id == "controlled-call-1"
+    assert error.status == "error"
+    assert (
+        "exact assigned figure IDs and paths" if assigned else "expected_figures=[]"
+    ) in error.content
+    assert section.expected_figures == good.expected_figures
 
 
 def test_native_section_rejects_fabricated_figure(tmp_path, report_state):

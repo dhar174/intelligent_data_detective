@@ -869,13 +869,84 @@ def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memo
 '''
         return replace(text, old, new)
 
+    def report_factory(text):
+        old = '    return create_agent(\n'
+        new = '''    middleware = [prehook_critical_complex]
+    if rg_agent_task == "section":
+        from dataclasses import replace as replace_response
+        from langchain.agents.middleware import wrap_model_call
+
+        blank_figure_error = "idd_section_blank_figure"
+
+        @wrap_model_call
+        def guard_section_figures(request, handler):
+            response = handler(request)
+            result = response.structured_response
+            if not isinstance(result, Section) or not result.finished_this_task or not any(
+                not str(figure.visualization_id or "").strip() and not str(figure.path or "").strip()
+                for figure in result.expected_figures
+            ):
+                return response
+
+            # Reject the proposed completion without rewriting its figures.
+            history = request.state.get("messages") or []
+            start = next((i for i in range(len(history) - 1, -1, -1)
+                          if isinstance(history[i], HumanMessage)
+                          and history[i].name == "runtime_context"), None)
+            if start is None or any(
+                isinstance(message, ToolMessage) and message.name == "Section"
+                and message.status == "error" and message.artifact == blank_figure_error
+                for message in history[start + 1:]
+            ):
+                raise ValueError(
+                    "Report figure reference is missing both ID and path. "
+                    "No further correction round is available for this section assignment."
+                )
+
+            if len(response.result) != 2:
+                raise ValueError("Section figure correction requires one paired native response")
+            assistant, receipt = response.result
+            if (not isinstance(assistant, AIMessage) or assistant.invalid_tool_calls
+                    or len(assistant.tool_calls) != 1
+                    or not isinstance(receipt, ToolMessage) or receipt.name != "Section"
+                    or assistant.tool_calls[0]["name"] != receipt.name
+                    or assistant.tool_calls[0]["id"] != receipt.tool_call_id):
+                raise ValueError("Section figure correction requires one paired native response")
+
+            assigned = request.state.get("section")
+            instruction = (
+                "Copy the exact assigned figure IDs and paths from the section context."
+                if getattr(assigned, "expected_figures", None)
+                else "This section has no assigned figures. Submit expected_figures=[]."
+            )
+            error = receipt.model_copy(update={
+                "status": "error",
+                "artifact": blank_figure_error,
+                "content": (
+                    "Section rejected: an expected_figures entry has neither an ID nor a path. "
+                    + instruction + " Submit a corrected Section with no placeholder figure objects."
+                ),
+            })
+            return replace_response(response, result=[assistant, error], structured_response=None)
+
+        middleware.append(guard_section_figures)
+
+    return create_agent(
+'''
+        return replace(
+            replace(text, old, new),
+            '        middleware =[prehook_critical_complex],',
+            '        middleware=middleware,',
+        )
+
     def worker(text):
         text = replace(text, '    user_t = f"""Write the section titled:',
             '    section = _cp5_ground_report_figures(state, section)\n    user_t = f"""Write the section titled:')
         text = replace(text, '    _w13h_section_state = {', '''    rendered.append(HumanMessage(name="runtime_context", content=(
-        "Use only the assigned real figures above. Copy their exact IDs and paths into "
-        "Section.expected_figures; use an empty list if no figure applies. "
-        "Do not invent figures or paths. Complete using the Section response tool.")))
+        ("Copy the exact IDs and paths of the assigned figures into Section.expected_figures. "
+         if section.expected_figures else "This section has no assigned figures. Submit expected_figures=[]. ")
+        + "Do not submit blank figure objects or invent figures or paths. "
+          "Complete using the Section response tool.")))
     _w13h_section_state = {''')
         return replace(text, '    content = section_text.content\n',
             '    section_text = _cp5_ground_report_figures(state, section_text)\n    content = section_text.content\n')
@@ -909,6 +980,11 @@ def _cp5_report_runtime_context(state, task, schema, inventory, draft=None, memo
     if state.get("viz_grade") == "revise" and (not tasks or len(tasks) != len(state.get("viz_tasks") or [])):
         raise ValueError("Visualization revision contains missing or invalid tasks or specifications")
 ''')
+
+    factory = join_source(cells[44]["source"])
+    factory = edit_function(factory, "create_report_generator_agent", report_factory)
+    ast.parse(factory)
+    cells[44]["source"] = factory
 
     src = join_source(cells[57]["source"])
     for name, transform in (("report_orchestrator", orchestrator), ("section_worker", worker), ("report_packager_node", packager), ("visualization_orchestrator", visualization_orchestrator)):
