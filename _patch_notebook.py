@@ -3148,6 +3148,7 @@ def apply_cp5_visualization_assignment_patch(cells):
         retrieval_seen = set()
         retrieval_redundant = 0
         feedback_message = None
+        terminal_path = None
         retrieval_tools = {"list_visualizations", "get_visualization", "read_file",
                            "list_available_files", "get_dataframe_schema", "get_column_names"}
         calls = {call.get("id"): call.get("name")
@@ -3185,6 +3186,15 @@ def apply_cp5_visualization_assignment_patch(cells):
                     seen.clear()
                 retrieval_seen.add(fingerprint)
                 if retrieval_redundant >= 3:
+                    if unchanged_png and message is messages[-1] and start >= 0:
+                        context = _viz_json.loads(messages[start].content)
+                        path = context.get("custom_plot_output_path")
+                        spec = context.get("assigned_spec")
+                        if (isinstance(spec, dict) and spec.get("viz_id")
+                                and assigned_png_digest(path, request.state) == unchanged_png):
+                            terminal_path = path
+                            feedback_message = message
+                            break
                     raise ValueError(
                         "Visualization repeated unchanged retrieval results or Python PNG checks after three redundant results. "
                         "Use the assigned spec and actual saved path; correct a concrete issue or "
@@ -3220,8 +3230,15 @@ def apply_cp5_visualization_assignment_patch(cells):
                 lead + " If the PNG has a defect, change the rendering and inspect the changed PNG. "
                 "If it meets the assignment, submit native VisualizationResults with the "
                 "actual assigned ID and saved path. If you cannot complete the figure, "
-                "report it as unfinished with the blocker. Another redundant check will stop the worker."
+                "report it as unfinished with the blocker. Another redundant check will end the tool work."
             )
+            if terminal_path is not None:
+                feedback = (
+                    "The repeated checks have ended. Report the actual result or return unfinished "
+                    "with the blocker using VisualizationResults. The verified saved PNG for "
+                    f"assigned ID {spec['viz_id']} is {terminal_path}. "
+                    "The file alone does not establish that it meets the spec."
+                )
             # Add guidance only to this model request. The checkpointed tool
             # result stays intact for the existing fingerprint and stop bound.
             revised = []
@@ -3237,9 +3254,32 @@ def apply_cp5_visualization_assignment_patch(cells):
             # For this request, offer actions that can change the result.
             # Native structured completion is still bound by ToolStrategy.
             paused_tools = retrieval_tools | {"search_memory", "manage_memory"}
-            actions = [tool for tool in request.tools if tool.name not in paused_tools]
+            actions = [] if terminal_path is not None else [
+                tool for tool in request.tools if tool.name not in paused_tools
+            ]
             request = request.override(messages=revised, tools=actions)
-        return handler(request)
+        response = handler(request)
+        if terminal_path is not None:
+            assistant = next(iter(response.result), None)
+            result = response.structured_response
+            if (not isinstance(result, VisualizationResults)
+                    or not isinstance(assistant, AIMessage) or assistant.invalid_tool_calls
+                    or len(assistant.tool_calls) != 1
+                    or assistant.tool_calls[0]["name"] != "VisualizationResults"):
+                raise ValueError(
+                    "Visualization repeated unchanged retrieval results and did not return "
+                    "one native VisualizationResults on the final completion request."
+                )
+            if result.finished_this_task and (
+                len(result.visualizations) != 1
+                or result.visualizations[0].visualization_id != spec["viz_id"]
+                or PathlibPath(terminal_path) != _cp5_validated_figure_path(
+                    result.visualizations[0].path, request.state
+                )
+                or assigned_png_digest(terminal_path, request.state) != unchanged_png
+            ):
+                raise ValueError("Final VisualizationResults must identify the verified assigned PNG.")
+        return response
 
     tool_descriptions = "\\n".join(''', patch_id="visualization bounded Python error progress")
     body = replace_required(body, 'middleware =[prehook_complex, guard_visualization_memory_id,',
@@ -3505,6 +3545,21 @@ def apply_cp5_worker_inspection_scope_patch(cells):
         if t.name in inspection_descriptions else t for t in _cp5_visualization_tools
     ]
 
+    def assigned_png_digest(raw_path, state):
+        import hashlib
+
+        if not isinstance(raw_path, str):
+            return None
+        path = PathlibPath(raw_path)
+        if not path.is_absolute() or path.parent != _cp5_current_run_root() / "visualizations":
+            return None
+        try:
+            if _cp5_validated_figure_path(path.as_posix(), state) == path:
+                return hashlib.sha256(path.read_bytes()).hexdigest()
+        except (OSError, ValueError):
+            return None  # Only an observed valid PNG contributes evidence.
+        return None
+
     @wrap_tool_call
     def scope_visualization_inspection(request, handler):
         import json
@@ -3532,27 +3587,12 @@ def apply_cp5_worker_inspection_scope_patch(cells):
 
         root = _cp5_current_run_root() / "visualizations"
         if call["name"] == "python_repl_tool":
-            import hashlib
-
-            def assigned_png_digest():
-                raw_path = context.get("custom_plot_output_path")
-                if not isinstance(raw_path, str):
-                    return None
-                path = PathlibPath(raw_path)
-                if not path.is_absolute() or path.parent != root:
-                    return None
-                try:
-                    if _cp5_validated_figure_path(path.as_posix(), request.state) == path:
-                        return hashlib.sha256(path.read_bytes()).hexdigest()
-                except (OSError, ValueError):
-                    return None  # Only an observed valid PNG contributes evidence.
-                return None
-
-            before = assigned_png_digest()
+            raw_path = context.get("custom_plot_output_path")
+            before = assigned_png_digest(raw_path, request.state)
             result = handler(request)
             if (before is not None and isinstance(result, ToolMessage) and result.status != "error"
                     and isinstance(result.artifact, dict) and not result.artifact.get("error")
-                    and before == assigned_png_digest()):
+                    and before == assigned_png_digest(raw_path, request.state)):
                 result = result.model_copy(update={"artifact": {
                     **result.artifact, "idd_unchanged_owned_png_sha256": before,
                 }})
