@@ -1379,9 +1379,130 @@ def test_viz_required_custom_features_and_child_status_complete_natively(
         image.verify()
 
 
-@pytest.mark.parametrize("parent_finished", [False, True])
+@pytest.mark.parametrize("inconsistency", ["empty", "unfinished-child"])
+def test_viz_inconsistent_native_completion_has_one_paired_correction_per_assignment(
+    tmp_path, monkeypatch, inconsistency
+):
+    from tests.unit.test_figure_provenance import apply_join, plot_namespace
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    paths = []
+
+    class CorrectionModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            round_index = len(self._requests) % 3
+            if round_index == 0:
+                self.scripted_responses.append(
+                    {
+                        "name": "create_scatter_plot",
+                        "args": {
+                            "df_id": "retail-fixture",
+                            "x": "gross",
+                            "y": "net",
+                            "hue": "group",
+                        },
+                    }
+                )
+            else:
+                context = json.loads(
+                    next(
+                        m.content
+                        for m in reversed(messages)
+                        if m.name == "runtime_context"
+                    )
+                )
+                plot_result = next(
+                    m
+                    for m in reversed(messages)
+                    if isinstance(m, ToolMessage) and m.name == "create_scatter_plot"
+                )
+                path = json.loads(plot_result.content)["image_path"]
+                assert Path(path).is_file()
+                record = idd_state.DataVisualization(
+                    **{**FLAGS, "finished_this_task": round_index == 2},
+                    path=path,
+                    visualization_id=context["assigned_spec"]["viz_id"],
+                    visualization_type="scatter",
+                    visualization_style="whitegrid",
+                    visualization_title="Gross versus net",
+                    visualization_description="Actual gross and net values by group.",
+                )
+                if round_index == 2:
+                    error = messages[-1]
+                    response = messages[-2]
+                    assert isinstance(error, ToolMessage) and error.status == "error"
+                    assert error.name == "VisualizationResults"
+                    assert "VisualizationResults rejected" in error.content
+                    assert isinstance(response, AIMessage)
+                    assert error.tool_call_id == response.tool_calls[0]["id"]
+                    rejected = response.tool_calls[0]["args"]
+                    assert rejected["finished_this_task"] is True
+                    if inconsistency == "empty":
+                        assert rejected["visualizations"] == []
+                    else:
+                        assert (
+                            rejected["visualizations"][0]["finished_this_task"] is False
+                        )
+                    paths.append(path)
+                self.payload = idd_state.VisualizationResults(
+                    **FLAGS,
+                    visualizations=(
+                        []
+                        if round_index == 1 and inconsistency == "empty"
+                        else [record]
+                    ),
+                ).model_dump()
+            return super()._generate(messages, **kwargs)
+
+    model = CorrectionModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(tmp_path)
+    state["artifacts_path"] = str(ns["RUNTIME"].artifacts_dir)
+    for viz_id in ("gross-net-first", "gross-net-second"):
+        spec = (
+            analysis_insights()
+            .recommended_visualizations[1]
+            .model_copy(
+                update={
+                    "viz_id": viz_id,
+                    "title": "Gross versus net",
+                    "viz_instructions": "Plot gross against net and color by group.",
+                    "columns": ["gross", "net", "group"],
+                    "x": "gross",
+                    "y": "net",
+                    "hue": "group",
+                }
+            )
+        )
+        state.update(
+            viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+        )
+        update = ns["viz_worker"](state)
+        joined = apply_join({**state, **update}, ns["viz_join"]({**state, **update}))
+        item = joined["visualization_results"].visualizations[0]
+        assert item.visualization_id == viz_id and item.finished_this_task is True
+        assert Path(item.path).read_bytes() == Path(paths[-1]).read_bytes()
+        with Image.open(item.path) as image:
+            image.verify()
+        assert state["viz_results"] == []
+    assert len(set(paths)) == 2
+    assert (
+        model._emitted
+        == [
+            "create_scatter_plot",
+            "VisualizationResults",
+            "VisualizationResults",
+        ]
+        * 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("parent_finished", "has_child"), [(False, True), (True, True), (True, False)]
+)
 def test_viz_child_unfinished_is_never_upgraded_even_with_real_png(
-    tmp_path, parent_finished
+    tmp_path, parent_finished, has_child
 ):
     ns = load_native(tmp_path, middleware=True)
     items = figures(tmp_path)
@@ -1389,7 +1510,8 @@ def test_viz_child_unfinished_is_never_upgraded_even_with_real_png(
     model = ControlledChatModel(
         response_name="VisualizationResults",
         payload=idd_state.VisualizationResults(
-            **{**FLAGS, "finished_this_task": parent_finished}, visualizations=items[:1]
+            **{**FLAGS, "finished_this_task": parent_finished},
+            visualizations=items[:1] if has_child else [],
         ).model_dump(),
     )
     ns["visualization_orchestrator_llm"] = model
@@ -1399,7 +1521,11 @@ def test_viz_child_unfinished_is_never_upgraded_even_with_real_png(
         ns["viz_worker"](state)
     assert items[0].finished_this_task is False
     assert not state.get("visualization_complete") and state["viz_results"] == []
-    assert model.payload["visualizations"][0]["finished_this_task"] is False
+    assert model._emitted == ["VisualizationResults"] * (2 if parent_finished else 1)
+    if has_child:
+        assert model.payload["visualizations"][0]["finished_this_task"] is False
+    else:
+        assert model.payload["visualizations"] == []
 
 
 def test_viz_statistical_context_preserves_findings_without_other_task_statuses(
