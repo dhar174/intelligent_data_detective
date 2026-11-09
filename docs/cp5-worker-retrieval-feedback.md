@@ -1,0 +1,9 @@
+# CP5 visualization worker progress feedback
+
+On merged base `c5ed8cba8c684b85edb002e152b93e249e516185`, strict retail attempts `80959c87-f936-4b8d-b6c4-783435deddb8` and `88e7785b-1e1b-4d7d-a201-aabb6ece03b2` each recorded three native worker results and one unchanged-retrieval error. Each trace shows one assignment-local inventory response and four successful detail responses for the satisfaction worker's same PNG. The checkpoint ties the error to that worker. Neither run reached the evaluator or either production validator.
+
+Both PNGs had a defect visible in the retained artifact. The first legend covered much of the plot. The second chart's count annotations overlapped category labels. This evidence does not establish model intent, whether the model requested a preview, or the quality of any final deliverable.
+
+The visualization progress middleware adds one instruction to the most recent list or detail response in the outgoing model request after two redundant retrieval results. The worker can change and verify a flawed render, submit native metadata if the existing PNG meets the assignment, or report unfinished work. The copied message retains its original call ID, metadata, and image blocks. Fingerprints still use the original checkpointed results. The third redundant result still raises the existing error. Successful rendering still resets the streak. Native completion, the graph and the evaluator keep their existing responsibilities.
+
+Offline tests of the generated worker reproduced the missing feedback on the base. The repaired path supplies the actual PNG pixels with one corrective instruction, permits a real redraw and native completion, and still refuses a fourth identical lookup. The hosted tests and independent review are separate gates for publication. #129 remains deferred and #165 remains open.
