@@ -857,14 +857,15 @@ def worker_state(base):
     )
 
 
+@pytest.mark.parametrize("upstream_finished", [False, True])
 def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, upstream_finished
 ):
     from tests.unit.test_figure_provenance import plot_namespace, apply_join
 
     ns = plot_namespace(tmp_path, monkeypatch)
     spec = idd_state.VizSpec(
-        **FLAGS,
+        **{**FLAGS, "finished_this_task": upstream_finished},
         viz_id="net-distribution",
         title="Net distribution",
         viz_type="histogram",
@@ -903,7 +904,6 @@ def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
             **FLAGS, visualizations=[item]
         ).model_dump(),
         required_context=[
-            json.dumps(spec.model_dump(mode="json"), sort_keys=True),
             "Every Python call starts with a fresh namespace",
             "Pass df_id explicitly on each data call",
         ],
@@ -917,6 +917,7 @@ def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
     state.update(
         viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
     )
+    original_spec = spec.model_dump(mode="json")
     update = ns["viz_worker"](state)
     joined = apply_join({**state, **update}, ns["viz_join"]({**state, **update}))
     assert joined["visualization_complete"] is True
@@ -926,6 +927,29 @@ def test_viz_worker_delivers_complete_spec_and_explicit_python_binding(
     )
     with Image.open(path) as image:
         image.verify()
+    assert state["viz_spec"].model_dump(mode="json") == original_spec
+    assert state["viz_specs"][0].model_dump(mode="json") == original_spec
+    rendering_spec = {
+        k: v for k, v in original_spec.items() if k != "finished_this_task"
+    }
+    rendered_specs = []
+    for request in model._requests:
+        context = json.loads(
+            next(m.content for m in request if m.name == "runtime_context")
+        )
+        rendered_specs.append(context["assigned_spec"])
+        assignment = next(
+            m.content for m in request if m.name == "visualization_assignment"
+        )
+        for task in (context["visualization_task"], assignment):
+            parsed, _ = json.JSONDecoder().raw_decode(
+                task.split("Complete assigned VizSpec: ", 1)[1]
+            )
+            rendered_specs.append(parsed)
+    assert len(rendered_specs) == 6
+    assert all(v == rendering_spec for v in rendered_specs), [
+        v.get("finished_this_task") for v in rendered_specs
+    ]
     assert model._emitted == ["python_repl_tool", "VisualizationResults"]
     tool = next(
         t for t in model._bindings[0] if getattr(t, "name", None) == "python_repl_tool"

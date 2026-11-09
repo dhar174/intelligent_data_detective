@@ -1791,7 +1791,7 @@ with pytest.MonkeyPatch.context() as mp:
         viz_case = base / viz_test.__name__
         viz_case.mkdir()
         if viz_test is test_viz_worker_delivers_complete_spec_and_explicit_python_binding:
-            viz_test(viz_case, mp)
+            viz_test(viz_case, mp, False)
         else:
             viz_test(viz_case)
     for scope_test in (test_viz_worker_scope_is_current_assignment_not_pipeline_or_perfection,

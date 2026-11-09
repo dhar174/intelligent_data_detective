@@ -2856,7 +2856,8 @@ def apply_cp5_visualization_assignment_patch(cells):
         import json as _cp5_viz_json
         vis_vars["visualization_task"] += (
             "\\nComplete assigned VizSpec: " + _cp5_viz_json.dumps(
-                _cp5_spec.model_dump(mode="json"), sort_keys=True)
+                _cp5_spec.model_dump(mode="json", exclude={"finished_this_task"}),
+                sort_keys=True)
         )
     vis_vars["visualization_task"] += (
         "\\nEvery Python call starts with a fresh namespace. Pass df_id explicitly on each data call "
@@ -2927,7 +2928,8 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         "original_user_request": variables.get("user_prompt"),
         "pipeline_assignment": state.get("next_agent_prompt"),
         "visualization_task": variables["visualization_task"],
-        "assigned_spec": spec.model_dump(mode="json") if isinstance(spec, VizSpec) else None,
+        "assigned_spec": (spec.model_dump(mode="json", exclude={"finished_this_task"})
+                          if isinstance(spec, VizSpec) else None),
         "assigned_spec_status_semantics": "Upstream planning status is not the current figure's completion status.",
         "available_df_ids": state.get("available_df_ids") or [],
         "cleaned_dataset_description": variables.get("cleaned_dataset_description"),
