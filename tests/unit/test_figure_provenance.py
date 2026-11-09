@@ -92,6 +92,147 @@ PLOTS = [
 ]
 
 
+@pytest.mark.parametrize("return_bytes", [False, True])
+def test_png_read_redirects_to_exact_path_image_preview(
+    tmp_path, monkeypatch, return_bytes
+):
+    ns = plot_namespace(tmp_path, monkeypatch)
+    plot = ns["create_scatter_plot"].invoke(
+        {
+            "type": "tool_call",
+            "name": "create_scatter_plot",
+            "id": "plot",
+            "args": {"df_id": "retail-fixture", "x": "gross", "y": "net"},
+        }
+    )
+    path = Path(json.loads(plot.content)["image_path"])
+    png = path.read_bytes()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    item = DataVisualization(
+        **FLAGS,
+        path=path.as_posix(),
+        visualization_id="assigned-figure-id",
+        visualization_type="scatter",
+        visualization_title="Gross versus net",
+        visualization_description="Actual fixture data.",
+        visualization_style="whitegrid",
+    )
+
+    class InspectionModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            if len(self._requests) == 1:
+                read = messages[-1]
+                assert isinstance(read, ToolMessage) and read.name == "read_file"
+                assert read.tool_call_id == "controlled-call-1"
+                wire = _construct_responses_api_input([read])[0]
+                assert wire["call_id"] == read.tool_call_id
+                assert (
+                    "get_visualization" in wire["output"]
+                ), "PNG read lacks inspection guidance"
+                assert path.as_posix() in wire["output"]
+                assert "include_preview=True" in wire["output"]
+                assert "\ufffd" not in wire["output"] and "IHDR" not in wire["output"]
+                assert read.artifact["path"] == str(path)
+                assert "file_text" not in read.artifact
+                assert read.artifact.get("file_bytes") == (
+                    png if return_bytes else None
+                )
+                context = json.loads(
+                    next(m.content for m in messages if m.name == "runtime_context")
+                )
+                contract = context["completion_contract"]
+                assert "get_visualization(path=" in contract
+                assert "before publication" in contract
+            elif len(self._requests) == 2:
+                preview = messages[-1]
+                assert (
+                    isinstance(preview, ToolMessage)
+                    and preview.name == "get_visualization"
+                )
+                wire = _construct_responses_api_input([preview])[0]
+                image = next(
+                    block for block in wire["output"] if block["type"] == "input_image"
+                )
+                assert base64.b64decode(image["image_url"].split(",", 1)[1]) == png
+            return super()._generate(messages, **kwargs)
+
+    model = InspectionModel(
+        response_name="VisualizationResults",
+        payload=VisualizationResults(**FLAGS, visualizations=[item]).model_dump(),
+        scripted_responses=[
+            {
+                "name": "read_file",
+                "args": {"file_name": path.as_posix(), "return_bytes": return_bytes},
+            },
+            {
+                "name": "get_visualization",
+                "args": {"path": path.as_posix(), "include_preview": True},
+            },
+        ],
+    )
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"](["retail-fixture"])
+    state = worker_state(tmp_path)
+    state["artifacts_path"] = str(ns["RUNTIME"].artifacts_dir)
+    state["_config"]["configurable"]["runtime"] = ns["RUNTIME"]
+    update = ns["viz_worker"](state)
+    joined = apply_join({**state, **update}, ns["viz_join"]({**state, **update}))
+    result = joined["visualization_results"].visualizations[0]
+    assert result.visualization_id == item.visualization_id
+    assert Path(result.path).read_bytes() == png
+    assert model._emitted == ["read_file", "get_visualization", "VisualizationResults"]
+
+
+def test_read_file_keeps_text_pagination_and_rejects_outside_png(tmp_path, monkeypatch):
+    ns = plot_namespace(tmp_path, monkeypatch)
+    root = ns["RUNTIME"].artifacts_dir
+    root.mkdir(parents=True, exist_ok=True)
+    text_path = root / "lines.txt"
+    text_path.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    assert text_path.read_text(encoding="utf-8").splitlines() == [
+        "first",
+        "second",
+        "third",
+    ]
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"unowned fixture")
+    assert outside.read_bytes() == b"unowned fixture"
+    config = {"configurable": {"runtime": ns["RUNTIME"]}}
+
+    def read(id_, args):
+        runtime = ns["ToolRuntime"](
+            state={},
+            context=None,
+            config=config,
+            stream_writer=lambda _: None,
+            tool_call_id=id_,
+            store=None,
+        )
+        return ns["read_file"].invoke(
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "id": id_,
+                "args": {**args, "runtime": runtime},
+            },
+            config=config,
+        )
+
+    result = read("text", {"file_name": "lines.txt", "start": 2, "end": 2})
+    assert result.content == "second" and result.artifact["file_text"] == "second"
+    assert (
+        result.artifact["start"],
+        result.artifact["end"],
+        result.artifact["line_count"],
+    ) == (2, 2, 3)
+    rejected = read("outside", {"file_name": outside.as_posix(), "return_bytes": True})
+    assert "outside artifacts root" in rejected.content
+    assert (
+        "file_bytes" not in rejected.artifact
+        and "unowned fixture" not in rejected.content
+    )
+
+
 @pytest.mark.parametrize("name,args", PLOTS)
 def test_actual_plot_path_reaches_native_model_payload(
     tmp_path, monkeypatch, name, args
