@@ -1710,6 +1710,121 @@ def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
             )
 
 
+@pytest.mark.parametrize("correct", [True, False])
+def test_viz_worker_rejects_conflicting_planner_png_destination(
+    tmp_path, monkeypatch, correct
+):
+    from tests.unit.test_figure_provenance import apply_join, plot_namespace
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    runtime = ns["RUNTIME"]
+    runtime.viz_dir.mkdir(parents=True, exist_ok=True)
+    planner_path = runtime.viz_dir / "planner_chosen_box.png"
+    recipe = (
+        "import matplotlib.pyplot as plt\n"
+        "fig, ax = plt.subplots()\n"
+        "ax.boxplot([df.loc[df['group'] == key, 'net'] for key in ['A', 'B']])\n"
+        "ax.set_ylabel('Net Revenue')\n"
+        f"output_path = {planner_path.as_posix()!r}\n"
+        "fig.savefig(output_path)\nplt.close(fig)\nprint(output_path)"
+    )
+    spec = idd_state.VizSpec(
+        **FLAGS,
+        title="Net Revenue by Group",
+        viz_type="box",
+        df_id="retail-fixture",
+        viz_id="assigned-box",
+        viz_instructions=f"Render the revised box plot using this recipe:\n{recipe}",
+        columns=["group", "net"],
+        x="group",
+        y="net",
+        hue=None,
+        bins=None,
+        agg=None,
+        query=None,
+        description="Revenue by group",
+        limit=None,
+        style="default",
+    )
+
+    class DestinationModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            context = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            owned = Path(context["custom_plot_output_path"])
+            stage = len(self._requests)
+            if stage in (0, 1):
+                if stage == 1:
+                    refusal = messages[-1]
+                    assert isinstance(refusal, ToolMessage)
+                    assert refusal.tool_call_id == "controlled-call-1"
+                    assert refusal.status == "error"
+                    assert owned.as_posix() in refusal.content
+                    assert not planner_path.exists() and not owned.exists()
+                code = (
+                    recipe.replace(planner_path.as_posix(), owned.as_posix())
+                    if stage == 1 and correct
+                    else recipe
+                )
+                call = {
+                    "name": "python_repl_tool",
+                    "args": {"df_id": spec.df_id, "code": code},
+                }
+            elif stage == 2:
+                assert correct and owned.is_file() and not planner_path.exists()
+                call = {
+                    "name": "get_visualization",
+                    "args": {"path": owned.as_posix(), "include_preview": True},
+                }
+            else:
+                assert stage == 3 and correct
+                preview = messages[-1]
+                assert isinstance(preview, ToolMessage) and preview.status == "success"
+                assert preview.tool_call_id == "controlled-call-3"
+                item = idd_state.DataVisualization(
+                    **FLAGS,
+                    path=owned.as_posix(),
+                    visualization_id=spec.viz_id,
+                    visualization_type=spec.viz_type,
+                    visualization_title=spec.title,
+                    visualization_description="Revenue distributions",
+                    visualization_style="default",
+                )
+                call = {
+                    "name": "VisualizationResults",
+                    "args": idd_state.VisualizationResults(
+                        **FLAGS, visualizations=[item]
+                    ).model_dump(),
+                }
+            self.scripted_responses.append(call)
+            return super()._generate(messages, **kwargs)
+
+    model = DestinationModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], individual_viz_task=spec.viz_instructions
+    )
+    state["_config"]["configurable"]["runtime"] = runtime
+    if correct:
+        result = ns["viz_worker"](state)
+        joined = apply_join({**state, **result}, ns["viz_join"]({**state, **result}))
+        (figure,) = joined["visualization_results"].visualizations
+        assert figure.visualization_id == spec.viz_id
+        assert Path(figure.path).parent == runtime.viz_dir
+        assert model._emitted[-1] == "VisualizationResults"
+    else:
+        with pytest.raises(ValueError, match="repeated.*planner.*PNG destination"):
+            ns["viz_worker"](state)
+        assert len(model._requests) == 2
+        assert "VisualizationResults" not in model._emitted
+    assert not planner_path.exists()
+
+
 def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
     bad = {"name": "python_repl_tool", "args": {"code": "print(df)"}}
     lookup = {
