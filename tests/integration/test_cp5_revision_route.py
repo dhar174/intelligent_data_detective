@@ -68,10 +68,14 @@ class RuntimeTaskChatModel(ControlledChatModel):
         ]
         assert contexts, "Generated visualization worker must receive runtime context"
         runtime = json.loads(str(contexts[-1].content))
-        spec = VizSpec.model_validate(runtime["assigned_spec"])
+        # The rendered assignment is a projection, not the checkpointed model.
+        spec = runtime["assigned_spec"]
+        assert set(spec) == set(VizSpec.model_fields) - {"finished_this_task"}
         context = runtime["visualization_task"]
-        assigned_id = spec.viz_id
-        assert assigned_id, "Generated worker omitted its assigned visualization ID"
+        assigned_id = spec["viz_id"]
+        assert (
+            isinstance(assigned_id, str) and assigned_id
+        ), "Generated worker omitted its assigned visualization ID"
         matches = [
             (instruction, payload)
             for instruction, payload in self.payload_by_instruction.items()

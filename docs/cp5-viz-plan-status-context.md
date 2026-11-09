@@ -36,6 +36,19 @@ Existing tests continue to reject an explicitly unfinished child even when
 a readable PNG exists. The real-kernel probe exercises the pending-plan case.
 Exact-HEAD local, hosted and Antigravity receipts are recorded with the PR.
 
+The first candidate `142962af1ae4bf0342706431a62e9b3c22350359` was blocked
+by its broad suite: 1 failed, 1,391 passed, 9 skipped. The SQLite revision
+fixture tried to deserialize the rendered projection into canonical
+`VizSpec`, requiring the deliberately omitted field. Its test-only follow-up
+checks the exact projection keys and consumes the assigned ID directly.
+The graph, canonical checkpoint, figure provenance, and isolation assertions
+are unchanged. Original logs, JUnit, exit receipt and 11 synthetic fixture
+files are preserved. Production and notebook bytes are identical across
+the two candidates; the follow-up requires fresh exact-HEAD gates and review.
+Linux run `42542587396` reproduced the same fixture failure (1 failed,
+1,254 passed, 3 skipped). The corrected targeted SQLite test passed
+with four warnings; the original failure is retained as evidence.
+
 No public schema, shared hook, routing, model settings, artifact ownership,
 or production validator changes. This correction does not guarantee that
 a live model will always complete. Both scenarios still require real artifact
