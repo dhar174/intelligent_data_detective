@@ -2994,6 +2994,92 @@ def _cp5_visualization_messages(state, variables, emergency_messages=()):
         ast.parse(join_source(cells[index]["source"]))
 
 
+def apply_cp5_viz_native_correction_patch(cells):
+    """Allow one native correction of a contradictory visualization completion."""
+    source = join_source(cells[44]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "create_visualization_agent")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '    tool_descriptions = "\\n".join(',
+        '''    from dataclasses import replace as _viz_replace_response
+
+    completion_error = "idd_visualization_completion_inconsistent"
+
+    @wrap_model_call
+    def guard_visualization_completion(request, handler):
+        response = handler(request)
+        result = response.structured_response
+        if (not isinstance(result, VisualizationResults) or not result.finished_this_task
+                or (result.visualizations and all(
+                    child.finished_this_task for child in result.visualizations))):
+            return response
+
+        # Reject only a claimed success with no complete figure records. A
+        # genuine unfinished result still goes directly to the strict worker.
+        history = list(request.state.get("messages") or [])
+        start = max((i for i, message in enumerate(history)
+                     if isinstance(message, HumanMessage)
+                     and message.name == "runtime_context"), default=-1)
+        if start < 0 or any(
+            isinstance(message, ToolMessage)
+            and message.name == "VisualizationResults"
+            and message.status == "error" and message.artifact == completion_error
+            for message in history[start + 1:]
+        ):
+            raise ValueError(
+                "Visualization worker did not complete its required figures: "
+                "a completed VisualizationResults needs actual completed figure records. "
+                "No further correction round is available for this assignment."
+            )
+
+        if len(response.result) != 2:
+            raise ValueError("Visualization completion correction requires one paired native response")
+        assistant, receipt = response.result
+        if (not isinstance(assistant, AIMessage) or assistant.invalid_tool_calls
+                or len(assistant.tool_calls) != 1
+                or not isinstance(receipt, ToolMessage)
+                or receipt.name != "VisualizationResults"
+                or assistant.tool_calls[0]["name"] != receipt.name
+                or assistant.tool_calls[0]["id"] != receipt.tool_call_id):
+            raise ValueError("Visualization completion correction requires one paired native response")
+
+        error = receipt.model_copy(update={
+            "status": "error",
+            "artifact": completion_error,
+            "content": (
+                "VisualizationResults rejected: finished_this_task=True needs actual "
+                "DataVisualization records, each with finished_this_task=True. "
+                "If the assigned PNG meets the spec, verify it and submit its real metadata, "
+                "assigned ID, and actual saved path. If work remains, complete it or return "
+                "finished_this_task=False with the blocker. Do not infer completion from a save."
+            ),
+        })
+        return _viz_replace_response(response, result=[assistant, error], structured_response=None)
+
+    tool_descriptions = "\\n".join(''',
+        patch_id="CP5 paired correction of contradictory native visualization completion",
+    )
+    body = replace_required(
+        body,
+        'middleware =[visualization_python_progress, prehook_complex, guard_visualization_memory_id,',
+        'middleware =[visualization_python_progress, prehook_complex, guard_visualization_memory_id, '
+        'guard_visualization_completion,',
+        patch_id="CP5 visualization native completion guard wiring",
+    )
+    body = replace_required(
+        body,
+        "Completion: call the VisualizationResults structured-response tool exactly once with the actual DataVisualization children, then stop.",
+        "Completion: submit one accepted VisualizationResults with the actual DataVisualization children, then stop. "
+        "If a paired tool error rejects the response, correct it as instructed.",
+        patch_id="CP5 visualization accepted completion wording",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[44]["source"] = source
+
+
 def apply_cp5_scenario_request_patch(cells):
     """Keep the actual scenario/custom request through runtime initialization."""
     source = join_source(cells[51]["source"])
@@ -18237,6 +18323,7 @@ def main():
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
+    apply_cp5_viz_native_correction_patch(cells)
     apply_cp5_scenario_request_patch(cells)
     apply_cp5_file_writer_content_patch(cells)
     apply_cp5_evaluator_image_context_patch(cells)
