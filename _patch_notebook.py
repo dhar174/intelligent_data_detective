@@ -3273,8 +3273,9 @@ def apply_cp5_visualization_assignment_patch(cells):
             if result.finished_this_task and (
                 len(result.visualizations) != 1
                 or result.visualizations[0].visualization_id != spec["viz_id"]
-                or _cp5_validated_figure_path(result.visualizations[0].path, request.state)
-                    != PathlibPath(terminal_path)
+                or PathlibPath(terminal_path) != _cp5_validated_figure_path(
+                    result.visualizations[0].path, request.state
+                )
                 or assigned_png_digest(terminal_path, request.state) != unchanged_png
             ):
                 raise ValueError("Final VisualizationResults must identify the verified assigned PNG.")
