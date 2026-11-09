@@ -52,3 +52,13 @@ The failed attempt's saved-response subtotal was $0.04236671, bringing the
 campaign subtotal to $1.96731322. This is partial checkpoint usage and does
 not account for all provider charges. `sample_dirty` did not start. The PR
 records exact candidate validation and independent review before any merge.
+
+The first candidate, `6eb5338f4b978a43413fc3a06e20c32b3c762f1e`, passed the
+unit and integration selection but exposed an existing direct invocation in
+the notebook kernel harness. The Windows notebook kernel step stopped with
+one failure and 26 passes: the caller supplied the parent flag but omitted
+the new explicit `has_child` parameter. The follow-up passes both flags and
+keeps the same unfinished-child check. It changes only the harness and this
+report, with identical patcher and generated notebook bytes. The first
+candidate's failed receipts are retained; its review and checks do not
+qualify the follow-up revision.

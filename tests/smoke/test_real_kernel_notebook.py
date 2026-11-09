@@ -1807,7 +1807,9 @@ with pytest.MonkeyPatch.context() as mp:
     test_viz_required_custom_features_and_child_status_complete_natively(feature_case, mp, False)
     child_case = base / "unfinished-child-stays-unfinished"
     child_case.mkdir()
-    test_viz_child_unfinished_is_never_upgraded_even_with_real_png(child_case, True)
+    test_viz_child_unfinished_is_never_upgraded_even_with_real_png(
+        child_case, parent_finished=True, has_child=True
+    )
     findings_case = base / "statistical-findings-preserved"
     findings_case.mkdir()
     test_viz_statistical_context_preserves_findings_without_other_task_statuses(findings_case)
