@@ -2959,7 +2959,7 @@ def apply_cp5_visualization_assignment_patch(cells):
         redundant = 0
         retrieval_seen = set()
         retrieval_redundant = 0
-        feedback_call_id = None
+        feedback_message = None
         retrieval_tools = {"list_visualizations", "get_visualization", "read_file",
                            "list_available_files", "get_dataframe_schema", "get_column_names"}
         calls = {call.get("id"): call.get("name")
@@ -2973,10 +2973,22 @@ def apply_cp5_visualization_assignment_patch(cells):
                 continue
             if message.name in ("manage_memory", "search_memory"):
                 continue
-            if message.name in retrieval_tools:
+            is_python = message.name == "python_repl_tool"
+            artifact = message.artifact if isinstance(message.artifact, dict) else {}
+            error = is_python and (
+                message.status == "error" or artifact.get("error") or str(message.content).strip().startswith((
+                    "NameError:", "KeyError:", "ValueError:", "TypeError:",
+                    "Failed to execute.", "Error: DataFrame",
+                ))
+            )
+            unchanged_png = is_python and not error and artifact.get("idd_unchanged_owned_png_sha256")
+            if message.name in retrieval_tools or unchanged_png:
                 import hashlib as _viz_hashlib, json as _viz_json
+                # Compare tool evidence independently of how the Python code was phrased.
+                evidence = ({k: v for k, v in artifact.items() if k != "code_executed"}
+                            if unchanged_png else message.artifact)
                 fingerprint = _viz_hashlib.sha256(_viz_json.dumps(
-                    [message.name, message.content, message.artifact],
+                    [message.name, message.content, evidence],
                     sort_keys=True, default=str,
                 ).encode("utf-8")).hexdigest()
                 retrieval_redundant = retrieval_redundant + 1 if fingerprint in retrieval_seen else 0
@@ -2986,24 +2998,16 @@ def apply_cp5_visualization_assignment_patch(cells):
                 retrieval_seen.add(fingerprint)
                 if retrieval_redundant >= 3:
                     raise ValueError(
-                        "Visualization repeated unchanged retrieval results after three redundant results. "
+                        "Visualization repeated unchanged retrieval results or Python PNG checks after three redundant results. "
                         "Use the assigned spec and actual saved path; correct a concrete issue or "
                         "complete natively so the canonical evaluator can assess the generated figure. "
                         "No successful revision or figure approval has been inferred."
                     )
                 if retrieval_redundant == 2 and message is messages[-1]:
-                    feedback_call_id = message.tool_call_id
+                    feedback_message = message
                 continue
-            text = str(message.content).strip()
-            artifact = message.artifact if isinstance(message.artifact, dict) else {}
-            error = message.name == "python_repl_tool" and (
-                message.status == "error" or artifact.get("error") or text.startswith((
-                    "NameError:", "KeyError:", "ValueError:", "TypeError:",
-                    "Failed to execute.", "Error: DataFrame",
-                ))
-            )
             if error:
-                fingerprint = str(artifact.get("error") or text)
+                fingerprint = str(artifact.get("error") or str(message.content).strip())
                 redundant = redundant + 1 if fingerprint in seen else 0
                 seen.add(fingerprint)
                 if redundant >= 3:
@@ -3018,19 +3022,23 @@ def apply_cp5_visualization_assignment_patch(cells):
                 if message.status != "error":
                     retrieval_redundant = 0
                     retrieval_seen.clear()
-        if feedback_call_id is not None:
+        if feedback_message is not None:
+            lead = (
+                "The repeated Python check returned the same result and left the assigned PNG unchanged."
+                if feedback_message.name == "python_repl_tool"
+                else "This visualization lookup returned no new evidence."
+            )
             feedback = (
-                "This visualization lookup returned no new evidence. "
-                "If the PNG has a defect, change the rendering and inspect the changed PNG. "
+                lead + " If the PNG has a defect, change the rendering and inspect the changed PNG. "
                 "If it meets the assignment, submit native VisualizationResults with the "
                 "actual assigned ID and saved path. If you cannot complete the figure, "
-                "report it as unfinished with the blocker. Another unchanged lookup will stop the worker."
+                "report it as unfinished with the blocker. Another redundant check will stop the worker."
             )
             # Add guidance only to this model request. The checkpointed tool
             # result stays intact for the existing fingerprint and stop bound.
             revised = []
             for message in request.messages:
-                if isinstance(message, ToolMessage) and message.tool_call_id == feedback_call_id:
+                if isinstance(message, ToolMessage) and message.tool_call_id == feedback_message.tool_call_id:
                     content = message.content
                     if isinstance(content, list):
                         content = [*content, {"type": "text", "text": feedback}]
@@ -3285,7 +3293,7 @@ def apply_cp5_worker_png_inspection_patch(cells):
 
 
 def apply_cp5_worker_inspection_scope_patch(cells):
-    """Limit provisional inventory to actual renders from the current worker assignment."""
+    """Scope worker inspection and check Python progress against its assigned PNG."""
     source = join_source(cells[44]["source"])
     node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
                 and n.name == "create_visualization_agent")
@@ -3315,7 +3323,7 @@ def apply_cp5_worker_inspection_scope_patch(cells):
         from dataclasses import replace
 
         call = request.tool_call
-        if call["name"] not in ("list_visualizations", "get_visualization") or request.tool is None:
+        if call["name"] not in ("list_visualizations", "get_visualization", "python_repl_tool") or request.tool is None:
             return handler(request)
         args = dict(call["args"])
         try:
@@ -3335,6 +3343,33 @@ def apply_cp5_worker_inspection_scope_patch(cells):
             return handler(request)  # Utility use without a dispatched VizSpec.
 
         root = _cp5_current_run_root() / "visualizations"
+        if call["name"] == "python_repl_tool":
+            import hashlib
+
+            def assigned_png_digest():
+                raw_path = context.get("custom_plot_output_path")
+                if not isinstance(raw_path, str):
+                    return None
+                path = PathlibPath(raw_path)
+                if not path.is_absolute() or path.parent != root:
+                    return None
+                try:
+                    if _cp5_validated_figure_path(path.as_posix(), request.state) == path:
+                        return hashlib.sha256(path.read_bytes()).hexdigest()
+                except (OSError, ValueError):
+                    return None  # Only an observed valid PNG contributes evidence.
+                return None
+
+            before = assigned_png_digest()
+            result = handler(request)
+            if (before is not None and isinstance(result, ToolMessage) and result.status != "error"
+                    and isinstance(result.artifact, dict) and not result.artifact.get("error")
+                    and before == assigned_png_digest()):
+                result = result.model_copy(update={"artifact": {
+                    **result.artifact, "idd_unchanged_owned_png_sha256": before,
+                }})
+            return result
+
         candidates = {}
 
         def add_candidate(raw_path, plot_type=None):
