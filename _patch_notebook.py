@@ -797,6 +797,60 @@ def apply_dataframe_registry_retained_path_patch(source: str) -> str:
     return replace_required(source, old, new, patch_id="P3-RETAINED-PATH")
 
 
+def apply_cp5_stream_review_patch(cells) -> None:
+    """Review saved stream events without re-rendering message or tool payloads."""
+    if (
+        'rstep[2].values()[0].get("messages")' not in join_source(cells[77]["source"])
+        or "for m_id, details in collected.items():" not in join_source(cells[78]["source"])
+    ):
+        raise RequiredPatchError("CP5 stream review: expected Cells 77 and 78")
+    review = '''from collections import Counter
+from collections.abc import Mapping
+from langchain_core.messages import BaseMessage
+
+# Count event and message occurrences. Chunks can share a message ID and
+# multiple events can share a displayed step label.
+review_event_counts = Counter()
+review_message_counts = Counter()
+for recorded in received_steps:
+    if not isinstance(recorded, tuple) or len(recorded) != 2:
+        review_event_counts["unrecognized"] += 1
+        continue
+    event, _step_metadata = recorded
+    if not isinstance(event, tuple) or len(event) != 3:
+        review_event_counts["unrecognized"] += 1
+        continue
+
+    _namespace, mode, payload = event
+    if (mode == "messages" and isinstance(payload, tuple) and len(payload) == 2
+            and isinstance(payload[0], BaseMessage)):
+        review_event_counts["messages"] += 1
+        review_message_counts[type(payload[0]).__name__] += 1
+    elif mode == "updates" and isinstance(payload, Mapping):
+        review_event_counts["updates"] += 1
+        for update in payload.values():
+            if not isinstance(update, Mapping):
+                continue
+            messages = update.get("messages")
+            if isinstance(messages, BaseMessage):
+                messages = (messages,)
+            if isinstance(messages, (list, tuple)):
+                for message in messages:
+                    if isinstance(message, BaseMessage):
+                        review_message_counts[type(message).__name__] += 1
+    else:
+        review_event_counts["unrecognized"] += 1
+'''
+    summary = '''print("Stream review event counts:", dict(sorted(review_event_counts.items())))
+print("Stream review message occurrences:", dict(sorted(review_message_counts.items())))
+'''
+    for idx, source in ((77, review), (78, summary)):
+        ast.parse(source)
+        cells[idx]["source"] = source
+        cells[idx]["outputs"] = []
+        cells[idx]["execution_count"] = None
+
+
 def apply_cp5_report_grounding_patch(cells) -> None:
     """Ground report inputs and respect native visualization revision feedback."""
     report_helpers = '''\
@@ -18607,6 +18661,7 @@ def main():
     # Run after inherited report/supervisor transformations so the generated
     # notebook and every subsequent regeneration share the same final behavior.
     apply_cp5_report_grounding_patch(cells)
+    apply_cp5_stream_review_patch(cells)
     apply_cp5_figure_provenance_patch(cells)
     apply_cp5_repl_isolation_patch(cells)
     apply_cp5_datetime_conversion_patch(cells)

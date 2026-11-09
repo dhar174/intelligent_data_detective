@@ -148,6 +148,56 @@ def test_synthetic_success_is_never_cp5_pass(tmp_path):
     )
 
 
+def test_generated_post_stream_review_runs_without_dumping_payloads(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    notebook = json.loads(
+        (repo / "IntelligentDataDetective_beta_v5_patched.ipynb").read_bytes()
+    )
+    review_cells = ["".join(notebook["cells"][i]["source"]) for i in (77, 78)]
+    events = """
+import traceback
+from langchain_core.messages import AIMessage, AIMessageChunk, SystemMessage, ToolMessage
+
+tool = ToolMessage(
+    content=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,PREVIEW_CANARY"}}],
+    artifact={"private": "ARTIFACT_CANARY"},
+    tool_call_id="plot-call",
+)
+message = AIMessage(content=[{"type": "reasoning", "reasoning": "REASONING_CANARY"}])
+received_steps = [
+    ((("worker:child",), "messages", (tool, {"langgraph_node": "viz_worker"})), {"langgraph_step": 185}),
+    (((), "messages", (AIMessageChunk(content="chunk"), {})), {"langgraph_step": 185}),
+    (((), "updates", {
+        "analyst": {"messages": [message]},
+        "report_section_worker": {"messages": AIMessage(content="section")},
+        "__interrupt__": (),
+    }), {"langgraph_step": 185}),
+    (((), "updates", {"supervisor": {"next": "FINISH"}}), {"langgraph_step": 186}),
+    (((), "debug", {"private": "UNKNOWN_CANARY"}), {"langgraph_step": 186}),
+    ((), {"langgraph_step": 186}),
+]
+"""
+    sentinel = """
+from pathlib import Path
+assert dict(review_event_counts) == {"messages": 2, "updates": 2, "unrecognized": 2}
+assert dict(review_message_counts) == {"ToolMessage": 1, "AIMessageChunk": 1, "AIMessage": 2}
+Path("REVIEW_COMPLETED").write_text("ok", encoding="utf-8")
+"""
+    error, record, workspace, evidence = execute(
+        tmp_path, [events, *review_cells, sentinel]
+    )
+    assert error is None, record.get("first_failure")
+    assert record["execution"]["status"] == "COMPLETED"
+    assert record["cp5_pass"] is False
+    assert (workspace / "REVIEW_COMPLETED").read_text(encoding="utf-8") == "ok"
+    console = (evidence / "console.log").read_text(encoding="utf-8")
+    assert "Stream review event counts" in console
+    assert "Stream review message occurrences" in console
+    assert "Traceback (most recent call last)" not in console
+    for canary in ("PREVIEW", "ARTIFACT", "REASONING", "UNKNOWN"):
+        assert f"{canary}_CANARY" not in console
+
+
 def test_successful_execution_timing_covers_the_last_notebook_cell(tmp_path):
     error, record, _, directory = execute(
         tmp_path,
