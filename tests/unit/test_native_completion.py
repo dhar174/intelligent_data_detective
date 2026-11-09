@@ -2698,7 +2698,9 @@ def test_cleaner_csv_real_receipt_preserves_tool_pair_and_checkpoint(tmp_path):
         for m in model._requests[-1]
         if isinstance(m, ToolMessage) and m.name == "export_dataframe"
     )
-    assert message.content == "Exported to cleaned.csv (csv)."
+    assert message.content == (
+        "Exported to cleaned.csv (csv). Exported snapshot dimensions: rows=3, data columns=2."
+    )
     assert message.tool_call_id == "controlled-call-3"
     assert message.artifact["action"] == "export"
     assert message.artifact["rows"] == 3 and message.artifact["cols"] == 2
@@ -2717,6 +2719,87 @@ def test_cleaner_csv_real_receipt_preserves_tool_pair_and_checkpoint(tmp_path):
     restored = serde.loads_typed(serde.dumps_typed(stored))
     assert restored == message
     assert result["data_cleaning_complete"] is True
+
+
+def test_cleaner_csv_export_dimensions_follow_written_snapshot(tmp_path):
+    import pandas as pd
+
+    ns = load_native(tmp_path, middleware=True)
+    registry = DataFrameRegistry(data_dir=tmp_path / "snapshot-dimensions-registry")
+    unique = pd.DataFrame(
+        {"order_id": [f"ORD-{n}" for n in range(1000, 1180)], "units": range(180)}
+    )
+    registry.register_dataframe(
+        pd.concat([unique, unique.head(4)], ignore_index=True), "retail-fixture"
+    )
+
+    class SnapshotFollowingCleaner(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            if len(self._requests) == 2:
+                exported = next(
+                    m
+                    for m in reversed(messages)
+                    if isinstance(m, ToolMessage) and m.name == "export_dataframe"
+                )
+                # The model sees the tool content, not the export artifact fields.
+                dims = re.search(
+                    r"Exported snapshot dimensions: rows=(\d+), data columns=(\d+)\.",
+                    exported.content,
+                )
+                assert (
+                    dims
+                ), "Successful native CSV result omitted its written dimensions"
+                self.payload = (
+                    cleaner_result()
+                    .model_copy(
+                        update={
+                            "data_description_after_cleaning": f"Exported snapshot has {dims[1]} rows; data columns: {dims[2]}.",
+                            "steps_taken": [
+                                "Removed four exact duplicates and exported the selected ID column."
+                            ],
+                        }
+                    )
+                    .model_dump()
+                )
+            return super()._generate(messages, **kwargs)
+
+    model = SnapshotFollowingCleaner(
+        response_name="CleaningMetadata",
+        payload={},
+        scripted_responses=[
+            {
+                "name": "detect_and_remove_duplicates",
+                "args": {"df_id": "retail-fixture"},
+            },
+            _cleaner_csv_call(tmp_path, columns=["order_id"]),
+        ],
+    )
+    ns["data_cleaner_llm"] = model
+    ns["data_cleaner_agent"] = ns["create_data_cleaner_agent"](
+        initial_description(), ["retail-fixture"]
+    )
+    state = worker_state(tmp_path)
+    state["cleaning_metadata"] = None
+    with override_global_registry(registry):
+        result = ns["data_cleaner_node"](state)
+
+    assert result["data_cleaning_complete"] is True
+    assert (
+        result["cleaning_metadata"].data_description_after_cleaning
+        == "Exported snapshot has 180 rows; data columns: 1."
+    )
+    assert model._emitted == [
+        "detect_and_remove_duplicates",
+        "export_dataframe",
+        "CleaningMetadata",
+    ]
+    pd.testing.assert_frame_equal(
+        pd.read_csv(tmp_path / "cleaned.csv"), unique[["order_id"]]
+    )
+    assert registry.get_dataframe("retail-fixture").shape == (180, 2)
+    assert _cleaner_csv_progress(model)["csv_export_snapshots"] == {
+        "retail-fixture": {"current": True}
+    }
 
 
 @pytest.mark.parametrize("operation", ["read", "noop", "failed_mutation"])

@@ -2376,6 +2376,27 @@ def apply_cp5_conversion_reporting_patch(cells):
     cells[32]["source"] = source
 
 
+def apply_cp5_csv_export_dimensions_patch(cells):
+    """Deliver the written CSV snapshot shape in the native tool result."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "export_dataframe")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '        return (f"Exported to {full_path.name} ({file_format}).", artifact)',
+        '''        content = f"Exported to {full_path.name} ({file_format})."
+        if file_format == "csv":
+            content += (f" Exported snapshot dimensions: rows={artifact['rows']}, "
+                        f"data columns={artifact['cols']}.")
+        return (content, artifact)''',
+        patch_id="CP5 model-visible CSV snapshot dimensions",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+
 def apply_cp5_file_writer_content_patch(cells):
     """Align the writer prompt with the existing factory/node content key."""
     source = join_source(cells[25]["source"])
@@ -18164,6 +18185,7 @@ def main():
     apply_cp5_datetime_conversion_patch(cells)
     apply_cp5_numeric_series_patch(cells)
     apply_cp5_conversion_reporting_patch(cells)
+    apply_cp5_csv_export_dimensions_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)

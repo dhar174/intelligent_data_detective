@@ -2068,6 +2068,7 @@ for recovery in ("0", "1"):
 for test in (
     native.test_cleaner_csv_reexport_restores_native_completion,
     native.test_cleaner_csv_real_receipt_preserves_tool_pair_and_checkpoint,
+    native.test_cleaner_csv_export_dimensions_follow_written_snapshot,
     native.test_cleaner_csv_failed_export_does_not_refresh_snapshot,
     native.test_cleaner_csv_other_dataframe_cannot_refresh_stale_snapshot,
     native.test_cleaner_csv_new_assignment_keeps_history_without_stale_receipt_leak,
@@ -2081,7 +2082,7 @@ for phase in ("capture", "before_model", "after_model"):
         checks.append((native.test_cleaner_csv_fingerprint_failure_stops_without_recovery, (recovery, phase), True))
 for export_first in (False, True):
     checks.append((native.test_cleaner_csv_parallel_snapshot_matches_actual_serialized_order, (export_first,), False))
-assert len(checks) == 19
+assert len(checks) == 20
 
 def denied(*args, **kwargs):
     raise AssertionError("Network forbidden in cleaner CSV smoke")
@@ -2115,7 +2116,7 @@ print({PROBE_PREFIX!r} + json.dumps({{"status": "ok", "cases": len(checks)}}))
         )
         result = probes.get("cleaner_csv_snapshot")
         assert result is not None, f"Missing cleaner CSV probe: {streams}"
-        assert result == {"status": "ok", "cases": 19}
+        assert result == {"status": "ok", "cases": 20}
 
 
 # ===========================================================================
