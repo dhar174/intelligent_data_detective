@@ -1529,6 +1529,139 @@ def test_viz_successful_python_work_resets_retrieval_streak(tmp_path):
     assert len(model._requests) == 8
 
 
+@pytest.mark.parametrize("decision", ["complete", "repeat", "redraw", "new_analysis"])
+def test_viz_repeated_python_checks_of_unchanged_owned_png_are_bounded(
+    tmp_path, monkeypatch, decision
+):
+    from tests.unit.test_figure_provenance import plot_namespace
+
+    ns = plot_namespace(tmp_path, monkeypatch)
+    runtime = ns["RUNTIME"]
+    spec = idd_state.VizSpec(
+        **FLAGS,
+        viz_id="unchanged-scatter",
+        title="Gross and net",
+        viz_type="scatter",
+        df_id="retail-fixture",
+        x="gross",
+        y="net",
+        columns=["gross", "net"],
+        hue=None,
+        bins=None,
+        agg=None,
+        query=None,
+        limit=None,
+        description="Gross versus net values.",
+        viz_instructions="Plot gross versus net with readable labels.",
+        style="default",
+    )
+    correction = "The repeated Python check returned the same result and left the assigned PNG unchanged."
+
+    class RenderProgressModel(ControlledChatModel):
+        def _generate(self, messages, **kwargs):
+            context = json.loads(
+                next(
+                    m.content for m in reversed(messages) if m.name == "runtime_context"
+                )
+            )
+            path = Path(context["custom_plot_output_path"])
+            stage = len(self._requests)
+
+            def python(code):
+                return {
+                    "name": "python_repl_tool",
+                    "args": {"df_id": spec.df_id, "code": code},
+                }
+
+            def render(title):
+                return python(
+                    "import matplotlib.pyplot as plt\n"
+                    "fig, ax = plt.subplots()\n"
+                    "ax.scatter(df['gross'], df['net'])\n"
+                    f"ax.set_title({title!r})\n"
+                    f"fig.savefig({path.as_posix()!r})\nplt.close(fig)\n"
+                    f"print({path.as_posix()!r})"
+                )
+
+            check = python(f"print({path.as_posix()!r})")
+            if stage == 0:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                call = render(spec.title)
+            elif stage in (1, 3):
+                if stage == 1:
+                    self._initial_png = path.read_bytes()
+                call = {
+                    "name": "get_visualization",
+                    "args": {"visualization_id": spec.viz_id, "include_preview": True},
+                }
+            elif stage in (2, 4):
+                call = (
+                    python("print(df['gross'].mean())")
+                    if stage == 4 and decision == "new_analysis"
+                    else check
+                )
+            else:
+                feedback = [m for m in messages if correction in str(m.content)]
+                if stage == 5 and decision != "new_analysis":
+                    assert (
+                        len(feedback) == 1
+                    ), "Unchanged Python checks must not reset retrieval progress"
+                    assert feedback[0].name == "python_repl_tool"
+                    assert feedback[0].tool_call_id == "controlled-call-5"
+                    names = {getattr(t, "name", None) for t in self._bindings[-1]}
+                    assert (
+                        "get_visualization" not in names and "python_repl_tool" in names
+                    )
+                else:
+                    assert not feedback
+                if stage == 5 and decision == "repeat":
+                    call = check
+                elif stage == 5 and decision == "redraw":
+                    call = render("Revised figure with labels")
+                else:
+                    assert stage == (6 if decision == "redraw" else 5)
+                    assert (path.read_bytes() != self._initial_png) == (
+                        decision == "redraw"
+                    )
+                    item = idd_state.DataVisualization(
+                        **FLAGS,
+                        path=path.as_posix(),
+                        visualization_id=spec.viz_id,
+                        visualization_type="scatter",
+                        visualization_title=spec.title,
+                        visualization_description=spec.description,
+                        visualization_style=spec.style,
+                    )
+                    call = {
+                        "name": "VisualizationResults",
+                        "args": idd_state.VisualizationResults(
+                            **FLAGS, visualizations=[item]
+                        ).model_dump(),
+                    }
+            self.scripted_responses.append(call)
+            return super()._generate(messages, **kwargs)
+
+    model = RenderProgressModel(response_name="VisualizationResults", payload={})
+    ns["visualization_orchestrator_llm"] = model
+    ns["visualization_agent"] = ns["create_visualization_agent"]([spec.df_id])
+    state = worker_state(tmp_path)
+    state.update(
+        viz_spec=spec, viz_specs=[spec], artifacts_path=str(runtime.artifacts_dir)
+    )
+    state["_config"]["configurable"]["runtime"] = runtime
+    if decision == "repeat":
+        with pytest.raises(
+            ValueError, match="Visualization repeated unchanged retrieval"
+        ):
+            ns["viz_worker"](state)
+        assert "VisualizationResults" not in model._emitted
+        assert len(model._requests) == 6
+    else:
+        output = ns["viz_worker"](state)
+        assert output["viz_results"][0]["visualization_id"] == spec.viz_id
+        assert model._emitted[-1] == "VisualizationResults"
+
+
 def test_viz_new_retrieval_information_resets_python_error_streak(tmp_path):
     bad = {"name": "python_repl_tool", "args": {"code": "print(df)"}}
     lookup = {
