@@ -3080,6 +3080,52 @@ def apply_cp5_viz_native_correction_patch(cells):
     cells[44]["source"] = source
 
 
+def apply_cp5_worker_png_inspection_patch(cells):
+    """Direct workers to actual PNG evidence without decoding binary as text."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "read_file")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        "        # Read all lines (preserve newlines so slicing is predictable)",
+        '''        if path.suffix.lower() == ".png" and path.is_file():
+            artifact = {"file_name": file_name, "path": str(path), "line_count": 0}
+            if return_bytes:
+                artifact["file_bytes"] = path.read_bytes()
+            return (
+                f"PNG path: {path.as_posix()}. read_file reads text, not image pixels. "
+                "For a current-run figure, inspect the exact saved path with "
+                "get_visualization(path=..., include_preview=True).",
+                artifact,
+            )
+
+        # Read all lines (preserve newlines so slicing is predictable)''',
+        patch_id="CP5 PNG reads do not decode binary as text",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+    source = join_source(cells[57]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "_cp5_visualization_messages")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '        "Built-in plotting tools may choose their own owned filename; use their actual returned path."',
+        '''        "Built-in plotting tools may choose their own owned filename; use their actual returned path. "
+        "If you need to inspect a PNG, call get_visualization(path=<exact saved path>, "
+        "include_preview=True). Use the saved path for inspection before publication: "
+        "the assigned visualization ID belongs in your completion metadata and may not be "
+        "in the inventory yet. read_file is for text; do not use it to inspect PNGs."''',
+        patch_id="CP5 worker inspection uses actual saved PNG path",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[57]["source"] = source
+
+
 def apply_cp5_scenario_request_patch(cells):
     """Keep the actual scenario/custom request through runtime initialization."""
     source = join_source(cells[51]["source"])
@@ -18324,6 +18370,7 @@ def main():
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
     apply_cp5_viz_native_correction_patch(cells)
+    apply_cp5_worker_png_inspection_patch(cells)
     apply_cp5_scenario_request_patch(cells)
     apply_cp5_file_writer_content_patch(cells)
     apply_cp5_evaluator_image_context_patch(cells)
