@@ -8,6 +8,7 @@ from PIL import Image
 import pytest
 from langchain.agents.structured_output import StructuredOutputValidationError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_openai.chat_models.base import _construct_responses_api_input
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
@@ -60,6 +61,115 @@ def _tool_name(tool):
 
 def _contains_context_value(context, value):
     return value in context or json.dumps(value, ensure_ascii=False)[1:-1] in context
+
+
+def test_revision_query_total_reaches_native_analyst(tmp_path):
+    ns = load_analyst(tmp_path)
+    expected = analysis_insights()
+    feedback = idd_state.VizFeedback(
+        **FLAGS,
+        grade="revise",
+        feedback="Verify the North revenue bar against the registered data.",
+        redo_list=["regional-revenue"],
+    )
+    state = analyst_state(
+        tmp_path,
+        supervisor_instruction=feedback.feedback,
+        viz_eval_result=feedback,
+        figures=analyst_figures(tmp_path),
+        prior_insights=expected,
+    )
+
+    class QueryGroundedModel(ControlledChatModel):
+        def _generate(self, messages, *args, **kwargs):
+            if self._requests:
+                tool_result = next(
+                    m
+                    for m in messages
+                    if isinstance(m, ToolMessage) and m.name == "query_dataframe"
+                )
+                assert tool_result.artifact == {
+                    "result": {"revenue": 120.0},
+                    "df_id": "retail-fixture_sum_result",
+                }
+                output = next(
+                    item
+                    for item in _construct_responses_api_input(messages)
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == tool_result.tool_call_id
+                )
+                assert tool_result.tool_call_id == "controlled-call-1"
+                prefix, _, body = output["output"].partition("\n")
+                assert prefix == "Query successful."
+                assert body, "Computed revenue must be in the model-visible tool result"
+                assert json.loads(body) == {
+                    "df_id": "retail-fixture_sum_result",
+                    "result": {"revenue": 120.0},
+                    "items_shown": 1,
+                    "total_items": 1,
+                    "truncated": False,
+                }
+            return super()._generate(messages, *args, **kwargs)
+
+    model = QueryGroundedModel(
+        response_name="AnalysisInsights",
+        payload=expected.model_dump(),
+        scripted_responses=[
+            {
+                "name": "query_dataframe",
+                "args": {
+                    "df_id": ns["analyst_df_id"],
+                    "params": {
+                        "columns": ["revenue"],
+                        "operation": "sum",
+                        "filter_column": "region",
+                        "filter_value": "North",
+                    },
+                },
+            }
+        ],
+    )
+    _make_agent(ns, model, state)
+
+    update = ns["analyst_node"](state)
+
+    assert update["analysis_insights"] == expected
+    assert update["analyst_complete"] is True
+    assert model._emitted == ["query_dataframe", "AnalysisInsights"]
+
+
+@pytest.mark.parametrize(
+    ("values", "shown"), [(list(range(12)), 10), (["x" * 4000], 0)]
+)
+def test_query_select_bounds_preview_without_changing_artifact(tmp_path, values, shown):
+    ns = load_analyst(tmp_path)
+    registry = ns["analyst_registry"]
+    assert registry.register_dataframe(ns["pd"].DataFrame({"value": values}), "data")
+    result = ns["query_dataframe"].invoke(
+        {
+            "name": "query_dataframe",
+            "type": "tool_call",
+            "id": "query-1",
+            "args": {
+                "df_id": "data",
+                "params": {"operation": "select", "columns": ["value"]},
+            },
+        }
+    )
+    records = [{"value": value} for value in values]
+    assert result.artifact == {"result": records, "df_id": "data_select_result"}
+    assert registry.get_dataframe("data_select_result")["value"].tolist() == values
+    prefix, _, body = result.content.partition("\n")
+    assert prefix == "Query successful."
+    assert body, "Model-visible content must say how much of the result is shown"
+    assert json.loads(body) == {
+        "df_id": "data_select_result",
+        "result": records[:shown],
+        "items_shown": shown,
+        "total_items": len(values),
+        "truncated": True,
+    }
+    assert len(result.content) < 2200
 
 
 def test_analyst_initial_completion_uses_native_schema_without_respond(tmp_path):

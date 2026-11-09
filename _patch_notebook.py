@@ -2397,6 +2397,51 @@ def apply_cp5_csv_export_dimensions_patch(cells):
     cells[32]["source"] = source
 
 
+def apply_cp5_query_result_content_patch(cells):
+    """Deliver query results to the model without expanding the stored artifact."""
+    source = join_source(cells[32]["source"])
+    node = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)
+                and n.name == "query_dataframe")
+    before = ast.get_source_segment(source, node)
+    body = replace_required(
+        before,
+        '        return "Query successful.", {"result": result, "df_id": new_df_id}',
+        '''        # Native tool artifacts are not sent to the model. Give it the
+        # answer (or a bounded preview), while retaining the full registered result.
+        import json as _query_json
+        import math as _query_math
+        records = isinstance(result, list)
+        preview = [] if records else {}
+        for item in (result[:10] if records else result.items()):
+            fields = item if records else {item[0]: item[1]}
+            visible = {
+                key: (None if isinstance(value, float) and not _query_math.isfinite(value)
+                      else value)
+                for key, value in fields.items()
+            }
+            candidate = [*preview, visible] if records else {**preview, **visible}
+            try:
+                encoded = _query_json.dumps(
+                    candidate, default=str, allow_nan=False, separators=(",", ":")
+                )
+            except (TypeError, ValueError):
+                break
+            if len(encoded) > 2048:
+                break
+            preview = candidate
+        content = "Query successful.\\n" + _query_json.dumps(
+            {"df_id": new_df_id, "result": preview, "items_shown": len(preview),
+             "total_items": len(result), "truncated": len(preview) != len(result)},
+            default=str, allow_nan=False, separators=(",", ":"),
+        )
+        return content, {"result": result, "df_id": new_df_id}''',
+        patch_id="CP5 model-visible DataFrame query result",
+    )
+    source = source.replace(before, body, 1)
+    ast.parse(source)
+    cells[32]["source"] = source
+
+
 def apply_cp5_file_writer_content_patch(cells):
     """Align the writer prompt with the existing factory/node content key."""
     source = join_source(cells[25]["source"])
@@ -18188,6 +18233,7 @@ def main():
     apply_cp5_numeric_series_patch(cells)
     apply_cp5_conversion_reporting_patch(cells)
     apply_cp5_csv_export_dimensions_patch(cells)
+    apply_cp5_query_result_content_patch(cells)
     apply_cp5_cleaner_grounding_patch(cells)
     apply_cp5_visualization_memory_contract_patch(cells)
     apply_cp5_visualization_assignment_patch(cells)
