@@ -1392,7 +1392,21 @@ def test_viz_unchanged_preview_gets_one_actionable_request_before_stop(
     class ProgressModel(ControlledChatModel):
         def _generate(self, messages, **kwargs):
             text_messages = [m for m in messages if feedback in str(m.content)]
+            names = {getattr(tool, "name", None) for tool in self._bindings[-1]}
+            reads = {
+                "get_visualization",
+                "list_visualizations",
+                "get_dataframe_schema",
+                "get_column_names",
+                "list_available_files",
+                "read_file",
+            }
             if len(self._requests) == 3:
+                assert names.isdisjoint(
+                    reads
+                ), "The corrective request still offers stale reads"
+                assert "python_repl_tool" in names
+                assert {"search_memory", "manage_memory"}.isdisjoint(names)
                 assert (
                     len(text_messages) == 1
                 ), "No in-band correction before the guard stops"
@@ -1405,6 +1419,7 @@ def test_viz_unchanged_preview_gets_one_actionable_request_before_stop(
                 assert base64.b64decode(image["image_url"].split(",", 1)[1]) == initial
             else:
                 assert not text_messages, "Correction should be confined to one request"
+                assert reads.issubset(names)
             return super()._generate(messages, **kwargs)
 
     ns, model, state, _ = _viz_retrieval_fixture(

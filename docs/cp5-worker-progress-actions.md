@@ -1,0 +1,9 @@
+# CP5 visualization worker action request
+
+At base `02bf17fe152638ad7cecd9a097b6c0b0e69d3098`, strict retail attempt `31ccc316-3f92-4bfa-a1e3-2f0a5d67b0bb` recorded unchanged-retrieval errors for the first two visualization assignments. Public events include repeated provisional figure lookups, inventories, file listings and schema inspection. The concurrent formatter labels do not identify each call's worker or arguments. The supervisor stopped the attempt after observing the checkpointed errors, with exit 1. The evaluator and production validators were not reached. No completed kernel cleanup receipt was recorded after the operator stop.
+
+The prior correction text left the ordinary read and memory tools available in the corrective request. The generated worker regression reproduced this binding on the base. The model could still choose the tools that keep the lookup streak active.
+
+After two redundant retrievals, the corrective request now offers plotting and Python work and keeps native structured completion available. It temporarily omits the existing read-only retrieval tools and memory operations. This applies to the worker's single request after the latest redundant result, including a redundant file or schema lookup. The next normal request after concrete progress restores the ordinary tool list. Actual model requests and the checkpoint use separate message copies. The original guard still stops the third redundant result, and completion still requires valid native `VisualizationResults`.
+
+The offline generated-worker regression verifies the effective bindings before, during, and after the correction. It preserves the exact PNG pixels and call ID, tests a real redraw and native completion, and verifies that an emitted fourth identical lookup still stops. The change affects only generated Cell 44. Hosted and independent review receipts are required before merge. #129 stays deferred and #165 stays open.
