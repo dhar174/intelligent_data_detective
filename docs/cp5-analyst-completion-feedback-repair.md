@@ -155,11 +155,14 @@ Environment assignments above are notation for the PowerShell environment variab
 used by the smoke invocation. JUnit arguments were passed as the absolute receipt
 paths equivalent to the relative paths shown.
 
-## Handoff limitations
+## Publication and merge
 
-This is an uncommitted local repair for owner review. No PR publication, hosted CI,
-independent Antigravity review, merge, or paid qualification is claimed. Offline
-completion tests do not establish the strict live 12/12 and 9/9 acceptance thresholds.
-The full broad no-key selection and full kernel suites were not run for this narrow
-repair; the explicit selected gates and single relevant kernel probe are listed above.
-The next paid run requires owner approval.
+Owner accepted PR [#222](https://github.com/dhar174/intelligent_data_detective/pull/222) at HEAD `e96056e60f0e0a46337c564d1b112ce95499bb7e` and authorized its merge. The merge completed November 13, 2026 at 06:07:40 UTC (01:07:40 America/New_York), as `f12ebfffc9bc29c1fea193ab76d9691cdeef295f`. Accepted-HEAD ancestry was verified on remote main.
+
+- [Linux no-key CI](https://github.com/dhar174/intelligent_data_detective/actions/runs/43372463614): SUCCESS at accepted HEAD.
+- [Windows real-kernel CI](https://github.com/dhar174/intelligent_data_detective/actions/runs/43372467149): SUCCESS at accepted HEAD.
+- [Antigravity Gemini 4 Hydrogen (High) review](https://github.com/dhar174/intelligent_data_detective/pull/222#issuecomment-6845247108): APPROVED, no blockers, exact accepted HEAD. Conversation `88e659e6-b87a-49f9-bf54-a2b7bfa41d20`. The first CLI invocation timed out; the resumed conversation returned the verdict. Interrupted tests are not counted as passes. The review records its concurrent-test file-write race and isolated rerun separately.
+
+Local selections above were supplemented by hosted CI; the full hosted suites were not also rerun locally. These results do not establish live 12/12 and 9/9 qualification.
+
+The campaign remains stopped pending owner approval before another paid run. Models remain unchanged, #129 remains deferred, and #165 remains open. This merge did not resume a historical checkpoint or execute either live scenario.

@@ -3,6 +3,24 @@
 <!-- repo-agent-bootstrap:managed:start -->
 # Progress
 
+## Current status — November 13, 2026
+
+PR [#222](https://github.com/dhar174/intelligent_data_detective/pull/222) was accepted by the owner and merged. Accepted HEAD: `e96056e60f0e0a46337c564d1b112ce95499bb7e`. Merge commit: `f12ebfffc9bc29c1fea193ab76d9691cdeef295f`; accepted HEAD ancestry was verified on remote `main`.
+
+- Analyst revision completion instructions and full evaluator feedback delivery are repaired. Models, shared hook, strict completion checks, canonical modules, and production thresholds remain unchanged.
+- Local verification: 580 distinct passing tests, including 16/16 mandatory error-handling tests and the real-kernel analyst probe. Invariants: 99 cells, 70 State fields, 15 nodes, 33 edges.
+- Exact-HEAD [Linux CI](https://github.com/dhar174/intelligent_data_detective/actions/runs/43372463614) and [Windows CI](https://github.com/dhar174/intelligent_data_detective/actions/runs/43372467149) succeeded.
+- [Independent Antigravity Gemini 4 Hydrogen (High) review](https://github.com/dhar174/intelligent_data_detective/pull/222#issuecomment-6845247108) approved the exact HEAD with no blockers. Its interrupted local test and concurrency limitations remain documented in the review.
+- Campaign remains stopped. Merge authorization does not authorize another paid run. Next steps are fresh no-spend preparation and current spend reconciliation, followed by owner approval before fresh retail_orders execution. sample_dirty remains gated on retail qualification and spend reconciliation.
+- #129 remains deferred; #165 remains open. Historical execution evidence must remain untouched.
+
+See [the analyst repair report](../docs/cp5-analyst-completion-feedback-repair.md) for implementation and validation details.
+
+## Historical context below
+
+The following notes record earlier checkpoints and are superseded by the current status above wherever they describe the current campaign or merge gate.
+
+
 ## Milestones
 - [x] Repository profile captured (inventory run 2026-04-20)
 - [x] Hybrid agent stack scaffolded (26 files, `repo-agent-bootstrap`)
