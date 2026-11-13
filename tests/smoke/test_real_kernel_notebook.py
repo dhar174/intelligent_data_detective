@@ -1921,9 +1921,9 @@ assert namespace["create_analyst_agent"].__code__.co_filename == "<generated Cel
 prior = analysis_insights()
 redo_id = prior.recommended_visualizations[0].viz_id
 feedback = VizFeedback(
-    **FLAGS,
+    **{{**FLAGS, "reply_msg_to_supervisor": "KERNEL_DETAILED_REVIEW: order regions by mean descending."}},
     grade="revise",
-    feedback="KERNEL_FEEDBACK_MARKER: correct the regional axis.",
+    feedback="KERNEL_FEEDBACK_MARKER: see the detailed review above.",
     redo_list=[redo_id],
 )
 state = analyst_state(
@@ -1947,6 +1947,7 @@ model = ControlledChatModel(
     payload=response.model_dump(),
     required_context=[
         "KERNEL_FEEDBACK_MARKER",
+        "KERNEL_DETAILED_REVIEW",
         "KERNEL_REVISION_DIRECTIVE",
         redo_id,
     ],
@@ -1963,6 +1964,9 @@ assert update["last_agent_id"] == "analyst"
 assert len(update["viz_specs"]) == len(response.recommended_visualizations) == 2
 assert len(update["viz_tasks"]) == 2
 assert len(model._requests) == 1
+system = "\\n".join(m.content for m in model._requests[0] if m.type == "system")
+assert "top-level AnalysisInsights.finished_this_task=True" in system
+assert "rendering, saving PNGs, and evaluating figures are downstream tasks" in system
 print(
     {PROBE_PREFIX!r}
     + json.dumps(

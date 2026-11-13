@@ -306,6 +306,170 @@ def test_analyst_native_unfinished_output_fails_with_integrity_error(tmp_path):
     assert model._emitted == ["AnalysisInsights"]
 
 
+@pytest.mark.parametrize("pressure", [False, True], ids=["normal", "history-pressure"])
+@pytest.mark.parametrize("serialized", [False, True], ids=["native", "serialized"])
+def test_revision_detailed_review_reaches_model_on_reused_thread(
+    tmp_path, pressure, serialized
+):
+    """The evaluator's 'notes above' must survive routing and summarization."""
+    ns = load_analyst(tmp_path)
+    prior = analysis_insights()
+    revised = prior.model_copy(deep=True)
+    revised.recommended_visualizations[
+        0
+    ].viz_instructions += (
+        " Order regions by mean revenue descending and label sample counts."
+    )
+    detailed_review = (
+        "Bar: regions must be ordered by mean revenue descending. "
+        "Scatter: add the overall OLS line and Pearson r annotation."
+    )
+    feedback = idd_state.VizFeedback(
+        **{**FLAGS, "reply_msg_to_supervisor": detailed_review},
+        grade="revise",
+        feedback="See per-figure notes above. Verify legibility after rendering.",
+        redo_list=[prior.recommended_visualizations[0].viz_id],
+    )
+    if pressure:
+        summary = _HistorySummarySpy()
+        ns["prehook_critical_complex"] = ns["make_hosted_history_middleware"](
+            summary, model_budget_tokens=16_000, max_summary_tokens=32
+        )
+    model = ControlledChatModel(
+        response_name="AnalysisInsights",
+        payload=revised.model_dump(),
+        scripted_responses=[{"name": "AnalysisInsights", "args": prior.model_dump()}],
+    )
+    initial = analyst_state(tmp_path)
+    initial["_config"] = {"configurable": {"thread_id": "review-reused-thread"}}
+    _make_agent(ns, model, initial)
+    first = ns["analyst_node"](initial)
+    state = analyst_state(
+        tmp_path,
+        supervisor_instruction="Revise the visualization specifications using the review.",
+        viz_eval_result=feedback,
+        prior_insights=first["analysis_insights"],
+        history=first["messages"],
+    )
+    state["_config"] = initial["_config"]
+    if serialized:
+        state["viz_eval_result"] = feedback.model_dump()
+    if pressure:
+        state["messages"].insert(
+            0,
+            AIMessage(id="obsolete-review-history", content="Earlier analysis " * 6000),
+        )
+    before = feedback.model_dump()
+    update = ns["analyst_node"](state)
+    request = model._requests[-1]
+    contexts = [m for m in request if m.name == "runtime_context"]
+    assert len(contexts) == 1
+    context = json.loads(contexts[0].content)
+    assert context["evaluator_review"] == {
+        "reply_msg_to_supervisor": detailed_review,
+        "feedback": feedback.feedback,
+        "redo_list": feedback.redo_list,
+    }
+    assert context["evaluator_feedback"] == feedback.feedback
+    assert context["figures_to_redo"] == feedback.redo_list
+    wire = json.dumps(_construct_responses_api_input(request))
+    assert detailed_review in wire
+    assert update["analysis_insights"] == revised
+    assert feedback.model_dump() == before
+    assert model._emitted == ["AnalysisInsights", "AnalysisInsights"]
+    assert len(model._requests) == 2
+    if pressure:
+        assert summary.requests
+        assert all(m.id != "obsolete-review-history" for m in request)
+
+
+def test_revision_planning_completion_contract_reaches_native_model(tmp_path):
+    """Planning can finish before rendering; nested flags do not certify PNGs."""
+    ns = load_analyst(tmp_path)
+    prior = analysis_insights()
+    revised = prior.model_copy(deep=True)
+    for spec in revised.recommended_visualizations:
+        spec.finished_this_task = False
+    revised.recommended_visualizations[0].viz_instructions += " Label sample counts."
+    feedback = idd_state.VizFeedback(
+        **FLAGS,
+        grade="revise",
+        feedback="Add sample counts.",
+        redo_list=[prior.recommended_visualizations[0].viz_id],
+    )
+    state = analyst_state(tmp_path, viz_eval_result=feedback, prior_insights=prior)
+    model = ControlledChatModel(
+        response_name="AnalysisInsights", payload=revised.model_dump()
+    )
+    _make_agent(ns, model, state)
+    update = ns["analyst_node"](state)
+    system = "\n".join(m.content for m in model._requests[0] if m.type == "system")
+    assert "top-level AnalysisInsights.finished_this_task=True" in system
+    assert (
+        "rendering, saving PNGs, and evaluating figures are downstream tasks" in system
+    )
+    assert "nested VizSpec completion flags" in system
+    assert "finished_this_task=False" in system and "specific blocker" in system
+    assert "style contains only a matplotlib/seaborn style" in system
+    assert "rendering_output_path" in system
+    assert update["analysis_insights"] == revised
+    assert update["analyst_complete"] is True
+    assert update["last_agent_finished_this_task"] is True
+    assert all(not spec.finished_this_task for spec in update["viz_specs"])
+    assert all(spec.style == "whitegrid" for spec in update["viz_specs"])
+    assert not list(tmp_path.rglob("*.png"))
+    assert model._emitted == ["AnalysisInsights"]
+    assert "visualization_complete" not in update
+    assert "viz_grade" not in update
+
+
+@pytest.mark.parametrize(
+    "has_plan", [False, True], ids=["missing-plan", "detailed-plan"]
+)
+def test_revision_unfinished_cannot_publish_tasks_or_memory(tmp_path, has_plan):
+    ns = load_analyst(tmp_path)
+    prior = analysis_insights()
+    feedback = idd_state.VizFeedback(
+        **FLAGS,
+        grade="revise",
+        feedback="Verify the chart labels.",
+        redo_list=[prior.recommended_visualizations[0].viz_id],
+    )
+    state = analyst_state(tmp_path, viz_eval_result=feedback, prior_insights=prior)
+    payload = prior.model_dump()
+    payload["finished_this_task"] = False
+    payload["reply_msg_to_supervisor"] = (
+        "Prepared revised specifications; rendering is pending."
+        if has_plan
+        else "Missing evidence needed to prepare the revised specifications."
+    )
+    if not has_plan:
+        payload["recommended_visualizations"] = []
+    else:
+        # Sanitized form of the separate field misuse in the stopped response.
+        # A detailed plan must not cause the false flag or malformed style to
+        # be silently repaired and published as a successful revision.
+        payload["recommended_visualizations"][0][
+            "style"
+        ] = 'whitegrid","rendering_output_path":"visualizations/revised.png'
+    model = ControlledChatModel(response_name="AnalysisInsights", payload=payload)
+    writes = []
+    ns["update_memory_with_kind"] = lambda *a, **k: writes.append((a, k))
+    _make_agent(ns, model, state)
+    before = prior.model_dump()
+    previous_tasks = list(state.get("viz_tasks") or [])
+    with pytest.raises(
+        ValueError, match="AnalysisInsights did not finish the assigned task"
+    ):
+        ns["analyst_node"](state)
+    assert not writes
+    assert state["analysis_insights"].model_dump() == before
+    assert state["viz_grade"] == "revise"
+    assert state["viz_tasks"] == previous_tasks
+    assert model._emitted == ["AnalysisInsights"]
+    assert not list(tmp_path.rglob("*.png"))
+
+
 def test_analyst_malformed_native_payload_preserves_structured_output_error(tmp_path):
     ns = load_analyst(tmp_path)
     payload = analysis_insights().model_dump()
