@@ -1493,7 +1493,10 @@ def _cp5_analyst_retrieval_guard(request, handler):
             text = replace_required(
                 text,
                 "Completion: return exactly one AnalysisInsights structured response through the response tool, then stop.",
-                "Completion: call the native AnalysisInsights structured-response tool exactly once, then stop. For a visualization revision, preserve prior summary, correlation, anomaly, and next-step findings verbatim unless the assignment or evaluator feedback explicitly asks for recalculation; return the full revised plan with unaffected specifications copied field for field. Describe the rendering requirements in VizSpec without choosing PNG filenames or embedding save code. The worker owns the actual destination.",
+                "Completion: call the native AnalysisInsights structured-response tool exactly once, then stop. For a visualization revision, preserve prior summary, correlation, anomaly, and next-step findings verbatim unless the assignment or evaluator feedback explicitly asks for recalculation; return the full revised plan with unaffected specifications copied field for field. Describe the rendering requirements in VizSpec without choosing PNG filenames or embedding save code. The worker owns the actual destination.\\n"
+                "Revision completion: your assigned task is to prepare the complete, evidence-backed revised visualization plan. Set top-level AnalysisInsights.finished_this_task=True only when that planning task is complete; rendering, saving PNGs, and evaluating figures are downstream tasks. The nested VizSpec completion flags do not certify rendered figures and must not determine the top-level analyst completion flag. If evidence needed to prepare a usable plan is missing, return finished_this_task=False and explain the specific blocker in reply_msg_to_supervisor. Never claim completion merely because a response is required.\\n"
+                "Revision feedback: read evaluator_review.reply_msg_to_supervisor together with evaluator_review.feedback and evaluator_review.redo_list in the newest runtime_context. Translate requests to render, save, or inspect figures into concrete requirements in viz_instructions for the visualization worker.\\n"
+                "Specification fields: style contains only a matplotlib/seaborn style. Do not embed filenames, save code, JSON fragments, or rendering_output_path in style or other specification fields. Keep output destination ownership with the visualization worker.",
                 patch_id="CP5 analyst native completion system prompt",
             )
             old_middleware = (
@@ -1641,6 +1644,11 @@ def _cp5_analyst_retrieval_guard(request, handler):
         "revision": state.get("viz_grade") == "revise",
         "evaluator_grade": state.get("viz_grade"),
         "evaluator_feedback": state.get("viz_feedback") or _value(_eval, "feedback", ""),
+        "evaluator_review": {
+            "reply_msg_to_supervisor": _plain(_value(_eval, "reply_msg_to_supervisor", "")),
+            "feedback": _plain(_value(_eval, "feedback", "")),
+            "redo_list": _plain(_redo),
+        },
         "figures_to_redo": _plain(_redo),
         "prior_analysis_insights": _plain(_prior),
         "prior_visualization_specs": _plain(_specs),
