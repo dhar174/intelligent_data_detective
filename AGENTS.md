@@ -65,7 +65,10 @@ python3 -m pytest test_prompt_formatting.py test_prompt_template_fixes.py -v
 black test_intelligent_data_detective.py test_error_handling_framework.py test_prompt_formatting.py test_prompt_template_fixes.py
 flake8 test_intelligent_data_detective.py test_prompt_formatting.py test_prompt_template_fixes.py --max-line-length=88 --extend-ignore=E203,E501
 
-# Full workflow (requires API keys, 6–25 minutes — never cancel)
+# Full live workflow requires explicit authorization for the provider, dataset, outputs, and bounded spend/runtime.
+# Historical runs took 6–25 minutes; that is not a guaranteed duration or permission to run.
+# Stop safely when the owner cancels, an approved limit is reached, or a safety/resource failure occurs.
+# A stopped or incomplete run is not passing evidence.
 export OPENAI_API_KEY="your-key"
 export IDD_NOTEBOOK="IntelligentDataDetective_beta_v5_patched.ipynb"
 export IDD_SAMPLE_DATASET="retail_orders"
@@ -98,7 +101,7 @@ python validate_artifact_quality.py --latest
 - Preserve user-authored docs and existing agent assets outside managed sections.
 
 ## Definition of done
-- Relevant tests pass (see counts above).
+- Relevant checks pass on the exact candidate revision. Report observed counts, commands, environment, and exclusions. Guide counts are historical baselines.
 - Patched notebook regenerates successfully and keeps the expected W14 99-cell structure unless the task explicitly changes it.
 - Completion-impacting notebook changes preserve the W14 baseline gates: `validate_run.py` 12/12, `validate_artifact_quality.py` 9/9, no recovery/final-hop/path-normalization markers, and complete final artifacts.
 - `memory-bank/` or `docs/` files refreshed when architecture or contributor expectations change.
